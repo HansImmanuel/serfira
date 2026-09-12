@@ -32,6 +32,8 @@ dependencies {
 	runtimeOnly("org.postgresql:postgresql")
 	implementation("org.flywaydb:flyway-core")
 	implementation("org.flywaydb:flyway-database-postgresql")
+	// Spring Boot 4 modularized auto-configs: Flyway startup migration lives in spring-boot-flyway.
+	implementation("org.springframework.boot:spring-boot-flyway")
 
 	// --- Scheduling: ShedLock (multi-instance safe job lock) ---
 	implementation("net.javacrumbs.shedlock:shedlock-spring:6.9.0")
