@@ -70,6 +70,8 @@ frontend/  (fase berikutnya — client Spring Boot API)
 ## Verification
 
 - `cd backend && gradle test` — semua unit + integration test wajib hijau.
+  Kelas integrasi `*IT` berjalan di task `test` yang sama (tidak ada source set / failsafe
+  terpisah), jadi satu perintah mencakup keduanya.
 - `docker compose up --build` — Flyway menerapkan baseline pada database bersih.
 
 ## Dokumentasi

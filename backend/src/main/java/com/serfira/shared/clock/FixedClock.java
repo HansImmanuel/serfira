@@ -16,9 +16,15 @@ public final class FixedClock implements Clock {
 	private final ZoneId zone;
 	private OffsetDateTime current;
 
+	/**
+	 * The instant is normalized into the Serfira business zone so {@link #zone()} is always
+	 * {@code Asia/Jakarta} regardless of the offset the caller expressed the instant in.
+	 */
 	public FixedClock(OffsetDateTime current) {
-		this.current = Objects.requireNonNull(current, "current");
-		this.zone = current.getOffset();
+		this.current = Objects.requireNonNull(current, "current")
+				.atZoneSameInstant(SystemClock.SERFIRA_ZONE)
+				.toOffsetDateTime();
+		this.zone = SystemClock.SERFIRA_ZONE;
 	}
 
 	public FixedClock(LocalDate date) {

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,13 +19,12 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # Cache/config setup only — the build itself runs the committed wrapper (pinned 9.7.1).
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.7.1'
 
       - name: Run tests (unit + Testcontainers integration)
         working-directory: backend
-        run: gradle test --no-daemon
+        run: ./gradlew test --no-daemon
 
   docker:
     runs-on: ubuntu-latest

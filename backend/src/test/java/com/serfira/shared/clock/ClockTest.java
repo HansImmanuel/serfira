@@ -42,4 +42,16 @@ class ClockTest {
 		assertThat(clock.now().getOffset()).isEqualTo(ZoneOffset.ofHours(7));
 		assertThat(clock.now().toLocalDate()).isEqualTo(LocalDate.of(2026, 1, 31));
 	}
+
+	@Test
+	void fixedClockNormalizesForeignOffsetsToTheBusinessZone() {
+		OffsetDateTime utc = OffsetDateTime.of(2026, 9, 12, 3, 0, 0, 0, ZoneOffset.UTC);
+		FixedClock clock = new FixedClock(utc);
+
+		assertThat(clock.zone().getId()).isEqualTo("Asia/Jakarta");
+		// same instant, expressed in +07:00
+		assertThat(clock.now().getOffset()).isEqualTo(ZoneOffset.ofHours(7));
+		assertThat(clock.instant()).isEqualTo(utc.toInstant());
+		assertThat(clock.now().toLocalDate()).isEqualTo(LocalDate.of(2026, 9, 12));
+	}
 }

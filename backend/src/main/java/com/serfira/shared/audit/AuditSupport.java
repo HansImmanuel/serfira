@@ -13,6 +13,11 @@ import java.util.UUID;
  * callbacks directly. Instead the beans are bound once at startup by
  * {@link AuditConfiguration#auditContext(Clock)}. The bridge stays internal to the audit package; the default
  * clock is a {@link SystemClock} so entities remain writable even before the context is configured.
+ *
+ * <p>Known trade-off (documented in the Sprint 0 code review): the static binding is JVM-global while
+ * Spring test contexts are cached per configuration, so a newly refreshed context rebinds the static for
+ * every already-cached context. Harmless today because no test asserts exact audit timestamps; if a golden
+ * test ever does, rebind via a {@code TestExecutionListener} instead.
  */
 public final class AuditSupport {
 

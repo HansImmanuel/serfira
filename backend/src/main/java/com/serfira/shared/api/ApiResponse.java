@@ -1,6 +1,7 @@
-package com.serfira.shared.error;
+package com.serfira.shared.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.serfira.shared.error.ApiError;
 
 /**
  * Standard Serfira response envelope (TECH SPEC §2.2):

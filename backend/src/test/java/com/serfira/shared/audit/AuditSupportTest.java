@@ -24,6 +24,8 @@ class AuditSupportTest {
 	@AfterEach
 	void tearDown() {
 		AuditSupport.reset();
+		// Prevent ThreadLocal actor leakage into other test classes running on this thread.
+		auditContext.resetToSystem();
 	}
 
 	@Test

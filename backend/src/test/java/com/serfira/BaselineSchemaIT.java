@@ -109,6 +109,95 @@ class BaselineSchemaIT {
 				.isInstanceOf(DataAccessException.class);
 	}
 
+	@Test
+	void postedPaymentCannotReuseAPaymentIdempotencyKey() {
+		String firstPayment = """
+				with c as (
+					insert into customer (full_name, nik, nik_hash, created_at, updated_at)
+					values ('Test Customer 1', '3201010101010001', repeat('a', 64), clock_timestamp(), clock_timestamp())
+					returning id
+				), a as (
+					insert into asset (asset_type, brand, model, created_at, updated_at)
+					values ('MOTORCYCLE', 'Honda', 'Beat', clock_timestamp(), clock_timestamp())
+					returning id
+				), k as (
+					insert into contract (contract_no, customer_id, asset_id, asset_price, principal, down_payment,
+						tenor_months, interest_scheme, interest_rate, grace_period_days, penalty_rate_daily,
+						created_at, updated_at)
+					select 'MF-TEST-0001', c.id, a.id, 1000.00, 900.00, 100.00, 12, 'FLAT', 0.0150, 3, 0.0010,
+						clock_timestamp(), clock_timestamp()
+					from c, a
+					returning id
+				)
+				insert into payment (payment_no, contract_id, amount, channel, paid_at, idempotency_key,
+					created_at, updated_at)
+				select 'PAY-X-0001', k.id, 100.00, 'CASH', clock_timestamp(), 'pay-key-1',
+					clock_timestamp(), clock_timestamp()
+				from k
+				""";
+		jdbc.update(firstPayment);
+
+		// same key while both are POSTED → rejected by the partial unique index
+		assertThatThrownBy(() -> jdbc.update(firstPayment
+				.replace("'PAY-X-0001'", "'PAY-X-0002'")
+				.replace("repeat('a', 64)", "repeat('b', 64)")
+				.replace("'MF-TEST-0001'", "'MF-TEST-0002'")))
+				.isInstanceOf(DataAccessException.class);
+
+		// voiding the first payment frees the key for a retry
+		jdbc.update("update payment set status = 'VOIDED', voided_at = clock_timestamp(), "
+				+ "void_reason = 'test' where payment_no = 'PAY-X-0001'");
+		jdbc.update(firstPayment
+				.replace("'PAY-X-0001'", "'PAY-X-0002'")
+				.replace("repeat('a', 64)", "repeat('b', 64)")
+				.replace("'MF-TEST-0001'", "'MF-TEST-0002'"));
+	}
+
+	@Test
+	void settlementIdempotencyKeyIsUnique() {
+		String settlementInsert = """
+				with c as (
+					insert into customer (full_name, nik, nik_hash, created_at, updated_at)
+					values ('Test Customer 2', '3201010101010002', repeat('c', 64), clock_timestamp(), clock_timestamp())
+					returning id
+				), a as (
+					insert into asset (asset_type, brand, model, created_at, updated_at)
+					values ('MOTORCYCLE', 'Yamaha', 'Nmax', clock_timestamp(), clock_timestamp())
+					returning id
+				), k as (
+					insert into contract (contract_no, customer_id, asset_id, asset_price, principal, down_payment,
+						tenor_months, interest_scheme, interest_rate, grace_period_days, penalty_rate_daily,
+						created_at, updated_at)
+					select 'MF-TEST-0003', c.id, a.id, 1000.00, 900.00, 100.00, 12, 'FLAT', 0.0150, 3, 0.0010,
+						clock_timestamp(), clock_timestamp()
+					from c, a
+					returning id
+				), q as (
+					insert into settlement_quote (quote_no, contract_id, quoted_at, valid_until, contract_version,
+						outstanding_principal, unpaid_billed_interest, accrued_interest, penalty_outstanding,
+						rebate_amount, admin_fee, available_credit, gross_amount, cash_due, created_at, updated_at)
+					select 'Q-TEST-0001', k.id, clock_timestamp(), clock_timestamp() + interval '15 minutes', 0,
+						900.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 900.00, 900.00,
+						clock_timestamp(), clock_timestamp()
+					from k
+					returning id
+				)
+				insert into settlement (settlement_no, contract_id, quote_id, cash_received, rebate_amount,
+					admin_fee, executed_at, idempotency_key, created_at, updated_at)
+				select 'SET-X-0001', k.id, q.id, 900.00, 0.00, 0.00, clock_timestamp(), 'set-key-1',
+					clock_timestamp(), clock_timestamp()
+				from k, q
+				""";
+		jdbc.update(settlementInsert);
+
+		assertThatThrownBy(() -> jdbc.update(settlementInsert
+				.replace("'SET-X-0001'", "'SET-X-0002'")
+				.replace("'Q-TEST-0001'", "'Q-TEST-0002'")
+				.replace("repeat('c', 64)", "repeat('d', 64)")
+				.replace("'MF-TEST-0003'", "'MF-TEST-0004'")))
+				.isInstanceOf(DataAccessException.class);
+	}
+
 	private long count(String table, String where) {
 		String sql = "select count(*) from " + table;
 		if (where != null) {

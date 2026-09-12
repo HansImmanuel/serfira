@@ -173,6 +173,9 @@ CREATE TABLE installment (
     CONSTRAINT ck_installment_status CHECK (status IN
         ('PENDING', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'SETTLED', 'WRITTEN_OFF'))
 );
+-- NOTE for the C2 allocation story: ck_installment_amounts is checked per statement. Allocation
+-- code must update recognized_interest_amount (and penalty_amount) in the same statement as —
+-- or before — paid_amount, otherwise a transient intermediate state violates the CHECK.
 
 CREATE INDEX idx_installment_contract_due ON installment (contract_id, due_date);
 
@@ -214,6 +217,10 @@ CREATE TABLE payment (
     CONSTRAINT ck_payment_channel CHECK (channel IN ('CASH', 'BANK_TRANSFER', 'VA_STUB', 'EWALLET_STUB')),
     CONSTRAINT ck_payment_status CHECK (status IN ('POSTED', 'VOIDED'))
 );
+
+-- Defense-in-depth for payment retry safety: one POSTED payment per idempotency key, even if the
+-- idempotency_keys row insert were bypassed. Voided payments may share a key with the retry.
+CREATE UNIQUE INDEX uq_payment_idempotency ON payment (idempotency_key) WHERE status = 'POSTED';
 
 CREATE INDEX idx_payment_contract ON payment (contract_id);
 
@@ -381,6 +388,9 @@ CREATE TABLE settlement (
         cash_received >= 0 AND credit_used >= 0 AND rebate_amount >= 0 AND admin_fee >= 0
     )
 );
+
+-- Settlements are never voided, so the idempotency key is unique without any partial predicate.
+CREATE UNIQUE INDEX uq_settlement_idempotency ON settlement (idempotency_key);
 
 CREATE INDEX idx_settlement_contract_executed ON settlement (contract_id, executed_at);
 
