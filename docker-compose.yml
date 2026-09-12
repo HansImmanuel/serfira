@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: serfira
+      POSTGRES_USER: serfira
+      # Local-development credential only — override via POSTGRES_PASSWORD or .env outside dev.
+      POSTGRES_PASSWORD: serfira_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - serfira_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U serfira -d serfira"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: ./backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/serfira
+      SPRING_DATASOURCE_USERNAME: serfira
+      SPRING_DATASOURCE_PASSWORD: serfira_dev
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  serfira_pgdata:
