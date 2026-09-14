@@ -8,14 +8,21 @@ audit trail penuh, dan arsitektur modular yang disiplin.
 
 ## Status
 
-Sprint 0 (fondasi) — **in progress**:
+Sprint 0 (fondasi) — **selesai**:
 
+- [x] A1 — Repository setup, CI, Docker Compose, README
 - [x] A2 — Injectable Clock, audit foundation, exception envelope
 - [x] A3 — Flyway baseline schema, system parameters, COA seed
 - [x] A4 — Contract number generator
-- [x] A1 — Repository setup, CI, Docker Compose, README
 
-Sprint 1+ (domain engine, API, ledger posting) belum dimulai.
+Sprint 1 (schedule engine core) — **selesai** (golden FLAT/EFFECTIVE test hijau, `gradlew test` hijau):
+
+- [x] B1 — JPA entity Contract/Customer/Asset/Installment + repositories
+- [x] B2 — Schedule engine FLAT (pure Java) + golden test
+- [x] B3 — Schedule engine EFFECTIVE/anuitas + edge guards (i=0, n=1)
+- [x] B4 — Due date calc (31→Feb 28/29, leap year) + test matrix tanggal
+
+Sprint 2+ (contract API, ledger posting, payment) belum dimulai.
 
 ## Arsitektur
 
