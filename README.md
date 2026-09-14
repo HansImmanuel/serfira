@@ -37,7 +37,7 @@ Modular monolith, satu deployment unit Spring Boot, satu database PostgreSQL 16
 | `settlement` | Quote & eksekusi pelunasan                      |
 | `ledger`     | Double-entry journal, chart of accounts         |
 | `reporting`  | Read-only query service                         |
-| `shared`     | Clock, audit, envelope error, nomor dokumen     |
+| `shared`     | Clock, audit, envelope error, nomor dokumen, PII security  |
 
 Paket mengikuti `com.serfira.<module>.{api, application, domain, infrastructure}`.
 
@@ -65,6 +65,24 @@ docker compose up --build
 
 Variabel `POSTGRES_PASSWORD` / `SPRING_DATASOURCE_PASSWORD` di `docker-compose.yml`
 adalah kredensial **lokal-dev saja**; override lewat `.env` untuk lingkungan lain.
+
+## Keamanan PII (ADR-004)
+
+`Customer.nik` dan `Customer.phone` **tidak pernah tersimpan plaintext** di database:
+
+- AES-256-GCM ciphertext (envelope `v1:<base64(IV‖ciphertext|tag)>`) ditulis oleh JPA
+  `AttributeConverter` di lapisan aplikasi.
+- Uniqueness & pencarian memakai kolom HMAC lookup: `nik_hash` dan `phone_lookup`
+  (HMAC-SHA-256 dari nilai ternormalisasi; NIK digits-only, phone trunk `0…`→`62`).
+  Pencarian by raw NIK/phone hanya lewat `CustomerSearchService` — raw value di-HMAC di
+  memory, tidak pernah menyentuh SQL/log/URL. Endpoint REST-nya belum diekspos (menunggu RBAC).
+- Kunci wajib disediakan via environment; tanpa kunci aplikasi **tidak mau start**:
+  ```
+  SERFIRA_PII_ENCRYPTION_KEY=<base64 32-byte key>
+  SERFIRA_PII_HMAC_KEY=<base64 >=32-byte key>
+  ```
+  Nilai dev/portofolio ada di `docker-compose.yml` (dan `src/test/resources/application.properties`
+  untuk test) — **bukan production value**.
 
 ## Struktur Repositori
 

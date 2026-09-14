@@ -1,7 +1,9 @@
 package com.serfira.contract.domain;
 
 import com.serfira.shared.audit.Auditable;
+import com.serfira.shared.security.AesGcmStringAttributeConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -16,12 +18,16 @@ import java.util.UUID;
 /**
  * Customer (borrower) of one or more financing contracts (03_DOMAIN_MODEL.md §1.1).
  *
- * <p>{@code nik} is encrypted at rest by an application converter (Sprint 2+) and is never used for
- * uniqueness — {@code nikHash} (HMAC-SHA-256 of the normalized NIK) is the unique key.
+ * <p>ADR-004 at-rest PII protection: {@code nik} and {@code phone} are stored AES-256-GCM ciphertext
+ * (application-level {@link AesGcmStringAttributeConverter}) — this entity holds plaintext in memory.
+ * Uniqueness and search NEVER use the ciphertext; {@code nikHash} (HMAC-SHA-256, unique) and
+ * {@code phoneLookup} (HMAC-SHA-256, unique — one phone per customer) are the lookup keys, computed by
+ * the caller via {@code PiiHasher} before construction.
  */
 @Entity
 @Table(name = "customer", uniqueConstraints = {
-		@UniqueConstraint(name = "uk_customer_nik_hash", columnNames = "nik_hash")
+		@UniqueConstraint(name = "uk_customer_nik_hash", columnNames = "nik_hash"),
+		@UniqueConstraint(name = "uk_customer_phone_lookup", columnNames = "phone_lookup")
 })
 public class Customer extends Auditable {
 
@@ -33,15 +39,21 @@ public class Customer extends Auditable {
 	@Column(name = "full_name", nullable = false, length = 120)
 	private String fullName;
 
-	@Column(name = "nik", nullable = false, length = 16)
+	@Convert(converter = AesGcmStringAttributeConverter.class)
+	@Column(name = "nik", nullable = false, columnDefinition = "text")
 	private String nik;
 
 	@JdbcTypeCode(SqlTypes.CHAR)
 	@Column(name = "nik_hash", nullable = false, columnDefinition = "char(64)")
 	private String nikHash;
 
-	@Column(name = "phone", length = 20)
+	@Convert(converter = AesGcmStringAttributeConverter.class)
+	@Column(name = "phone", nullable = false, columnDefinition = "text")
 	private String phone;
+
+	@JdbcTypeCode(SqlTypes.CHAR)
+	@Column(name = "phone_lookup", nullable = false, columnDefinition = "char(64)")
+	private String phoneLookup;
 
 	@Column(name = "address", columnDefinition = "text")
 	private String address;
@@ -50,11 +62,16 @@ public class Customer extends Auditable {
 		// JPA
 	}
 
-	public Customer(String fullName, String nik, String nikHash, String phone, String address) {
+	/**
+	 * @param nikHash      HMAC-SHA-256 of the normalized NIK ({@code PiiHasher.hashNik})
+	 * @param phoneLookup  HMAC-SHA-256 of the normalized phone ({@code PiiHasher.hashPhone})
+	 */
+	public Customer(String fullName, String nik, String nikHash, String phone, String phoneLookup, String address) {
 		this.fullName = fullName;
 		this.nik = nik;
 		this.nikHash = nikHash;
 		this.phone = phone;
+		this.phoneLookup = phoneLookup;
 		this.address = address;
 	}
 
@@ -76,6 +93,10 @@ public class Customer extends Auditable {
 
 	public String getPhone() {
 		return phone;
+	}
+
+	public String getPhoneLookup() {
+		return phoneLookup;
 	}
 
 	public String getAddress() {

@@ -14,6 +14,7 @@ import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.CustomerRepository;
 import com.serfira.contract.infrastructure.InstallmentRepository;
 import com.serfira.shared.audit.AuditContext;
+import com.serfira.shared.security.PiiHasher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -72,7 +73,8 @@ class ContractPersistenceIT {
 	@Transactional
 	void persistsAndReadsContractAggregateWithSchedule() {
 		Customer customer = customers.saveAndFlush(new Customer(
-				"Budi Santoso", "3171012501900001", "h".repeat(64), "08123456789", "Jakarta"));
+				"Budi Santoso", "3171012501900001", PiiHasher.hashNik("3171012501900001"),
+				"08123456789", PiiHasher.hashPhone("08123456789"), "Jakarta"));
 		Asset asset = assets.saveAndFlush(new Asset(
 				AssetType.MOTORCYCLE, "Honda", "Beat", null, "B1234XY"));
 
@@ -111,7 +113,8 @@ class ContractPersistenceIT {
 	@Test
 	void duplicatePeriodNumberIsRejectedByDatabase() {
 		Customer customer = customers.saveAndFlush(new Customer(
-				"Test One", "3201010101010001", "x".repeat(64), null, null));
+				"Test One", "3201010101010001", PiiHasher.hashNik("3201010101010001"),
+				"08120000001", PiiHasher.hashPhone("08120000001"), null));
 		Asset asset = assets.saveAndFlush(new Asset(AssetType.CAR, "Toyota", "Avanza", null, null));
 		Contract contract = contracts.saveAndFlush(new Contract(
 				"MF-202609-0002", customer, asset,
@@ -128,15 +131,18 @@ class ContractPersistenceIT {
 	@Test
 	void duplicateNikHashIsRejectedByDatabase() {
 		customers.saveAndFlush(new Customer(
-				"First", "3171012501900001", "same-hash", null, null));
+				"First", "3171012501900001", PiiHasher.hashNik("3171012501900001"),
+				"08120000002", PiiHasher.hashPhone("08120000002"), null));
 		assertThatThrownBy(() -> customers.saveAndFlush(new Customer(
-				"Second", "3171012501900002", "same-hash", null, null)))
+				"Second", "3171012501900001", PiiHasher.hashNik("3171012501900001"),
+				"08120000003", PiiHasher.hashPhone("08120000003"), null)))
 				.isInstanceOf(DataIntegrityViolationException.class);
 	}
 
 	@Test
 	void contractNumberMustBeUnique() {
-		Customer customer = new Customer("Test Two", "3201010101010002", "y".repeat(64), null, null);
+		Customer customer = new Customer("Test Two", "3201010101010002", PiiHasher.hashNik("3201010101010002"),
+				"08120000004", PiiHasher.hashPhone("08120000004"), null);
 		customers.saveAndFlush(customer);
 		Asset asset = assets.saveAndFlush(new Asset(AssetType.OTHER, "Samsung", "TV", null, null));
 
@@ -154,7 +160,8 @@ class ContractPersistenceIT {
 
 	@Test
 	void schemaEnforcesAssetPriceInvariant() {
-		Customer customer = customers.saveAndFlush(new Customer("Test Three", "3201010101010003", "z".repeat(64), null, null));
+		Customer customer = customers.saveAndFlush(new Customer("Test Three", "3201010101010003",
+				PiiHasher.hashNik("3201010101010003"), "08120000005", PiiHasher.hashPhone("08120000005"), null));
 		Asset asset = assets.saveAndFlush(new Asset(AssetType.MOTORCYCLE, "Yamaha", "Nmax", null, null));
 
 		// asset_price = 5,000,000 but principal + down_payment = 5,100,000 → CHECK violation.

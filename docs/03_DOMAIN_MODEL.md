@@ -27,9 +27,10 @@ JournalEntry 1 ─── n JournalLine
 | Field | Type | Keterangan |
 |---|---|---|
 | full_name | VARCHAR(120) | |
-| nik | VARCHAR(16) | encrypted at rest; plaintext tidak dipakai untuk uniqueness |
-| nik_hash | CHAR(64) | HMAC-SHA-256 normalized NIK using application secret, unique, index |
-| phone | VARCHAR(20) | |
+| nik | TEXT | AES-256-GCM ciphertext at rest (app-level converter, ADR-004); plaintext hanya eksis di memory saat entity aktif |
+| nik_hash | CHAR(64) | HMAC-SHA-256 normalized NIK using application secret, unique, index — satu-satunya key lookup NIK |
+| phone | TEXT | NOT NULL; AES-256-GCM ciphertext at rest; kontak collection utama |
+| phone_lookup | CHAR(64) | HMAC-SHA-256 normalized phone, unique (satu phone per customer), index — key lookup phone |
 | address | TEXT | |
 
 ### 1.2 Asset (barang yang dibiayai)

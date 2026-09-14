@@ -321,11 +321,14 @@ dengan angka bunga berjalan yang dihitung manual memakai konvensi ini.
 
 - `Customer.nik`, `phone`, `address`: **tidak dilog** dalam bentuk apapun (masking
   di logging interceptor — nik tampil sebagai `****1234` kalau terpaksa muncul di log).
-- Kolom `nik` di-encrypt at rest (application-level encryption via JPA
-  `AttributeConverter`, bukan pgcrypto di level DB, supaya key management ada di
-  aplikasi) — cukup didokumentasikan sebagai keputusan desain di README meski
-  implementasi penuh opsional untuk MVP.
-- `nik_hash` menyimpan HMAC-SHA-256 atas NIK yang sudah dinormalisasi menggunakan application secret. `nik_hash` yang dipakai untuk uniqueness/index; ciphertext NIK yang randomized tidak dipakai untuk uniqueness. Secret tidak disimpan di database.
+- Kolom `nik` **dan `phone`** di-encrypt at rest (application-level encryption via JPA
+  `AttributeConverter` AES-256-GCM, bukan pgcrypto di level DB, supaya key management ada di
+  aplikasi; lihat ADR-004). Envelope versi `v1:<base64(IV‖ciphertext|tag)>` disimpan di kolom
+  `TEXT`; plaintext hanya ada di memory entity saat lifecycle JPA.
+- `nik_hash` menyimpan HMAC-SHA-256 atas NIK yang sudah dinormalisasi menggunakan application secret. `nik_hash` yang dipakai untuk uniqueness/index; ciphertext random tidak dipakai untuk uniqueness. Secret tidak disimpan di database.
+- `phone_lookup` menyimpan HMAC-SHA-256 atas phone yang sudah dinormalisasi (trunk code `0…` → `62`), **unique** — aturan bisnis satu phone per customer (konsisten dengan form frontend yang mewajibkan no. telpon). Phone `NOT NULL`.
+- Pencarian nasabah by raw NIK/phone hanya melalui lookup service internal (`CustomerSearchService`): input dinormalisasi + di-HMAC di memory, query memakai lookup value; raw value tidak pernah menyentuh SQL/log/URL. Endpoint REST dari service ini **belum diekspos** — menunggu RBAC (default-deny, Sprint 6b) dan dicatat di matriks §3.4.
+- Kunci: env `SERFIRA_PII_ENCRYPTION_KEY` (32 byte) dan `SERFIRA_PII_HMAC_KEY` (≥32 byte), base64; startup gagal cepat bila kosong. Nilai dev/portofolio ada di `docker-compose.yml` dan `src/test/resources/application.properties` — bukan production value.
 - Endpoint yang mengembalikan data Customer di response envelope: field `nik`
   di-mask untuk role selain ADMIN_OPERASIONAL & FINANCE (mis. MANAJEMEN cuma lihat
   agregat, tidak perlu NIK penuh).

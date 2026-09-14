@@ -113,8 +113,9 @@ class BaselineSchemaIT {
 	void postedPaymentCannotReuseAPaymentIdempotencyKey() {
 		String firstPayment = """
 				with c as (
-					insert into customer (full_name, nik, nik_hash, created_at, updated_at)
-					values ('Test Customer 1', '3201010101010001', repeat('a', 64), clock_timestamp(), clock_timestamp())
+					insert into customer (full_name, nik, nik_hash, phone, phone_lookup, created_at, updated_at)
+					values ('Test Customer 1', 'dummy-nik-cipher-1', repeat('a', 64), 'dummy-phone-cipher-1', repeat('p', 64),
+						clock_timestamp(), clock_timestamp())
 					returning id
 				), a as (
 					insert into asset (asset_type, brand, model, created_at, updated_at)
@@ -141,6 +142,7 @@ class BaselineSchemaIT {
 		assertThatThrownBy(() -> jdbc.update(firstPayment
 				.replace("'PAY-X-0001'", "'PAY-X-0002'")
 				.replace("repeat('a', 64)", "repeat('b', 64)")
+				.replace("repeat('p', 64)", "repeat('q', 64)")
 				.replace("'MF-TEST-0001'", "'MF-TEST-0002'")))
 				.isInstanceOf(DataAccessException.class);
 
@@ -150,6 +152,7 @@ class BaselineSchemaIT {
 		jdbc.update(firstPayment
 				.replace("'PAY-X-0001'", "'PAY-X-0002'")
 				.replace("repeat('a', 64)", "repeat('b', 64)")
+				.replace("repeat('p', 64)", "repeat('q', 64)")
 				.replace("'MF-TEST-0001'", "'MF-TEST-0002'"));
 	}
 
@@ -157,8 +160,9 @@ class BaselineSchemaIT {
 	void settlementIdempotencyKeyIsUnique() {
 		String settlementInsert = """
 				with c as (
-					insert into customer (full_name, nik, nik_hash, created_at, updated_at)
-					values ('Test Customer 2', '3201010101010002', repeat('c', 64), clock_timestamp(), clock_timestamp())
+					insert into customer (full_name, nik, nik_hash, phone, phone_lookup, created_at, updated_at)
+					values ('Test Customer 2', 'dummy-nik-cipher-2', repeat('c', 64), 'dummy-phone-cipher-2', repeat('r', 64),
+						clock_timestamp(), clock_timestamp())
 					returning id
 				), a as (
 					insert into asset (asset_type, brand, model, created_at, updated_at)
@@ -194,6 +198,7 @@ class BaselineSchemaIT {
 				.replace("'SET-X-0001'", "'SET-X-0002'")
 				.replace("'Q-TEST-0001'", "'Q-TEST-0002'")
 				.replace("repeat('c', 64)", "repeat('d', 64)")
+				.replace("repeat('r', 64)", "repeat('s', 64)")
 				.replace("'MF-TEST-0003'", "'MF-TEST-0004'")))
 				.isInstanceOf(DataAccessException.class);
 	}
