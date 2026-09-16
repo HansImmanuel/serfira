@@ -6,6 +6,7 @@ package com.serfira.shared.error;
  */
 public enum ErrorCode {
 	VALIDATION_ERROR,
+	UNAUTHORIZED,
 	NOT_FOUND,
 	CONFLICT,
 	CONCURRENT_MODIFICATION,

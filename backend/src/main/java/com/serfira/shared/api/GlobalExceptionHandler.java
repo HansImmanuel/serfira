@@ -4,6 +4,7 @@ import com.serfira.shared.error.ApiError;
 import com.serfira.shared.error.ErrorCode;
 import com.serfira.shared.error.SerfiraException;
 import jakarta.persistence.OptimisticLockException;
+import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -19,7 +20,9 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.stream.Collectors;
 
@@ -45,6 +48,23 @@ public class GlobalExceptionHandler {
 		return error(HttpStatus.BAD_REQUEST, ApiError.of(ErrorCode.VALIDATION_ERROR, "Validation failed: " + details));
 	}
 
+	@ExceptionHandler(ConstraintViolationException.class)
+	public ResponseEntity<ApiResponse<Void>> handleConstraintViolation(ConstraintViolationException ex) {
+		return error(HttpStatus.BAD_REQUEST,
+				ApiError.of(ErrorCode.VALIDATION_ERROR, "Validation failed: " + ex.getMessage()));
+	}
+
+	@ExceptionHandler(HandlerMethodValidationException.class)
+	public ResponseEntity<ApiResponse<Void>> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
+		return error(HttpStatus.BAD_REQUEST,
+				ApiError.of(ErrorCode.VALIDATION_ERROR, "Request parameter validation failed"));
+	}
+
+	@ExceptionHandler(NoResourceFoundException.class)
+	public ResponseEntity<ApiResponse<Void>> handleNoResourceFound(NoResourceFoundException ex) {
+		return error(HttpStatus.NOT_FOUND, ApiError.of(ErrorCode.NOT_FOUND, "Resource not found"));
+	}
+
 	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
 	public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
 		return error(HttpStatus.BAD_REQUEST,
@@ -67,8 +87,8 @@ public class GlobalExceptionHandler {
 
 	/**
 	 * Method-level security denials (e.g. {@code @PreAuthorize}) thrown inside MVC handling reach this
-	 * advice. Filter-chain denials are resolved by Spring Security before MVC and need their own
-	 * authentication/authorization entry points (wired in the auth story, Sprint 6b).
+	 * advice. Filter-chain denials are resolved by Spring Security before MVC and return the same envelope
+	 * via the resource-server entry points in {@code ResourceServerSecurityConfiguration}.
 	 */
 	@ExceptionHandler(AccessDeniedException.class)
 	public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException ex) {

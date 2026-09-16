@@ -1,7 +1,7 @@
 # Technical Specification — Multifinance Loan Servicing Core System
 
 - Versi: 0.3 (reconciled + final pre-code review)
-- Stack: Java 21, Spring Boot 3, PostgreSQL 16, Flyway, Gradle, Testcontainers, Kafka (opsional Fase 3), Next.js 14 (frontend)
+- Stack: Java 21, Spring Boot 4.1.1, PostgreSQL 16, Flyway, Gradle, Testcontainers, Kafka (opsional Fase 3), Next.js 14 (frontend)
 
 ---
 

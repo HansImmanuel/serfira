@@ -7,8 +7,8 @@ import java.util.UUID;
  * Holder for the actor (application user) of the current unit of work.
  *
  * <p>Backed by a {@link ThreadLocal} so that parallel jobs / tests never leak actors. The default actor is
- * the seeded non-interactive {@code SYSTEM} user (Addendum §3.3). Once Spring Security is wired (Sprint 6b),
- * a request filter will bind the JWT principal via {@link #runAs(UUID, Runnable)}.
+ * the seeded non-interactive {@code SYSTEM} user (Addendum §3.3). {@code AuditActorBindingFilter} binds the
+ * JWT principal of authenticated requests via {@link #runAs(UUID, Runnable)}; background jobs run under SYSTEM.
  */
 public final class AuditContext {
 

@@ -5,7 +5,7 @@
 
 - Versi: 0.3 (reconciled + final pre-code review)
 - Status: Approved for development
-- Stack: Java 21 + Spring Boot 3 + PostgreSQL + Next.js (frontend)
+- Stack: Java 21 + Spring Boot 4.1.1 + PostgreSQL 16 + Next.js (frontend)
 
 ---
 

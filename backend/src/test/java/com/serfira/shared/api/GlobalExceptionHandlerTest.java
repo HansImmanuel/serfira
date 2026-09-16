@@ -6,8 +6,11 @@ import com.serfira.shared.error.ConflictException;
 import com.serfira.shared.error.NotFoundException;
 import com.serfira.shared.error.SerfiraException;
 import jakarta.persistence.OptimisticLockException;
+import jakarta.validation.ConstraintViolationException;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -15,6 +18,8 @@ import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.ErrorResponseException;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 
@@ -64,6 +69,39 @@ class GlobalExceptionHandlerTest {
 		assertThat(response.getStatusCode().value()).isEqualTo(400);
 		assertThat(response.getBody().error().code()).isEqualTo("VALIDATION_ERROR");
 		assertThat(response.getBody().error().message()).contains("amount");
+	}
+
+	@Test
+	void constraintViolationMapsTo400ValidationError() {
+		ConstraintViolationException ex = new ConstraintViolationException(
+				"nik must match \"[0-9]{16}\"", java.util.Set.of());
+
+		ResponseEntity<ApiResponse<Void>> response = handler.handleConstraintViolation(ex);
+
+		assertThat(response.getStatusCode().value()).isEqualTo(400);
+		assertThat(response.getBody().error().code()).isEqualTo("VALIDATION_ERROR");
+		assertThat(response.getBody().error().message()).contains("nik");
+	}
+
+	@Test
+	void handlerMethodValidationMapsTo400ValidationError() {
+		HandlerMethodValidationException ex = Mockito.mock(HandlerMethodValidationException.class);
+
+		ResponseEntity<ApiResponse<Void>> response = handler.handleHandlerMethodValidation(ex);
+
+		assertThat(response.getStatusCode().value()).isEqualTo(400);
+		assertThat(response.getBody().error().code()).isEqualTo("VALIDATION_ERROR");
+	}
+
+	@Test
+	void unknownResourceMapsTo404NotFound() {
+		NoResourceFoundException ex = new NoResourceFoundException(
+				HttpMethod.GET, "/api/v1/unknown", "No static resource /api/v1/unknown.");
+
+		ResponseEntity<ApiResponse<Void>> response = handler.handleNoResourceFound(ex);
+
+		assertThat(response.getStatusCode().value()).isEqualTo(404);
+		assertThat(response.getBody().error().code()).isEqualTo("NOT_FOUND");
 	}
 
 	@Test

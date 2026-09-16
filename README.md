@@ -78,8 +78,14 @@ adalah kredensial **lokal-dev saja**; override lewat `.env` untuk lingkungan lai
   memory, tidak pernah menyentuh SQL/log/URL. Endpoint REST-nya belum diekspos (menunggu RBAC).
 - Kunci wajib disediakan via environment; tanpa kunci aplikasi **tidak mau start**:
   ```
-  SERFIRA_PII_ENCRYPTION_KEY=<base64 32-byte key>
-  SERFIRA_PII_HMAC_KEY=<base64 >=32-byte key>
+  SERFIRA_SECURITY_PII_ENCRYPTION_KEY=<base64 32-byte key>
+  SERFIRA_SECURITY_PII_HMAC_KEY=<base64 >=32-byte key>
+
+Kunci signing JWT resource-server wajib juga via environment (HS256, default-deny,
+lihat ADR-005):
+  ```
+  SERFIRA_SECURITY_JWT_SECRET_BASE64=<base64 >=32-byte HS256 signing key>
+  ```
   ```
   Nilai dev/portofolio ada di `docker-compose.yml` (dan `src/test/resources/application.properties`
   untuk test) — **bukan production value**.

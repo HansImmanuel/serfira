@@ -6,6 +6,7 @@ import com.serfira.contract.application.CustomerSummary;
 import com.serfira.contract.domain.Customer;
 import com.serfira.contract.infrastructure.CustomerRepository;
 import com.serfira.shared.security.PiiHasher;
+import com.serfira.shared.security.PiiMasker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -96,11 +97,14 @@ class CustomerPiiIT {
 		// NIK with separators/whitespace resolves to the same customer.
 		CustomerSummary byNik = search.findByRawNik("3171 0125 0190 0001").orElseThrow();
 		assertThat(byNik.fullName()).isEqualTo("Budi Santoso");
-		assertThat(byNik.nik()).isEqualTo(RAW_NIK);
+		// H-3 policy: projections carry masked PII only — plaintext never crosses the API boundary.
+		assertThat(byNik.nik()).isEqualTo(PiiMasker.maskNik(RAW_NIK)).isEqualTo("3171********0001");
 
 		// Non-canonical phone spelling (+62, dashes) resolves identically.
 		CustomerSummary byPhone = search.findByRawPhone("+62 812-3456-789").orElseThrow();
-		assertThat(byPhone.phone()).isEqualTo(RAW_PHONE);
+		assertThat(byPhone.phone()).isEqualTo(PiiMasker.maskPhone(RAW_PHONE)).isEqualTo("6281*****789");
+		assertThat(byNik.nik()).doesNotContain(RAW_NIK);
+		assertThat(byPhone.phone()).doesNotContain(RAW_PHONE);
 	}
 
 	@Test

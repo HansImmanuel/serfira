@@ -502,11 +502,14 @@ Seed data ini harus tersedia setelah `docker-compose up` agar demo script (G5) b
 - Installment 7–36: PENDING/OVERDUE.
 - State ini memposisikan kontrak untuk demo **pelunasan dipercepat** (settlement) pada bulan ke-7.
 
-**Golden value installment #1:**
+**Golden value installment #1 (pinned by `EffectiveScheduleGoldenTest.demoContractBGoldenCase`):**
 - i = 0.0075, n = 36
-- A = 150.000.000 × 0.0075 × (1.0075^36) / ((1.0075^36) − 1) ≈ 4.801.482,xx
+- A = 150.000.000 × 0.0075 × (1.0075^36) / ((1.0075^36) − 1) = 4.769.959,90
+  (DECIMAL128 precision, rounding HALF_EVEN; the earlier draft value ≈ 4.801.482 was wrong — verified numerically and by the golden test)
 - bunga bulan 1 = 150.000.000 × 0.0075 = 1.125.000
-- pokok bulan 1 = A − 1.125.000
+- pokok bulan 1 = A − 1.125.000 = 3.644.959,90
+- Installment terakhir (36): pokok 4.734.451,45, bunga 35.508,39, total 4.769.959,84 (menyerap residual)
+- Σ pokok = 150.000.000,00; Σ bunga = 21.718.556,34
 
 ### 18.3 Seed User Demo
 

@@ -23,10 +23,12 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/serfira
       SPRING_DATASOURCE_USERNAME: serfira
       SPRING_DATASOURCE_PASSWORD: serfira_dev
-      # Local-development PII keys only — override via SERFIRA_PII_* or .env outside dev.
-      # Missing keys fail fast at startup (at-rest encryption has no plaintext fallback).
-      SERFIRA_PII_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
-      SERFIRA_PII_HMAC_KEY: YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=
+      # Local-development keys only — override via these variables or .env outside dev.
+      # Missing keys fail fast at startup (no plaintext/JWT fallback).
+      # Env names mirror the Spring properties (serfira.security.*) via relaxed binding.
+      SERFIRA_SECURITY_PII_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      SERFIRA_SECURITY_PII_HMAC_KEY: YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=
+      SERFIRA_SECURITY_JWT_SECRET_BASE64: c2VyZmlyYS1kZXYtb25seS1qd3Qtc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm
     ports:
       - "8080:8080"
     depends_on:

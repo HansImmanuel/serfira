@@ -48,6 +48,8 @@ dependencies {
 
 	// --- Test ---
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
+	// Boot 4 modularized test slices: MockMvc support lives in the webmvc test module.
+	testImplementation("org.springframework.boot:spring-boot-webmvc-test")
 	testImplementation("org.springframework.security:spring-security-test")
 	testImplementation("org.springframework.boot:spring-boot-testcontainers")
 	testImplementation("org.testcontainers:testcontainers-junit-jupiter:2.0.5")
