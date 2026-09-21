@@ -143,7 +143,9 @@ class AccountingInvariantsIT {
 	void readinessMigrationsV3ThroughV5AreAppliedOnCleanDatabase() {
 		List<String> versions = jdbc.queryForList(
 				"select version from flyway_schema_history where success order by installed_rank", String.class);
-		assertThat(versions).containsExactly("1", "2", "3", "4", "5");
+		// B5 added V6/V7 (planned_start_date, contract create safety); later migrations
+		// keep arriving, so assert V1–V5 applied in order instead of an exact list.
+		assertThat(versions).containsSubsequence("1", "2", "3", "4", "5");
 	}
 
 	@Test

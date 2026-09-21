@@ -22,7 +22,14 @@ Sprint 1 (schedule engine core) — **selesai** (golden FLAT/EFFECTIVE test hija
 - [x] B3 — Schedule engine EFFECTIVE/anuitas + edge guards (i=0, n=1)
 - [x] B4 — Due date calc (31→Feb 28/29, leap year) + test matrix tanggal
 
-Sprint 2+ (contract API, ledger posting, payment) belum dimulai.
+Sprint 2 (contract API & activation) — **selesai** (B5; lihat [ADR-006](docs/adr/ADR-006-contract-creation-and-activation.md) & [ADR-007](docs/adr/ADR-007-idempotent-contract-creation.md)):
+
+- [x] B5 — `POST /api/v1/contracts` (create DRAFT, `Idempotency-Key` wajib, customer/asset reuse by identity, duplicate-live-contract guard), `POST /api/v1/contracts/{id}/activate` (generate + persist jadwal tepat sekali, idempotent), `GET /api/v1/contracts` (paged, filter status, search `contract_no`/nama), `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`
+- [x] V6 — `contract.planned_start_date` (tanggal mulai yang diotor saat drafting; `start_date` effective dipin saat aktivasi, default = `planned_start_date`)
+- [x] V7 — `contract.idempotency_key` backstop + partial unique index `(customer_id, asset_id) WHERE status IN ('DRAFT','ACTIVE')` (invariant #18)
+- [ ] C-5 — update contract saat DRAFT: **deferred**
+
+Sprint 3+ (payment & ledger, penalty, settlement) belum dimulai.
 
 ## Arsitektur
 

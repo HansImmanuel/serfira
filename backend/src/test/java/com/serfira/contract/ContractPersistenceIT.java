@@ -81,7 +81,8 @@ class ContractPersistenceIT {
 		Contract contract = contracts.saveAndFlush(new Contract(
 				"MF-202609-0001", customer, asset,
 				new BigDecimal("20000000.00"), new BigDecimal("16000000.00"), new BigDecimal("4000000.00"),
-				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010")));
+				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010"),
+				LocalDate.of(2026, 1, 31), "it-idem-key-0001"));
 
 		for (int period = 1; period <= 12; period++) {
 			installments.saveAndFlush(new Installment(
@@ -94,6 +95,9 @@ class ContractPersistenceIT {
 		assertThat(reloaded.getAsset().getPlateNo()).isEqualTo("B1234XY");
 		assertThat(reloaded.getStatus()).isEqualTo(ContractStatus.DRAFT);
 		assertThat(reloaded.getStartDate()).isNull();
+		// ADR-006: a DRAFT carries the planned date only; the effective date is pinned at activation.
+		assertThat(reloaded.getPlannedStartDate()).isEqualTo(LocalDate.of(2026, 1, 31));
+		assertThat(reloaded.getIdempotencyKey()).isEqualTo("it-idem-key-0001");
 		assertThat(reloaded.getPrincipal()).isEqualByComparingTo("16000000.00");
 		assertThat(reloaded.getCreatedBy()).isEqualTo(AuditContext.SYSTEM_USER_ID);
 		assertThat(reloaded.getVersion()).isZero();
@@ -119,7 +123,8 @@ class ContractPersistenceIT {
 		Contract contract = contracts.saveAndFlush(new Contract(
 				"MF-202609-0002", customer, asset,
 				new BigDecimal("1000.00"), new BigDecimal("900.00"), new BigDecimal("100.00"),
-				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010")));
+				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010"),
+				LocalDate.of(2026, 2, 1), null));
 
 		installments.saveAndFlush(new Installment(
 				contract, 1, LocalDate.of(2026, 2, 28), new BigDecimal("75.00"), new BigDecimal("11.25")));
@@ -146,14 +151,20 @@ class ContractPersistenceIT {
 		customers.saveAndFlush(customer);
 		Asset asset = assets.saveAndFlush(new Asset(AssetType.OTHER, "Samsung", "TV", null, null));
 
+		// A distinct asset for the duplicate, so the failure can only come from uk_contract_no:
+		// reusing the first asset would also (correctly) trip the V7 live-asset index.
+		Asset secondAsset = assets.saveAndFlush(new Asset(AssetType.OTHER, "Samsung", "TV", null, null));
+
 		Contract first = new Contract("MF-202609-0003", customer, asset,
 				new BigDecimal("1000.00"), new BigDecimal("900.00"), new BigDecimal("100.00"),
-				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010"));
+				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010"),
+				LocalDate.of(2026, 2, 1), null);
 		contracts.saveAndFlush(first);
 
-		Contract duplicate = new Contract("MF-202609-0003", customer, asset,
+		Contract duplicate = new Contract("MF-202609-0003", customer, secondAsset,
 				new BigDecimal("500.00"), new BigDecimal("450.00"), new BigDecimal("50.00"),
-				12, InterestScheme.EFFECTIVE, new BigDecimal("0.0075"), 3, new BigDecimal("0.0010"));
+				12, InterestScheme.EFFECTIVE, new BigDecimal("0.0075"), 3, new BigDecimal("0.0010"),
+				LocalDate.of(2026, 2, 1), null);
 		assertThatThrownBy(() -> contracts.saveAndFlush(duplicate))
 				.isInstanceOf(DataIntegrityViolationException.class);
 	}
@@ -167,7 +178,8 @@ class ContractPersistenceIT {
 		// asset_price = 5,000,000 but principal + down_payment = 5,100,000 → CHECK violation.
 		Contract broken = new Contract("MF-202609-0004", customer, asset,
 				new BigDecimal("5000000.00"), new BigDecimal("5000000.00"), new BigDecimal("100000.00"),
-				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010"));
+				12, InterestScheme.FLAT, new BigDecimal("0.0150"), 3, new BigDecimal("0.0010"),
+				LocalDate.of(2026, 2, 1), null);
 		assertThatThrownBy(() -> contracts.saveAndFlush(broken))
 				.isInstanceOf(DataIntegrityViolationException.class);
 	}

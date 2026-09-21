@@ -26,6 +26,13 @@ Alasan snapshot, bukan live-reference: kalau rate global berubah, kontrak yang s
 berjalan tidak boleh ikut berubah retroaktif — ini juga jadi bagian dari audit trail
 kontrak (nilai apa yang berlaku saat kontrak itu hidup).
 
+**Klarifikasi B5 (ADR-006).** Kedua kolom ini `NOT NULL`, jadi baris DRAFT *wajib* membawa nilai:
+kontrak draft menyimpan snapshot **provisional** dari config yang berlaku saat drafting, dan
+**aktivasi mengambil snapshot ulang** pada tanggal aktivasi. Yang mengikat kontrak hidup adalah
+DM §1.3 ("snapshot config saat aktivasi"); selama DRAFT belum ada jadwal maupun denda, sehingga
+penulisan ulang ini tidak retroaktif. Snapshot mana yang berlaku diuji di
+`ContractActivationIT.activationSnapshotsTheConfigurationInForceAtActivationNotAtDrafting`.
+
 ### 1.2 Tabel baru: `system_parameter`
 | Field | Type | Keterangan |
 |---|---|---|
@@ -332,6 +339,10 @@ dengan angka bunga berjalan yang dihitung manual memakai konvensi ini.
 - Endpoint yang mengembalikan data Customer di response envelope: field `nik`
   di-mask untuk role selain ADMIN_OPERASIONAL & FINANCE (mis. MANAJEMEN cuma lihat
   agregat, tidak perlu NIK penuh).
+- **Proyeksi ter-mask juga yang disimpan untuk retry** (B5/ADR-007): `idempotency_keys.response_json`
+  memuat payload respons apa adanya, yang berarti hanya nilai ter-mask — bukan plaintext PII. Yang
+  tersimpan di `request_hash` adalah digest keyed (HMAC-SHA-256), bukan payload request, sehingga
+  PII tidak pernah ikut tersimpan demi idempotency.
 
 ---
 
@@ -448,6 +459,8 @@ Tambahkan tabel `penalty_adjustment` untuk waive/reduksi denda. Adjustment bersi
 
 Tabel baru: `document_number_counter`, `system_parameter`, `contract_credit`, `contract_credit_application`, `penalty_adjustment`, `settlement_quote`, `settlement`, `settlement_allocation`, `settlement_credit_application`, `app_user`, `refresh_token`, `idempotency_keys`, `reconciliation_exception`, `job_run`, `outbox_events`.
 Field baru di Customer: `nik_hash`. Field baru di Contract: `asset_price`, `grace_period_days`, `penalty_rate_daily`, `write_off_reason`, `write_off_recorded_by`.
+Field baru di Contract (B5, ADR-006/ADR-007): `planned_start_date` (V6) dan `idempotency_key` (V7).
+Index baru (B5, V7): `uq_contract_idempotency UNIQUE (idempotency_key) WHERE idempotency_key IS NOT NULL` (backstop retry safety) dan `uq_contract_live_asset UNIQUE (customer_id, asset_id) WHERE status IN ('DRAFT','ACTIVE')` (invariant 18).
 Akun COA baru: `TITIPAN_NASABAH`, `BIAYA_PENGHAPUSAN_PIUTANG`.
 Semua migration harus diterapkan via Flyway; tidak ada perubahan schema manual.
 

@@ -51,13 +51,14 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 
 ### 2.2 API
 - REST, base `/api/v1/...`.
-- Semua endpoint mutasi yang dapat di-retry menerima header `Idempotency-Key`; minimal wajib pada POST payment, settlement, dan credit application. Key bersifat endpoint-scoped.
+- Semua endpoint mutasi yang dapat di-retry menerima header `Idempotency-Key`; minimal wajib pada POST payment, settlement, dan credit application. Key bersifat endpoint-scoped. **B5 (ADR-007): POST `/contracts` juga mewajibkan header ini** — create kontrak tidak boleh menghasilkan kontrak kedua pada retry. Aktivasi tidak memakai key karena idempotent secara state machine (ADR-006).
 - Request/response envelope konsisten:
   ```json
   { "data": ..., "error": null }
   { "data": null, "error": { "code": "PAYMENT_NOT_FOUND", "message": "..." } }
   ```
-- Pagination: `page`, `size`, `sort`.
+- Pagination: `page`, `size`, `sort`. **B5:** token `sort` memakai nama field wire (snake_case): `created_at` (default, `desc`), `contract_no`, `status`; token lain ditolak `400 VALIDATION_ERROR`. Envelope halaman: `content`, `page`, `size`, `total_elements`, `total_pages`.
+- Penamaan JSON di wire adalah **snake_case** (`spring.jackson.property-naming-strategy=SNAKE_CASE`, ADR-006) agar konsisten dengan dokumen ini dan frontend spec. Nilai uang dikirim sebagai desimal biasa (`20000000.00`), bukan notasi ilmiah.
 - Error codes enum per-module.
 
 ### 2.3 Konkurensi & Transaksi
@@ -73,10 +74,11 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 
 ### 2.5 Idempotency
 - Tabel `idempotency_keys(key, endpoint, request_hash, response_json, status, created_at, expires_at, request_id)`.
-- `request_hash` = SHA-256 atas canonical JSON request + endpoint scope.
+- `request_hash` = digest keyed (HMAC-SHA-256 atas canonical JSON request + endpoint scope). Dokumen ini semula menyebut "SHA-256"; karena payload dapat memuat PII, implementasi B5 memakai HMAC keyed dari ADR-004 (ADR-007) — semantik kesamaan identik dan nilainya tidak reversible.
 - Request sama + key sama → return response tersimpan tanpa eksekusi ulang.
 - Request beda + key sama → 409 CONFLICT.
 - Key expired hanya boleh dibersihkan setelah retention policy; cleanup tidak boleh membuat retry lama diam-diam mengeksekusi transaksi baru.
+- **Implementasi B5 (ADR-007):** claim dilakukan dengan `INSERT … ON CONFLICT (endpoint, key) DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernilai `COMPLETED` setelah respons tersimpan, `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS` (config), dan mekanisme hidup di `com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup baris kedaluwarsa belum diimplementasikan (menyusul C3).
 
 ### 2.6 Authentication & Session
 - Password hash: Argon2id. Jangan simpan password plaintext.

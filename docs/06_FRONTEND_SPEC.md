@@ -173,8 +173,15 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 | Suku Bunga (% per bulan) | number | >= 0 |
 | Tanggal Mulai | date picker | required |
 
-**Submit:** `POST /contracts` → redirect ke `/contracts/[id]` (DRAFT state).
-**Note:** Status DRAFT, belum generate jadwal. Tombol Aktivasi ada di detail page.
+**Klarifikasi B5 (ADR-006):** field "Tanggal Mulai" dipetakan ke `planned_start_date`
+(tanggal yang diotor operator saat drafting). Effective `start_date` baru ter-pin saat
+aktivasi — default sama dengan `planned_start_date`.
+
+**Submit:** `POST /contracts` dengan header `Idempotency-Key` (**wajib** sejak B5,
+ADR-007 — lihat §1.4; retry dengan key sama me-replay respons create, bukan membuat
+kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
+**Note:** Status DRAFT, belum generate jadwal; `outstanding` = `null` pada DRAFT
+(tampilkan "–"). Tombol Aktivasi ada di detail page.
 
 ---
 
@@ -191,6 +198,12 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
 **Actions (ADMIN_OPERASIONAL only):**
 - DRAFT: tombol "Aktivasi" → `POST /contracts/{id}/activate` → konfirmasi dialog.
+  **Klarifikasi B5 (ADR-006):** dialog konfirmasi tidak memuat input tanggal;
+  BE memakai `planned_start_date` sebagai effective `start_date`. Body request
+  boleh membawa `start_date` opsional (untuk slip pencairan dengan tanggal efektif
+  berbeda), tapi UI standar tidak mengekspornya. Aktivasi tidak memakai
+  `Idempotency-Key` — repeat call pada kontrak yang sudah ACTIVE mengembalikan
+  representasi saat ini tanpa write (idempotent by state machine).
 - ACTIVE: tombol "Catat Pembayaran" → `/contracts/[id]/payments/new`.
 - ACTIVE: tombol "Pelunasan Dipercepat" → modal settlement flow.
 - ACTIVE: tombol "Write-off" → konfirmasi dialog + input reason.

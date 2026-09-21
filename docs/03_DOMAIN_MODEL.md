@@ -55,8 +55,10 @@ JournalEntry 1 ─── n JournalLine
 | interest_rate | NUMERIC(7,4) | rate per bulan, fraction desimal (1.5% = 0.0150) |
 | grace_period_days | INT | snapshot config saat aktivasi |
 | penalty_rate_daily | NUMERIC(7,4) | snapshot config saat aktivasi, fraction desimal |
-| start_date | DATE | tanggal aktivasi |
+| start_date | DATE | tanggal aktivasi (efektif); mengunci jadwal |
+| planned_start_date | DATE NULL | tanggal mulai yang diisi operator saat drafting (PRD C-1). Wajib di API create; nullable di kolom demi keamanan forward-only atas baris lama (ADR-006) |
 | status | ENUM(DRAFT, ACTIVE, CLOSED, TERMINATED) | |
+| idempotency_key | VARCHAR(80) NULL | key retry request create (TS §2.5, ADR-007); unique bila terisi, NULL untuk baris lama/fixture |
 | write_off_reason | TEXT NULL | diisi saat write-off |
 | write_off_recorded_by | FK app_user NULL | actor internal yang mencatat keputusan external write-off |
 | closed_at | TIMESTAMP NULL | diisi saat kontrak CLOSED |
@@ -67,6 +69,8 @@ JournalEntry 1 ─── n JournalLine
 - `asset_price = principal + down_payment`; `asset_price > 0`, `principal > 0`, `0 <= down_payment < asset_price`.
 - Interest/penalty rates `>= 0`, `tenor_months > 0`, `grace_period_days >= 0`.
 - Hanya boleh generate jadwal sekali; activation idempotent.
+- DRAFT hanya boleh membawa `planned_start_date`; `start_date` baru terisi saat aktivasi (dijaga V4). Aktivasi boleh menerima override tanggal efektif, default ke `planned_start_date` (ADR-006).
+- Asset yang dibiayai di-resolve berdasarkan identitasnya (`serial_no`, lalu `plate_no`) dan barisnya dipakai ulang; asset tanpa identitas tidak bisa di-deduplikasi (ADR-006).
 - `DRAFT → ACTIVE → CLOSED/TERMINATED`; setelah ACTIVE tidak boleh kembali DRAFT.
 - `ACTIVE → CLOSED` dapat terjadi karena `MATURITY` (seluruh installment resolved) atau `SETTLEMENT`; `ACTIVE → TERMINATED` hanya melalui write-off.
 - Saat maturity, contract boleh CLOSED walaupun masih ada `AVAILABLE` contract credit; credit menjadi liability terpisah dan refund flow berada di luar MVP.
@@ -239,6 +243,8 @@ BIAYA_PENGHAPUSAN_PIUTANG (EXPENSE)
 
 `idempotency_keys`: `key, endpoint, request_hash, response_json, status, created_at, expires_at, request_id`.
 
+Implementasi B5 (ADR-007): key bersifat endpoint-scoped (`(endpoint, key)` unique), claim dilakukan dengan `INSERT … ON CONFLICT DO NOTHING` di dalam transaksi bisnis, `request_hash` adalah digest keyed (HMAC-SHA-256) atas JSON canonical request, dan `response_json` menyimpan payload proyeksi ter-mask untuk direplay. `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS`. Cleanup baris kedaluwarsa belum diimplementasikan (menyusul story C3).
+
 `job_run`: `job_name, started_at, finished_at, records_processed, records_failed, status`.
 
 `reconciliation_exception`: `contract_id, check_date, check_type, expected_amount, actual_amount, diff_amount, status, resolved_note, resolved_by, resolved_at`.
@@ -252,9 +258,10 @@ BIAYA_PENGHAPUSAN_PIUTANG (EXPENSE)
 | POST | /api/v1/auth/login | login |
 | POST | /api/v1/auth/refresh | rotate refresh token |
 | POST | /api/v1/auth/logout | revoke refresh token |
-| POST | /api/v1/contracts | buat kontrak (DRAFT) |
-| PUT | /api/v1/contracts/{id} | update contract hanya DRAFT |
-| POST | /api/v1/contracts/{id}/activate | generate jadwal → ACTIVE |
+| POST | /api/v1/contracts | buat kontrak (DRAFT). Wajib header `Idempotency-Key` (TS §2.2/§2.5, ADR-007) |
+| PUT | /api/v1/contracts/{id} | update contract hanya DRAFT — **deferred** (PRD C-5), belum diimplementasikan |
+| POST | /api/v1/contracts/{id}/activate | generate jadwal → ACTIVE. Body opsional; `start_date` default ke `planned_start_date` |
+| GET | /api/v1/contracts | list + filter (`status`, `q`) + pagination (`page`, `size`, `sort`); `sort` memakai token snake_case `created_at`/`contract_no`/`status` |
 | GET | /api/v1/contracts/{id} | detail + outstanding |
 | GET | /api/v1/contracts/{id}/installments | jadwal angsuran |
 | POST | /api/v1/payments | terima pembayaran (Idempotency-Key wajib) |
@@ -289,6 +296,7 @@ BIAYA_PENGHAPUSAN_PIUTANG (EXPENSE)
 15. Write-off mengubah residual recognized receivable menjadi `WRITTEN_OFF` dan journal menurunkan receivable sesuai written-off amount.
 16. Payment yang source EXCESS credit-nya sudah diaplikasikan/refunded tidak boleh di-void pada MVP; void tersebut memerlukan flow reversal credit yang belum menjadi scope.
 17. Bila payment/credit application menyelesaikan seluruh installment suatu kontrak dan tidak ada unsettled installment lain, contract dapat auto-close dengan `closed_reason=MATURITY`; settlement mempunyai `closed_reason=SETTLEMENT`.
+18. Satu `(customer_id, asset_id)` hanya boleh punya satu kontrak *live* (DRAFT atau ACTIVE). Dibuat lewat guard aplikasi (`DUPLICATE_CONTRACT`) + partial unique index `uq_contract_live_asset` (V7); kontrak CLOSED/TERMINATED melepas asset sehingga refinancing tetap mungkin, dan asset yang sama boleh dibiayai nasabah lain setelahnya (ADR-006).
 
 ## 4. Contoh Skenario Data (untuk test & demo)
 

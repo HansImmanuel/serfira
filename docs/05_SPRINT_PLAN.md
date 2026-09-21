@@ -112,6 +112,10 @@ Story baru "done" kalau **semua** terpenuhi:
 **Goal:** Kontrak bisa dibuat dan diaktivasi; jadwal tersimpan konsisten. Update saat DRAFT (`C-5`) tetap deferred bila velocity tidak cukup.
 - B5 (3) + integration test activation idempotency + invariant #4 (2) = **5 pts**
 - **Exit:** PRD skenario #1 bisa dijalankan end-to-end via API + DB check. `C-5` hanya dianggap done bila story update DRAFT benar-benar diimplementasikan. Final installment/maturity close rule sudah tercakup pada payment resolution path.
+- **Status B5 — selesai (lihat ADR-006 & ADR-007):**
+  - `POST /contracts` (DRAFT create, header `Idempotency-Key` wajib), `POST /contracts/{id}/activate` (generate jadwal tepat sekali, idempotent by state machine), `GET /contracts` (paged + filter + search), `GET /contracts/{id}`, `GET /contracts/{id}/installments`.
+  - Migration `V6` (`planned_start_date`) + `V7` (`idempotency_key` backstop, partial unique `uq_contract_live_asset` — invariant #18: maksimal satu kontrak live per customer+asset).
+  - `C-5` (update DRAFT) **tetap deferred** — dibutuhkan untuk membetulkan DRAFT yang salah tanpa campur tangan ops.
 
 ### Sprint 3 — Payment & Ledger
 **Goal:** Uang masuk tercatat benar, allocation benar, double-submit aman.
