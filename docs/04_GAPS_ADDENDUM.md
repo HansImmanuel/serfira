@@ -455,6 +455,23 @@ Future scheduled interest yang belum recognized/billed tidak dihitung sebagai re
 ### 16.4 Penalty waiver audit
 Tambahkan tabel `penalty_adjustment` untuk waive/reduksi denda. Adjustment bersifat append-only dan memuat `installment_id`, `adjustment_type`, `amount`, `reason`, `approved_by`, serta audit fields. Adjustment menghasilkan jurnal penyesuaian. Effective outstanding penalty = accrual yang diakui − penalty allocation aktif − adjustment.
 
+### 16.5 Semantik alokasi pembayaran (C2)
+
+Gap: PRD §3 memuat urutan `denda → bunga → pokok` pada "angsuran paling jatuh tempo dahulu" dan skenario 4
+menyatakan excess tidak otomatis melunasi angsuran berikutnya, tetapi tidak pernah menyatakan **window**
+kelayakan (apakah angsuran yang belum jatuh tempo boleh dialokasikan) atau granularitas waterfall-nya.
+
+Keputusan (detail + alternatif di ADR-009):
+- Window = `due_date <= business date` pembayaran. Pembayaran yang datang sebelum due date pertama menjadi
+  EXCESS penuh (credit `TITIPAN_NASABAH`), dan baru boleh dikonsumsi setelah receivable-nya diakui (§2.1).
+- Waterfall per angsuran: tertua dahulu (`due_date`, tie-break `period_no`), di dalamnya `PENALTY → INTEREST → PRINCIPAL`.
+- Cap mengikuti trigger V3 (principal/recognized interest/effective penalty) dan `recognized_total − resolved_amount`.
+- `EXCESS` maksimal satu baris dan hanya bila sisa > 0; baris bernilai nol tidak pernah dibuat (invariant 6).
+- Konsekuensi yang disadari: PRD skenario 1 (lunas tepat waktu) baru penuh setelah C4 (billing/recognition)
+  ada, karena bunga hanya receivable setelah di-bill pada due date.
+
+---
+
 ## 17. Ringkasan perubahan skema (untuk Flyway migration)
 
 Tabel baru: `document_number_counter`, `system_parameter`, `contract_credit`, `contract_credit_application`, `penalty_adjustment`, `settlement_quote`, `settlement`, `settlement_allocation`, `settlement_credit_application`, `app_user`, `refresh_token`, `idempotency_keys`, `reconciliation_exception`, `job_run`, `outbox_events`.

@@ -144,9 +144,17 @@ class ResourceServerSecurityIT {
 		return signedJwt.serialize();
 	}
 
+	/**
+	 * Flips the last base64url character of the signature. The final character of a 32-byte HS256 signature
+	 * encodes only 4 significant bits plus 2 zero padding bits, so replacing it with 'A' (value 0) leaves the
+	 * decoded signature byte-identical whenever the original character is 'A', 'B', 'C', or 'D' (all of which
+	 * share the 0000 nibble) — the token would stay valid and the test would fail with 200 instead of 401.
+	 * 'E' is used in that case, because its nibble differs.
+	 */
 	private String tamperSignature(String token) {
 		String[] parts = token.split("\\.");
-		char flipped = parts[2].charAt(parts[2].length() - 1) == 'A' ? 'B' : 'A';
+		char last = parts[2].charAt(parts[2].length() - 1);
+		char flipped = (last >= 'A' && last <= 'D') ? 'E' : 'A';
 		return parts[0] + "." + parts[1] + "." + parts[2].substring(0, parts[2].length() - 1) + flipped;
 	}
 }

@@ -128,6 +128,15 @@ Story baru "done" kalau **semua** terpenuhi:
   - `entry_date` (tanggal bisnis event) vs `posted_at` (Clock) final saat insert; `journal_line.entry_date` denormalisasi.
   - **Tanpa migrasi** (skema V1 sudah lengkap) dan tanpa unique index baru — guard duplicate ada di aplikasi karena setiap event sudah punya guard DB sendiri (alasan lengkap di ADR-008).
   - Test: 38 test baru (unit domain: bentuk/balance/amount/normalisasi akun; IT Testcontainers: commit-time balance, rollback bersama, posting tanpa transaksi, guard duplicate, reversal, actor dari `AuditContext`, parity COA, FK backstop, aktivasi end-to-end).
+- **Status C2 — selesai (lihat ADR-009):**
+  - Modul `payment` pertama: `com.serfira.payment.domain.AllocationType` + engine murni di `domain/allocation` (`PaymentAllocationEngine` beserta value object `InstallmentAllocationInput`, `AllocationLine`, `AllocationResult`). Tanpa Spring/JPA/DB — `businessDate` adalah parameter, jadi deterministik di test.
+  - **Window kelayakan = angsuran yang sudah jatuh tempo** (`due_date <= business date`); angsuran masa depan tidak pernah disentuh, sisanya menjadi satu baris `EXCESS` (credit nasabah). Pembayaran sebelum due date pertama = EXCESS penuh (keputusan produk, Addendum §16.5).
+  - Waterfall per angsuran tertua dahulu (`due_date`, tie-break `period_no`), di dalamnya `PENALTY → INTEREST → PRINCIPAL`; cap per komponen identik trigger V3 + batas `recognized_total − resolved_amount` (invariant 3), sehingga alokasi yang lolos engine tidak gagal di COMMIT.
+  - `Σ baris = payment amount` (invariant 6) dan `EXCESS ⟺ installmentRef null` dijaga di domain; baris bernilai nol tidak pernah dibuat. Tanpa rounding (skala 2, `setRoundingMode.UNNECESSARY`).
+  - Engine hanya mengembalikan angka: `status`/`paid_at` installment tetap milik modul `contract` (C3).
+  - **Tanpa migrasi** (DDL `payment`/`payment_allocation` sudah ada di V1; trigger V3 sudah ada) dan tanpa perubahan API/OpenAPI.
+  - Test: unit test murni (`PaymentAllocationEngineTest` 20+ skenario termasuk golden angka demo Addendum §18.1, plus test value object/guard). Sisi DB invariant 6 sudah diuji `AccountingInvariantsIT`; write path (entity, transaksi, idempotency, jurnal) adalah C3.
+  - ⚠️ Catatan untuk C3: `recognized_interest_amount`/`penalty_amount` harus di-seed lewat SQL di IT sampai C4 (billing/recognition) ada — bunga baru receivable setelah di-bill pada due date.
 
 ### Sprint 4 — Penalty, Aging & Phase-1 Close
 **Goal:** Sistem hidup dengan denda dan aging harian yang bisa diaudit.

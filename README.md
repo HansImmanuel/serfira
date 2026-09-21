@@ -32,7 +32,7 @@ Sprint 2 (contract API & activation) — **selesai** (B5; lihat [ADR-006](docs/a
 Sprint 3 (payment & ledger) — **berjalan** (C1 selesai; lihat [ADR-008](docs/adr/ADR-008-ledger-posting-semantics.md)):
 
 - [x] C1 — Modul `ledger`: entity immutable `journal_entry`/`journal_line` (`ImmutableAuditable`), `LedgerPostingService` (`MANDATORY`, guard satu entry non-reversal per `(ref_type, ref_id)`), vocabulary `LedgerRefType`, akun type-safe `LedgerAccount`, dan jurnal disbursement (`PIUTANG_POKOK`/`KAS`) yang diposting di transaksi aktivasi kontrak
-- [ ] C2 — Allocation engine (denda → bunga → pokok, oldest first) + 20 skenario test
+- [x] C2 — Allocation engine murni di modul `payment`: denda → bunga → pokok, angsuran jatuh tempo tertua dahulu (hanya `due_date <= business date`), cap identik trigger V3, satu baris `EXCESS` untuk kelebihan; test 20+ skenario + guard value object (lihat [ADR-009](docs/adr/ADR-009-allocation-engine-semantics.md))
 - [ ] C3 — `POST /api/v1/payments` + `Idempotency-Key` + double-post test
 
 Sprint 4+ (billing/recognition, statement, penalty, settlement) belum dimulai.

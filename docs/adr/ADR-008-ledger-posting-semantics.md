@@ -92,8 +92,15 @@ Yang belum pernah diputuskan adalah perilakunya:
 - **Unique index partial `(ref_type, ref_id) WHERE reversal_of_id IS NULL` di C1.** Ditunda (Decision 5).
 - **Membiarkan `journal_entry` memakai `Auditable` (dengan `updated_at`/`updated_by`).** Ditolak: kolom
   tersebut memang NULL untuk tabel append-only (komentar V1), dan menulis audit update pada baris yang tidak
-  mungkin di-update akan menyesatkan pembaca schema. Dipakai `ImmutableAuditable` (shared) yang juga
-  dibutuhkan tabel append-only lain (`payment_allocation`, `penalty_adjustment`, …).
+  mungkin di-update akan menyesatkan pembaca schema. Dipakai `ImmutableAuditable` (shared) — **khusus
+  `journal_entry`/`journal_line`**, satu-satunya tabel yang di V1 punya `updated_at TIMESTAMPTZ NULL`.
+- **Klaim awal C1 bahwa tabel append-only lain juga butuh `ImmutableAuditable` — dikoreksi saat C2.** Tabel
+  `payment_allocation` dan `penalty_adjustment` (juga `settlement_allocation`,
+  `contract_credit_application`) memakai `updated_at TIMESTAMPTZ **NOT NULL**` di V1, sehingga entity-nya
+  **wajib** extends `Auditable` (yang mengisi `updated_at`/`updated_by` saat persist). `ImmutableAuditable`
+  tidak pernah mengisi kolom itu, jadi insert-nya akan ditolak database. "Append-only" pada tabel-tabel
+  tersebut berarti tidak ada UPDATE/DELETE secara bisnis (histori tetap tersimpan), bukan berarti tidak
+  memiliki kolom audit update seperti `journal_*`.
 - **Kode akun sebagai string biasa di posting rule.** Ditolak: typo hanya ketahuan sebagai FK error di commit;
   enum membuat kesalahan akun mustahil secara compile-time.
 - **Membuat entity `Account` + repository di C1.** Ditolak: belum ada yang membacanya (reporting/reconciliation

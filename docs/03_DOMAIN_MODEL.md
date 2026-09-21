@@ -174,6 +174,13 @@ Quote component snapshot bersifat immutable; `status` boleh berubah `QUOTED → 
 
 Allocation row bersifat append-only. Setelah payment VOIDED, allocation lama tetap menjadi histori dan tidak lagi dihitung sebagai active allocation.
 
+**Semantik mesin alokasi (C2, ADR-009):**
+- **Ambang kelayakan:** hanya installment dengan `due_date <= business date` pembayaran yang dapat dialokasikan; saldo installment masa depan tidak pernah disentuh, dan sisanya menjadi **satu** baris `EXCESS` (credit nasabah, PRD P-4, Addendum §2).
+- **Urutan:** installment paling tua (`due_date`, tie-break `period_no`) dahulu; di dalam satu installment `PENALTY → INTEREST → PRINCIPAL`; lanjut ke installment berikutnya hanya setelah kapasitas installment tersebut habis.
+- **Cap per komponen** sama dengan trigger deferred V3: `PRINCIPAL <= principal_amount`, `INTEREST <= recognized_interest_amount` (bunga terjadwal yang belum recognized tidak dapat dialokasikan), `PENALTY <= penalty_amount − Σ penalty_adjustment`; total per installment dibatasi `recognized_total − resolved_amount` (invariant 3).
+- **`amount > 0` selalu:** baris bernilai nol tidak dibuat, dan `EXCESS` hanya ada bila sisa > 0 (maksimal satu baris, `installment_id IS NULL`). Σ seluruh baris = `payment.amount` (invariant 6).
+- **Mesin hanya mengembalikan angka.** `status`/`paid_at` installment diturunkan modul `contract`, bukan modul `payment`.
+
 ### 1.9 PenaltyAccrual
 | Field | Type | Keterangan |
 |---|---|---|
