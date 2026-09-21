@@ -24,6 +24,9 @@ com.serfira
 
 Aturan dependency:
 - `payment`, `penalty`, `settlement` boleh bergantung ke `ledger` (posting jurnal).
+- `contract` juga boleh bergantung ke `ledger` (ADR-008): aktivasi mem-posting jurnal disbursement di transaksi
+  yang sama, sehingga piutang yang dibuat jadwal langsung tercatat sebagai receivable. Edge ini satu arah —
+  `ledger` tetap tidak tahu modul lain.
 - `ledger` tidak boleh bergantung ke module lain (paling dasar).
 - `reporting` boleh baca semua (read-only).
 

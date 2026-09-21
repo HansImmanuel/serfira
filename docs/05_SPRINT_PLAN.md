@@ -53,7 +53,7 @@ Story baru "done" kalau **semua** terpenuhi:
 | C1: Ledger entity + posting service + balance invariant test | 5 | TS §3, L-1, L-2 |
 | C2: Allocation engine (denda→bunga→pokok, oldest first) + 20 skenario test | 5 | P-2, P-3 |
 | C3: API POST /payments + Idempotency-Key + double-post test | 5 | P-1, TS §2.5 |
-| C4: Posting rule + billing/recognition: terima angsuran, aktivasi/disburse, bunga due-date | 2 | TS §3, Addendum §12, L-1 |
+| C4: Posting rule + billing/recognition: terima angsuran, ~~aktivasi/disburse~~, bunga due-date | 2 | TS §3, Addendum §12, L-1 |
 | C5: Statement endpoint (rekening koran) | 2 | DM §2 |
 
 ### Epic D — Penalty & Aging (Fase 1)
@@ -121,6 +121,13 @@ Story baru "done" kalau **semua** terpenuhi:
 **Goal:** Uang masuk tercatat benar, allocation benar, double-submit aman.
 - C1 (5), C2 (5), C3 (5) = **15 pts**
 - **Exit:** skenario payment normal/partial + idempotency lolos; late-payment allocation dapat diuji dengan penalty yang sudah di-recognize.
+- **Status C1 — selesai (lihat ADR-008):**
+  - Modul `ledger` (domain/application/infrastructure): `JournalEntry`/`JournalLine` immutable di atas `ImmutableAuditable` baru, `LedgerPosting`/`LedgerPostingLine` (invariant bentuk + Σ debit = Σ kredit di domain), `LedgerRefType`, `LedgerAccount` (10 akun DM §1.12), `LedgerPostingService`.
+  - Posting `MANDATORY` di transaksi pemanggil + guard satu entry non-reversal per `(ref_type, ref_id)`; reversal (`reversal_of_id`) dikecualikan untuk E4.
+  - **Jurnal disbursement diposting saat aktivasi kontrak** (`PIUTANG_POKOK` debit / `KAS` kredit, TS §3) sehingga invariant 13 tidak lahir dengan exception; edge `contract → ledger` diresmikan di TS §1. `aktivasi/disburse` karena itu dicoret dari C4.
+  - `entry_date` (tanggal bisnis event) vs `posted_at` (Clock) final saat insert; `journal_line.entry_date` denormalisasi.
+  - **Tanpa migrasi** (skema V1 sudah lengkap) dan tanpa unique index baru — guard duplicate ada di aplikasi karena setiap event sudah punya guard DB sendiri (alasan lengkap di ADR-008).
+  - Test: 38 test baru (unit domain: bentuk/balance/amount/normalisasi akun; IT Testcontainers: commit-time balance, rollback bersama, posting tanpa transaksi, guard duplicate, reversal, actor dari `AuditContext`, parity COA, FK backstop, aktivasi end-to-end).
 
 ### Sprint 4 — Penalty, Aging & Phase-1 Close
 **Goal:** Sistem hidup dengan denda dan aging harian yang bisa diaudit.

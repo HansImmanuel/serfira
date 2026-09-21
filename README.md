@@ -29,7 +29,13 @@ Sprint 2 (contract API & activation) — **selesai** (B5; lihat [ADR-006](docs/a
 - [x] V7 — `contract.idempotency_key` backstop + partial unique index `(customer_id, asset_id) WHERE status IN ('DRAFT','ACTIVE')` (invariant #18)
 - [ ] C-5 — update contract saat DRAFT: **deferred**
 
-Sprint 3+ (payment & ledger, penalty, settlement) belum dimulai.
+Sprint 3 (payment & ledger) — **berjalan** (C1 selesai; lihat [ADR-008](docs/adr/ADR-008-ledger-posting-semantics.md)):
+
+- [x] C1 — Modul `ledger`: entity immutable `journal_entry`/`journal_line` (`ImmutableAuditable`), `LedgerPostingService` (`MANDATORY`, guard satu entry non-reversal per `(ref_type, ref_id)`), vocabulary `LedgerRefType`, akun type-safe `LedgerAccount`, dan jurnal disbursement (`PIUTANG_POKOK`/`KAS`) yang diposting di transaksi aktivasi kontrak
+- [ ] C2 — Allocation engine (denda → bunga → pokok, oldest first) + 20 skenario test
+- [ ] C3 — `POST /api/v1/payments` + `Idempotency-Key` + double-post test
+
+Sprint 4+ (billing/recognition, statement, penalty, settlement) belum dimulai.
 
 ## Arsitektur
 

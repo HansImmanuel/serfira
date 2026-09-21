@@ -93,7 +93,44 @@ class AuditSupportTest {
 		assertThat(c.now().getOffset()).isEqualTo(ZoneOffset.ofHours(7));
 	}
 
+	@Test
+	void immutableCreateFillsOnlyTheCreationFieldsFromClockAndActor() {
+		AuditSupport.configure(clock, auditContext);
+
+		TestImmutableAuditable entity = new TestImmutableAuditable();
+		auditContext.runAs(ACTOR_A, () -> AuditSupport.onCreate(entity));
+
+		assertThat(entity.getCreatedAt()).isEqualTo(clock.now());
+		assertThat(entity.getCreatedBy()).isEqualTo(ACTOR_A);
+	}
+
+	@Test
+	void immutableCreateDefaultsActorToSystemUser() {
+		AuditSupport.configure(clock, auditContext);
+
+		TestImmutableAuditable entity = new TestImmutableAuditable();
+		AuditSupport.onCreate(entity);
+
+		assertThat(entity.getCreatedBy()).isEqualTo(SYSTEM);
+		assertThat(entity.getCreatedAt()).isEqualTo(clock.now());
+	}
+
+	@Test
+	void immutableCreateKeepsAnExplicitlySetActor() {
+		AuditSupport.configure(clock, auditContext);
+		TestImmutableAuditable entity = new TestImmutableAuditable();
+		entity.createdBy = ACTOR_B;
+
+		auditContext.runAs(ACTOR_A, () -> AuditSupport.onCreate(entity));
+
+		assertThat(entity.getCreatedBy()).isEqualTo(ACTOR_B);
+	}
+
 	/** Minimal entity for exercising the audit callbacks. */
 	static class TestAuditable extends Auditable {
+	}
+
+	/** Minimal append-only entity: creation audit only, no update path (ADR-008). */
+	static class TestImmutableAuditable extends ImmutableAuditable {
 	}
 }

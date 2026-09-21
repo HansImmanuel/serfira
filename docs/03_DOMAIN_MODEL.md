@@ -230,6 +230,14 @@ BIAYA_PENGHAPUSAN_PIUTANG (EXPENSE)
 ### 1.13 JournalEntry / JournalLine
 `JournalEntry` mempunyai `reversal_of_id` (self FK, nullable). `JournalEntry` dan `JournalLine` immutable: tidak boleh UPDATE/DELETE; koreksi memakai journal reversal baru.
 
+Semantik posting (implementasi C1, ADR-008):
+- **Satu journal entry per event finansial**, minimal 2 baris. Event diidentifikasi `(ref_type, ref_id)`.
+- `ref_type` = `LedgerRefType`: `CONTRACT_ACTIVATION`, `PAYMENT`, `BILLING`, `PENALTY_ACCRUAL`, `PENALTY_WAIVER`, `CREDIT_APPLICATION`, `SETTLEMENT`, `WRITE_OFF`. Kolom VARCHAR(40) tanpa CHECK, sehingga menambah nilai tidak butuh migrasi.
+- **Reversal** memakai `ref_type`/`ref_id` milik event aslinya dan ditandai `reversal_of_id`, jadi kedua sisi pengoreksian mengelompok pada satu `(ref_type, ref_id)`.
+- `entry_date` = **tanggal bisnis** event (zone Asia/Jakarta; aktivasi memakai `start_date`, payment memakai `paid_at`, billing memakai `due_date`, penalty memakai `accrual_date`). `posted_at` = waktu pencatatan dari `Clock`. Keduanya final saat insert, dan `journal_line.entry_date` adalah denormalisasi dari entry (agar index `(account_code, entry_date)` terlayani).
+- `journal_line.contract_id` diisi untuk entry yang menyangkut satu kontrak; dipakai reconciliation receivable-vs-installment (Addendum §7.1, check C).
+- Posting tidak pernah membulatkan nilai: amount harus tepat skala 2. Guard `(ref_type, ref_id)` mencegah event yang sama di-posting dua kali, kecuali entry reversal. `LedgerPostingService` berjalan `MANDATORY` di transaksi pemanggil, sehingga jurnal dan business write-nya commit/rollback bersama.
+
 ### 1.14 Business Number Counter
 `document_number_counter`: `id UUID PK`, `counter_key UNIQUE`, `last_value INT`, plus audit fields. Counter di-increment secara transactional dengan row lock; numbering tidak dijamin gapless setelah rollback. Format business numbers dijelaskan di Tech Spec.
 

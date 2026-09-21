@@ -121,3 +121,7 @@ implementation:
   full-NIK response variant remain Sprint 6b (F3). PII is masked through `CustomerSummary`.
 - Ledger posting for activation/disbursement (story C1) and billing/recognition (C4) are unchanged
   and still pending: activation writes contract state + schedule only, as recorded in the sprint log.
+- **Update 2026-09-21 (C1, ADR-008):** the activation/disbursement journal is now posted inside the
+  activation transaction (`PIUTANG_POKOK` debit / `KAS` credit, TS §3), so the receivable exists in the
+  ledger from activation. The `contract → ledger` edge is recorded in TS §1 and ADR-008; billing/recognition
+  remains C4.

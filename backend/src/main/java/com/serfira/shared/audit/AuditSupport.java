@@ -62,6 +62,19 @@ public final class AuditSupport {
 		entity.updatedBy = currentActor();
 	}
 
+	/**
+	 * Fills the creation audit fields of an append-only row. There is intentionally no update path:
+	 * the table blocks UPDATE at the database level, so a posted row records only who created it and when.
+	 */
+	static void onCreate(ImmutableAuditable entity) {
+		if (entity.createdAt == null) {
+			entity.createdAt = clock.now();
+		}
+		if (entity.createdBy == null) {
+			entity.createdBy = currentActor();
+		}
+	}
+
 	private static UUID currentActor() {
 		return auditContext == null ? AuditContext.SYSTEM_USER_ID : auditContext.actorId();
 	}

@@ -18,6 +18,12 @@ import com.serfira.contract.infrastructure.ContractInstallmentTotals;
 import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.CustomerRepository;
 import com.serfira.contract.infrastructure.InstallmentRepository;
+import com.serfira.ledger.application.LedgerPostingService;
+import com.serfira.ledger.domain.LedgerAccount;
+import com.serfira.ledger.domain.LedgerPosting;
+import com.serfira.ledger.domain.LedgerPostingLine;
+import com.serfira.ledger.domain.LedgerRefType;
+import com.serfira.shared.clock.Clock;
 import com.serfira.shared.config.SystemParameterKeys;
 import com.serfira.shared.config.SystemParameterService;
 import com.serfira.shared.document.DocumentNumberGenerator;
@@ -39,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -47,6 +54,9 @@ import java.util.UUID;
 /**
  * Contract use cases that mutate state: create a DRAFT (PRD C-1) and activate it, generating the
  * schedule exactly once (PRD C-2). One transaction per use case.
+ *
+ * <p>Activation is also the point where money movement starts: it posts the disbursement journal through
+ * the {@code ledger} module's application service in the same transaction (TS §3, ADR-008).
  */
 @Service
 public class ContractCommandService {
@@ -79,10 +89,13 @@ public class ContractCommandService {
 	private final DocumentNumberGenerator documentNumbers;
 	private final SystemParameterService systemParameters;
 	private final IdempotencyService idempotency;
+	private final LedgerPostingService ledger;
+	private final Clock clock;
 
 	public ContractCommandService(ContractRepository contracts, CustomerRepository customers, AssetRepository assets,
 			InstallmentRepository installments, DocumentNumberGenerator documentNumbers,
-			SystemParameterService systemParameters, IdempotencyService idempotency) {
+			SystemParameterService systemParameters, IdempotencyService idempotency,
+			LedgerPostingService ledger, Clock clock) {
 		this.contracts = contracts;
 		this.customers = customers;
 		this.assets = assets;
@@ -90,6 +103,8 @@ public class ContractCommandService {
 		this.documentNumbers = documentNumbers;
 		this.systemParameters = systemParameters;
 		this.idempotency = idempotency;
+		this.ledger = ledger;
+		this.clock = clock;
 	}
 
 	/**
@@ -120,6 +135,10 @@ public class ContractCommandService {
 	 * start date, or a CLOSED/TERMINATED contract, is 409 {@code CONTRACT_STATE_INVALID}. The
 	 * {@code (contract_id, period_no)} unique constraint and the {@code @Version} lock keep a
 	 * concurrent double activation from writing two schedules.
+	 *
+	 * <p>On the DRAFT → ACTIVE transition it also posts the disbursement entry
+	 * ({@code PIUTANG_POKOK} debit / {@code KAS} credit, TS §3) for the principal, so the receivable that
+	 * the schedule represents exists in the ledger from the first moment it is collectible (ADR-008).
 	 *
 	 * @param requestedStartDate optional override; {@code null} means "use planned_start_date"
 	 */
@@ -156,9 +175,27 @@ public class ContractCommandService {
 		installments.saveAll(schedule);
 		installments.flush();
 
+		// Disbursement journal (TS §3 "Aktivasi kontrak (disburse)"): activation creates the receivable and
+		// pays the cash out, so the money movement is recorded in this same transaction (ADR-008). The
+		// idempotent repeat above returns before this point, so an already ACTIVE contract never double-posts.
+		ledger.post(LedgerPosting.of(LedgerRefType.CONTRACT_ACTIVATION, contractId,
+				activationEntryDate(effectiveStartDate), "Disbursement of " + contract.getContractNo(), List.of(
+						LedgerPostingLine.debit(LedgerAccount.PIUTANG_POKOK, contract.getPrincipal(), contractId),
+						LedgerPostingLine.credit(LedgerAccount.KAS, contract.getPrincipal(), contractId))));
+
 		LOGGER.info("Activated contract {} (id={}, installments={})",
 				contract.getContractNo(), contractId, schedule.size());
 		return ContractResponse.from(contract, outstandingOf(contractId));
+	}
+
+	/**
+	 * Business date of the activation entry: the effective start date at the start of the Serfira business
+	 * day (Asia/Jakarta), so the accounting date is the contractual date instead of the wall-clock time of
+	 * the click (ADR-008). {@code posted_at} still comes from the application clock inside the posting
+	 * service.
+	 */
+	private OffsetDateTime activationEntryDate(LocalDate startDate) {
+		return startDate.atStartOfDay(clock.zone()).toOffsetDateTime();
 	}
 
 	private ContractResponse persistDraftContract(String idempotencyKey, CreateContractRequest request) {
