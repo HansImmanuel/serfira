@@ -56,10 +56,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * <p>The suite requests are real commits (MockMvc, no test transaction), so the deferred V3 invariant
  * triggers run exactly where they do in production — including for the payment's own allocations.
  *
- * <p>Interest is <b>only receivable once billed</b> (TS §3/§5, Addendum §12) and billing is story C4, so
- * the suites that need billed interest or accrued penalty seed those columns with SQL, as C2 announced
- * (see {@code 05_SPRINT_PLAN.md} &quot;Catatan untuk C3&quot;). A fresh schedule therefore has
- * principal-only capacity.
+ * <p>Interest is <b>only receivable once billed</b> (TS §3/§5, Addendum §12) and since C4 the payment path
+ * bills the contract's due installments inside its own transaction (ADR-011), so a payment received on a
+ * due date resolves interest with no seeding at all — that is PRD scenario 1. Only the daily penalty
+ * accrual (story D1) is still seeded with SQL, exactly as before.
  */
 @Import({TestcontainersConfiguration.class, PaymentClockTestConfiguration.class})
 @SpringBootTest
@@ -131,8 +131,8 @@ class PaymentApiIT {
 
 	@Test
 	void aFullPaymentOfADueInstallmentResolvesItAndPostsTheJournal() throws Exception {
-		billInterest(1);
-
+		// No seeding: PRD scenario 1 — the payment itself bills the installment's due interest first, so the
+		// full period amount resolves interest and principal.
 		MvcResult result = pay("full-period-1", PERIOD_TOTAL);
 
 		assertThat(result.getResponse().getStatus()).isEqualTo(201);
@@ -162,10 +162,27 @@ class PaymentApiIT {
 		assertThat(decimalOf(installment, "paid_amount")).isEqualByComparingTo(PERIOD_TOTAL);
 		assertThat(installment.get("status")).isEqualTo("PAID");
 		assertThat(installment.get("paid_at")).isNotNull();
-		assertThat((Long) installment.get("version")).isEqualTo(1L);
+		// Two writes touch the row: the billing step's recognition, then the resolution of this payment.
+		assertThat((Long) installment.get("version")).isEqualTo(2L);
 		// Nothing else was touched: a future installment keeps its balance (PRD skenario 4 / ADR-009).
 		assertThat(decimalOf(installmentRow(2), "paid_amount")).isEqualByComparingTo("0.00");
 		assertThat(installmentRow(2).get("status")).isEqualTo("PENDING");
+
+		// Its interest was recognized by the billing step this use case runs (C4/ADR-011): one BILLING entry
+		// per billed installment, with the installment's due date as the accounting date.
+		UUID billingEntryId = billingEntryOf(1);
+		// The accounting date is the installment's due date at the start of the business day, not the moment
+		// the step ran (DM §1.13, ADR-008); comparing instants keeps the assertion independent of the zone
+		// the driver renders a timestamptz in.
+		assertThat(jdbc.queryForObject("select entry_date from journal_entry where id = ?",
+				OffsetDateTime.class, billingEntryId).toInstant())
+				.isEqualTo(LocalDate.of(2026, 2, 28).atStartOfDay(clock.zone()).toInstant());
+		assertThat(debitByAccount(billingEntryId))
+				.containsOnlyKeys("PIUTANG_BUNGA")
+				.containsEntry("PIUTANG_BUNGA", new BigDecimal(PERIOD_INTEREST));
+		assertThat(creditByAccount(billingEntryId))
+				.containsOnlyKeys("PENDAPATAN_BUNGA")
+				.containsEntry("PENDAPATAN_BUNGA", new BigDecimal(PERIOD_INTEREST));
 
 		UUID entryId = onlyPaymentEntry(UUID.fromString(payment.get("id").asText()));
 		assertThat(jdbc.queryForObject("select entry_date from journal_entry where id = ?",
@@ -184,8 +201,6 @@ class PaymentApiIT {
 
 	@Test
 	void aPartialPaymentLeavesTheInstallmentPartiallyPaid() throws Exception {
-		billInterest(1);
-
 		MvcResult result = pay("partial-period-1", "500000.00");
 
 		assertThat(result.getResponse().getStatus()).isEqualTo(201);
@@ -200,7 +215,6 @@ class PaymentApiIT {
 
 	@Test
 	void aSecondPaymentCompletesAPartiallyPaidInstallmentAndKeepsTheFirstPaidAt() throws Exception {
-		billInterest(1);
 		pay("first-leg", "500000.00");
 		Object firstPaidAt = installmentRow(1).get("paid_at");
 
@@ -215,14 +229,13 @@ class PaymentApiIT {
 
 	@Test
 	void anOverpaymentSettlesEveryDueInstallmentAndBooksTheRestAsCustomerCredit() throws Exception {
-		billInterest(1);
-		// Capacity of the due window: period 1 with billed interest (1,573,333.33) + periods 2–7, whose
-		// interest is not billed yet and therefore not receivable, at principal only (6 × 1,333,333.33).
-		// The FLAT residual lands in period 12, so periods 1–7 each carry exactly 1,333,333.33 of principal.
-		String dueWindowCapacity = "9573333.31";
-		String excess = "426666.69";
+		// Capacity of the due window once the payment's own billing step has recognized every due period
+		// (C4/ADR-011): seven periods of 1,333,333.33 principal + 240,000.00 interest = 11,013,333.31. The
+		// FLAT residual lands in period 12, so periods 1–7 each carry exactly 1,333,333.33 of principal.
+		String dueWindowCapacity = "11013333.31";
+		String excess = "986666.69";
 
-		MvcResult result = pay("overpayment", "10000000.00");
+		MvcResult result = pay("overpayment", "12000000.00");
 
 		assertThat(result.getResponse().getStatus()).isEqualTo(201);
 		JsonNode payment = data(result);
@@ -246,15 +259,17 @@ class PaymentApiIT {
 		// The customer credit is a liability: TITIPAN_NASABAH, not revenue (TS §3, Addendum §2).
 		UUID entryId = onlyPaymentEntry(UUID.fromString(payment.get("id").asText()));
 		assertThat(creditByAccount(entryId)).containsEntry("TITIPAN_NASABAH", new BigDecimal(excess));
-		assertThat(creditTotal(entryId)).isEqualByComparingTo("10000000.00");
+		assertThat(creditTotal(entryId)).isEqualByComparingTo("12000000.00");
 		assertThat(creditTotal(entryId).subtract(new BigDecimal(excess))).isEqualByComparingTo(dueWindowCapacity);
 		// E3 owns contract_credit; C3 records the EXCESS allocation only.
 		assertThat(count("contract_credit")).isZero();
+		// Periods 8–12 are still unresolved, so no maturity close happens (invariant 17, ADR-011).
+		assertThat(jdbc.queryForObject("select status from contract where id = ?", String.class, contractId))
+				.isEqualTo("ACTIVE");
 	}
 
 	@Test
 	void aPaymentBeforeTheFirstDueDateIsCreditOnlyAndTouchesNoInstallment() throws Exception {
-		billInterest(1);
 		fixedClock().setDate(LocalDate.of(2026, 1, 15));
 
 		MvcResult result = pay("too-early", "1000000.00");
@@ -267,11 +282,12 @@ class PaymentApiIT {
 		assertThat(installmentRow(1).get("status")).isEqualTo("PENDING");
 		assertThat(creditByAccount(onlyPaymentEntry(UUID.fromString(payment.get("id").asText()))))
 				.containsOnlyKeys("TITIPAN_NASABAH");
+		// Payment on 2026-01-15: no due date has been reached, so the billing step recognizes nothing.
+		assertThat(billingEntryCount()).isZero();
 	}
 
 	@Test
 	void aLatePaymentConsumesTheAccruedPenaltyBeforeInterestAndPrincipal() throws Exception {
-		billInterest(1);
 		accruePenalty(1, "10000.00");
 
 		MvcResult result = pay("late-period-1", "1583333.33");
@@ -291,8 +307,6 @@ class PaymentApiIT {
 
 	@Test
 	void anIdenticalRetryReplaysTheStoredResponseAndReceivesTheMoneyOnce() throws Exception {
-		billInterest(1);
-
 		MvcResult first = pay("retry-key", PERIOD_TOTAL);
 		MvcResult retry = pay("retry-key", PERIOD_TOTAL);
 
@@ -305,7 +319,11 @@ class PaymentApiIT {
 
 		assertThat(count("payment")).isEqualTo(1L);
 		assertThat(count("payment_allocation")).isEqualTo(2L);
-		assertThat(count("journal_entry")).isEqualTo(2L); // one disbursement + one payment, never a third
+		// One disbursement, one payment and the billing step's one entry per due installment — the replay
+		// adds none of them a second time.
+		assertThat(journalEntryCount("CONTRACT_ACTIVATION")).isEqualTo(1L);
+		assertThat(journalEntryCount("PAYMENT")).isEqualTo(1L);
+		assertThat(journalEntryCount("BILLING")).isEqualTo(LAST_DUE_PERIOD);
 		assertThat(decimalOf(installmentRow(1), "paid_amount")).isEqualByComparingTo(PERIOD_TOTAL);
 		assertThat(jdbc.queryForObject("""
 				select count(*) from idempotency_keys
@@ -320,7 +338,6 @@ class PaymentApiIT {
 
 	@Test
 	void theSameKeyWithADifferentBodyIsRejectedAsAConflict() throws Exception {
-		billInterest(1);
 		pay("reused-key", "100000.00");
 
 		MvcResult conflicting = pay("reused-key", "200000.00");
@@ -398,7 +415,6 @@ class PaymentApiIT {
 
 	@Test
 	void anUnusableReceivableSnapshotIsRejectedAndRollsTheWholePaymentBack() throws Exception {
-		billInterest(1);
 		// Data the engine cannot allocate against: a waiver bigger than the penalty it reduces. The
 		// receivable snapshot is at fault, so the request must fail loudly and write nothing at all.
 		jdbc.update("""
@@ -412,19 +428,21 @@ class PaymentApiIT {
 		assertThat(result.getResponse().getStatus()).isEqualTo(500);
 		assertThat(errorCode(result)).isEqualTo("INTERNAL_ERROR");
 		// No half-written payment: the row, its allocations, the installment resolution, the journal entry
-		// and the idempotency claim all rolled back together (TS §2.3).
+		// and the idempotency claim all rolled back together (TS §2.3) — including the interest the use
+		// case's billing step recognized before the snapshot failed.
 		assertThat(count("payment")).isZero();
 		assertThat(count("payment_allocation")).isZero();
 		assertThat(countPaymentClaims()).isZero();
 		assertThat(count("journal_entry")).isEqualTo(1L);
+		assertThat(journalEntryCount("BILLING")).isZero();
+		assertThat(jdbc.queryForObject("select recognized_interest_amount from installment where id = ?",
+				BigDecimal.class, installmentId(1))).isEqualByComparingTo("0.00");
 		assertThat(decimalOf(installmentRow(1), "paid_amount")).isEqualByComparingTo("0.00");
 		assertThat(installmentRow(1).get("status")).isEqualTo("PENDING");
 	}
 
 	@Test
 	void thePaymentIsAttributedToTheAuthenticatedActor() throws Exception {
-		billInterest(1);
-
 		MvcResult result = pay("audited-payment", "100000.00");
 
 		UUID paymentId = UUID.fromString(data(result).get("id").asText());
@@ -448,8 +466,45 @@ class PaymentApiIT {
 		assertThat(countPaymentClaims()).isZero();
 	}
 
+	@Test
+	void payingTheLastInstallmentOfASinglePeriodContractClosesItAsMaturity() throws Exception {
+		// A one-period contract whose only due date (2026-08-31) has passed: the final regular payment ends
+		// it, so the same use case that resolves the installment closes the contract (invariant 17, ADR-011).
+		UUID singlePeriodContract = activateContract(new CreateContractRequest(
+				new CreateCustomerRequest("Siti Aminah", "3171012501900002", "08123456780", "Bandung"),
+				new CreateAssetRequest(AssetType.MOTORCYCLE, "Yamaha", "Mio", null, "B9999ZZ"),
+				new BigDecimal("20000000.00"), new BigDecimal("4000000.00"), 1, InterestScheme.FLAT,
+				new BigDecimal("0.0150"), LocalDate.of(2026, 7, 31)), LocalDate.of(2026, 7, 31));
+
+		MvcResult result = postPayment("closing-payment",
+				body(singlePeriodContract, "16240000.00", "CASH"));
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(201);
+		assertThat(decimal(data(result), "excess_amount")).isEqualByComparingTo("0.00");
+		assertThat(decimal(data(result), "amount")).isEqualByComparingTo("16240000.00");
+
+		Map<String, Object> contract = contractRow(singlePeriodContract);
+		assertThat(contract.get("status")).isEqualTo("CLOSED");
+		assertThat(contract.get("closed_reason")).isEqualTo("MATURITY");
+		// closed_at is the resolving event's instant: the closing payment and the resolution share it.
+		assertThat(closedAtOf(singlePeriodContract).toInstant()).isEqualTo(clock.now().toInstant());
+		// Closing is a state rule, not a UI flag: a closed contract refuses further money (409).
+		MvcResult afterClose = postPayment("payment-after-close",
+				body(singlePeriodContract, "1000.00", "CASH"));
+		assertThat(afterClose.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(afterClose)).isEqualTo("CONTRACT_STATE_INVALID");
+		assertThat(count("payment")).isEqualTo(1L);
+	}
+
 	private MvcResult pay(String idempotencyKey, String amount) throws Exception {
 		return postPayment(idempotencyKey, body(contractId, amount, "CASH"));
+	}
+
+	/** Creates and activates a contract from an explicit request, so a test can vary its terms. */
+	private UUID activateContract(CreateContractRequest request, LocalDate startDate) {
+		ContractResponse draft = contracts.create("payment-it-" + UUID.randomUUID(), request);
+		contracts.activate(draft.id(), startDate);
+		return draft.id();
 	}
 
 	private MvcResult postPayment(String idempotencyKey, String jsonBody) throws Exception {
@@ -502,10 +557,27 @@ class PaymentApiIT {
 				+ "where contract_id = ? and period_no = ?", contractId, periodNo);
 	}
 
-	/** Test-only SQL: billing is story C4, so interest is made receivable here. */
-	private void billInterest(int periodNo) {
-		jdbc.update("update installment set recognized_interest_amount = interest_amount "
-				+ "where contract_id = ? and period_no = ?", contractId, periodNo);
+	/** The recognition entry of a period, keyed by the installment it recognizes (C4/ADR-011). */
+	private UUID billingEntryOf(int periodNo) {
+		return jdbc.queryForObject("select id from journal_entry where ref_type = 'BILLING' and ref_id = ?",
+				UUID.class, installmentId(periodNo));
+	}
+
+	private long billingEntryCount() {
+		return journalEntryCount("BILLING");
+	}
+
+	private long journalEntryCount(String refType) {
+		return jdbc.queryForObject("select count(*) from journal_entry where ref_type = ?", Long.class, refType);
+	}
+
+	/** Contract state after a payment: C4 auto-closes a matured contract (invariant 17, ADR-011). */
+	private Map<String, Object> contractRow(UUID contractId) {
+		return jdbc.queryForMap("select status, closed_reason from contract where id = ?", contractId);
+	}
+
+	private OffsetDateTime closedAtOf(UUID contractId) {
+		return jdbc.queryForObject("select closed_at from contract where id = ?", OffsetDateTime.class, contractId);
 	}
 
 	/** Test-only SQL: the daily accrual job is story D1, so a late installment's penalty is seeded here. */

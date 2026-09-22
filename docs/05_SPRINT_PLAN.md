@@ -53,7 +53,7 @@ Story baru "done" kalau **semua** terpenuhi:
 | C1: Ledger entity + posting service + balance invariant test | 5 | TS §3, L-1, L-2 |
 | C2: Allocation engine (denda→bunga→pokok, oldest first) + 20 skenario test | 5 | P-2, P-3 |
 | C3: API POST /payments + Idempotency-Key + double-post test | 5 | P-1, TS §2.5 |
-| C4: Posting rule + billing/recognition: terima angsuran, ~~aktivasi/disburse~~, bunga due-date | 2 | TS §3, Addendum §12, L-1 |
+| C4: Billing/recognition: terima angsuran, ~~aktivasi/disburse~~, bunga due-date + maturity auto-close | 3 | TS §3, Addendum §12, L-1, ADR-011 |
 | C5: Statement endpoint (rekening koran) | 2 | DM §2 |
 
 ### Epic D — Penalty & Aging (Fase 1)
@@ -152,8 +152,40 @@ Story baru "done" kalau **semua** terpenuhi:
 ### Sprint 4 — Penalty, Aging & Phase-1 Close
 **Goal:** Sistem hidup dengan denda dan aging harian yang bisa diaudit.
 - C4 (3), C5 (2), D1 (3), D2 (3), D3 (2) = **13 pts**
-- ⚠️ C4 (billing/recognition) dinaikkan ke 3 pts: billing step menyentuh scheduler + ledger posting + recognized_interest_amount, bukan sekedar posting rule.
-- **Exit:** automated billing/recognition + penalty + aging + `job_run` berjalan; final regular payment dapat auto-close contract; **Fase 1 selesai**.
+- ⚠️ C4 (billing/recognition) dinaikkan ke 3 pts: seam billing baru + lazy trigger di jalur pembayaran + jurnal
+  `BILLING` per installment + maturity auto-close (ADR-011). **Scheduler-nya bukan scope C4**: ShedLock + `job_run`
+  tetap milik D2, jadi exit "automated billing/recognition … berjalan" baru tertutup setelah D2 selesai.
+- **Exit:** automated billing/recognition + penalty + aging + `job_run` berjalan (billing step ada di C4, scheduler
+  hariannya di D2); final regular payment dapat auto-close contract; **Fase 1 selesai**.
+- **Status C4 — billing/recognition + maturity close selesai; scheduler menunggu D2 (lihat ADR-011):**
+  - **Seam baru:** `contract.application.InstallmentBillingPort` (`billDueInterest(contractId, businessDate)`)
+    diimplementasikan `InstallmentBillingService` — port terpisah dari `InstallmentReceivablePort` (resolusi uang
+    vs fakta akuntansi jadwal; satu port satu implementasi). Edge `payment → contract (application interface)` kini
+    punya dua port, dan TS §1 diperbarui.
+  - **Lazy billing:** `PaymentApplicationService.receive` memanggil billing sebelum `loadReceivableSnapshot`, di
+    transaksi pembayaran yang sama — pembayaran pada due date langsung menemukan bunga receivable (PRD skenario 1).
+    Entry point billing `@Transactional(REQUIRED)` supaya ikut transaksi pembayaran dan siap dipanggil job D2 yang
+    membuka transaksinya sendiri (`LedgerPostingService` tetap `MANDATORY`).
+  - **Jurnal:** satu entry `BILLING` per installment — `ref_id = installment.id`, `entry_date = due_date` pukul
+    00:00 Asia/Jakarta, debit `PIUTANG_BUNGA` / kredit `PENDAPATAN_BUNGA` sebesar delta
+    `interest_amount − recognized_interest_amount`, `contract_id` di kedua baris. Guard delta membuat re-run gratis
+    dan menjaga periode berbunga nol tidak menghasilkan jurnal (V1 `ck_journal_line_not_zero`).
+  - **Scope billing:** hanya kontrak ACTIVE dengan `due_date <= business date` (inklusif); installment
+    `SETTLED`/`WRITTEN_OFF` dilewati (settlement/write-off mengakui bunganya sendiri), yang sudah di-bill tidak
+    diulang, dan installment yang `PAID` sebelum bunganya di-bill tetap `PAID` (marker kas; kelebihan bayar tetap
+    `TITIPAN_NASABAH`).
+  - **Maturity close (invariant 17)** dijalankan modul `contract` di `applyPaymentResolution`: seluruh installment
+    `PAID` → `Contract.close(MATURITY, paidAt)` — satu row update `status` + `closed_at` + `closed_reason` (V4
+    coherence), idempotent. `SETTLED`/`WRITTEN_OFF` tidak memicu `MATURITY` agar tidak menulis ulang keputusan E2/F5.
+  - **Tanpa migrasi** dan tanpa perubahan API/OpenAPI (billing internal, tidak ada endpoint baru).
+  - Test: +13 — `InstallmentRecognitionTest` (6 unit: akumulasi delta, cap invariant 10, skala, guard state, `PAID`
+    tetap `PAID`), `InstallmentBillingIT` (7 IT: window inklusif + boundary due date, bentuk jurnal & `entry_date`,
+    re-run, periode 0%, `PAID` pra-C4, skip `SETTLED`/`WRITTEN_OFF`, penolakan non-ACTIVE/unknown), dan 1
+    end-to-end maturity close di `PaymentApiIT` (termasuk 409 untuk pembayaran setelah close). `PaymentApiIT` kini
+    membuktikan PRD skenario 1 tanpa seeding dan memverifikasi billing ikut rollback pada snapshot korup.
+    Total 357 hijau / 0 gagal; golden test & `InstallmentBalanceIT` tidak diubah.
+  - ⚠️ Sisa untuk D2: ShedLock lock provider + tabel `shedlock` (belum ada di V1 → perlu migrasi sendiri), job harian
+    yang memanggil `billDueInterest` per kontrak ACTIVE, dan pencatatan `job_run`.
 
 ### Sprint 5 — Settlement, Credit & Waive
 **Goal:** Settlement semantics dan excess credit benar sebelum void/auth.

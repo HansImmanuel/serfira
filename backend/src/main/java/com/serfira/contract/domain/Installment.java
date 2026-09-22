@@ -152,6 +152,45 @@ public class Installment extends Auditable {
 		}
 	}
 
+	/**
+	 * Recognizes scheduled interest of this installment as receivable (DM §1.4, 04_GAPS_ADDENDUM.md §12):
+	 * raises {@code recognized_interest_amount} by {@code amount}, the unbilled remainder of
+	 * {@code interest_amount} computed by the billing step (story C4).
+	 *
+	 * <p>Recognition is an accounting fact about the schedule, not money received, so the resolution
+	 * state is deliberately left alone: an installment that an earlier principal-only payment already
+	 * resolved keeps {@code PAID} while its interest becomes receivable, and the customer's overpayment
+	 * stays a {@code TITIPAN_NASABAH} liability for E3 to apply (ADR-011). {@code SETTLED} and
+	 * {@code WRITTEN_OFF} installments can never be billed — settlement recognizes its own accrued
+	 * interest (Addendum §12) and a write-off caps the recognized receivable (invariant 15) — so that
+	 * guard is defensive; the billing step skips those states before calling here.
+	 *
+	 * @param amount scale-2 money, {@code > 0}, at most the unbilled remainder of {@code interestAmount}
+	 * @throws ContractStateException   if the installment is already {@code SETTLED} / {@code WRITTEN_OFF}
+	 * @throws IllegalArgumentException if the amount is not positive, or recognition would pass the
+	 *                                  scheduled interest (invariant 10)
+	 * @throws ArithmeticException      if the amount is finer than scale 2
+	 */
+	public void recognizeInterest(BigDecimal amount) {
+		if (amount == null) {
+			throw new IllegalArgumentException("amount is required");
+		}
+		BigDecimal recognized = amount.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
+		if (recognized.signum() <= 0) {
+			throw new IllegalArgumentException("a recognized interest amount must be > 0 but was " + recognized);
+		}
+		if (status == InstallmentStatus.SETTLED || status == InstallmentStatus.WRITTEN_OFF) {
+			throw new ContractStateException(
+					"installment " + periodNo + " is " + status + " and can no longer be billed");
+		}
+		BigDecimal total = this.recognizedInterestAmount.add(recognized);
+		if (total.compareTo(interestAmount) > 0) {
+			throw new IllegalArgumentException("recognized interest " + total + " of installment " + periodNo
+					+ " would exceed the scheduled interest " + interestAmount + " (invariant 10)");
+		}
+		this.recognizedInterestAmount = total;
+	}
+
 	public Contract getContract() {
 		return contract;
 	}

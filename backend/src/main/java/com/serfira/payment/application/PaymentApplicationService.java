@@ -1,6 +1,7 @@
 package com.serfira.payment.application;
 
 import com.serfira.contract.application.ContractReceivableSnapshot;
+import com.serfira.contract.application.InstallmentBillingPort;
 import com.serfira.contract.application.InstallmentReceivable;
 import com.serfira.contract.application.InstallmentReceivablePort;
 import com.serfira.contract.domain.ContractStateException;
@@ -56,7 +57,8 @@ import java.util.UUID;
  * key and a retry can succeed (TS §2.5).
  *
  * <p><b>Module boundaries</b> (02_TECH_SPEC.md §1, ADR-010): this service owns {@code payment} and
- * {@code payment_allocation} and never touches {@code installment}. It reads a receivable snapshot
+ * {@code payment_allocation} and never touches {@code installment}. It asks the {@code contract} module
+ * to bill the contract's due interest ({@link InstallmentBillingPort}), reads a receivable snapshot
  * through {@link InstallmentReceivablePort} and hands the engine's resolved amounts back, and it posts
  * the journal through the {@code ledger} module's application service.
  *
@@ -64,6 +66,11 @@ import java.util.UUID;
  * {@code contract_credit} row with an application history (E3) are later stories — here an excess is
  * recorded as an EXCESS allocation and credited to {@code TITIPAN_NASABAH}, which is the complete
  * accounting of the money event.
+ *
+ * <p>Interest becomes receivable at its due date (TS §5, Addendum §12), so the use case bills the
+ * contract's due installments inside this transaction before allocating (story C4, ADR-011): a payment
+ * received on the due date resolves interest, never only principal. The contract's maturity close is
+ * the {@code contract} module's own step, triggered by the resolution below (invariant 17).
  */
 @Service
 public class PaymentApplicationService {
@@ -89,17 +96,20 @@ public class PaymentApplicationService {
 	private final PaymentRepository payments;
 	private final PaymentAllocationRepository allocations;
 	private final InstallmentReceivablePort receivables;
+	private final InstallmentBillingPort billing;
 	private final DocumentNumberGenerator documentNumbers;
 	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
 	private final Clock clock;
 
 	public PaymentApplicationService(PaymentRepository payments, PaymentAllocationRepository allocations,
-			InstallmentReceivablePort receivables, DocumentNumberGenerator documentNumbers,
-			IdempotencyService idempotency, LedgerPostingService ledger, Clock clock) {
+			InstallmentReceivablePort receivables, InstallmentBillingPort billing,
+			DocumentNumberGenerator documentNumbers, IdempotencyService idempotency, LedgerPostingService ledger,
+			Clock clock) {
 		this.payments = payments;
 		this.allocations = allocations;
 		this.receivables = receivables;
+		this.billing = billing;
 		this.documentNumbers = documentNumbers;
 		this.idempotency = idempotency;
 		this.ledger = ledger;
@@ -124,10 +134,15 @@ public class PaymentApplicationService {
 	}
 
 	/**
-	 * The mutation itself: read the receivable, allocate, persist, resolve installments, post the journal.
-	 * Runs inside the idempotency claim, inside the caller's transaction.
+	 * The mutation itself: bill the due interest, read the receivable, allocate, persist, resolve
+	 * installments, post the journal. Runs inside the idempotency claim, inside the caller's transaction.
 	 */
 	private PaymentResponse receive(String idempotencyKey, PaymentRequest request, BigDecimal amount) {
+		// Billing comes first: interest is receivable from its due date, so a payment received on the due
+		// date must find it (PRD scenario 1) instead of booking the whole amount as customer credit. This is
+		// the same step the daily job runs on its own (D2); here it joins this transaction, so the
+		// recognition journal and the payment commit or roll back together (ADR-011).
+		billing.billDueInterest(request.contractId(), clock.today());
 		ContractReceivableSnapshot snapshot = receivables.loadReceivableSnapshot(request.contractId());
 		if (snapshot.status() != ContractStatus.ACTIVE) {
 			// The port already refuses anything else; the same invariant is asserted again where money is

@@ -40,10 +40,17 @@ public interface InstallmentReceivablePort {
 	 * {@code PARTIALLY_PAID}/{@code PAID} (DM §1.4, PRD P-3). Amounts are the allocation engine's output
 	 * (ADR-009); EXCESS is not an installment resolution and must not be passed here.
 	 *
+	 * <p>When the resolution leaves every installment of the contract {@code PAID}, the contract is
+	 * closed as {@code MATURITY} with {@code paidAt} as its {@code closed_at} (DM §3 invariant 17,
+	 * ADR-011). {@code SETTLED}/{@code WRITTEN_OFF} installments deliberately do not trigger that: those
+	 * flows own their closing reason, so a settlement must close the contract through its own path
+	 * ({@code SETTLEMENT}, E2) rather than relying on this one.
+	 *
 	 * @param contractId            contract the installments belong to
 	 * @param resolvedByInstallment amount resolved by this payment per installment id, each {@code > 0}
 	 * @param paidAt                business instant of the payment; becomes the installment's {@code paid_at}
-	 *                              the first time it is resolved
+	 *                              the first time it is resolved, and the contract's {@code closed_at} when
+	 *                              this resolution closes it
 	 * @throws IllegalStateException if an installment of the map is not part of the contract's schedule
 	 */
 	void applyPaymentResolution(UUID contractId, Map<UUID, BigDecimal> resolvedByInstallment,

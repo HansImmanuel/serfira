@@ -18,6 +18,7 @@ import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -185,6 +186,36 @@ public class Contract extends Auditable {
 	/** ACTIVE: the schedule is pinned and the contract is being serviced. */
 	public boolean isActive() {
 		return status == ContractStatus.ACTIVE;
+	}
+
+	/**
+	 * Closes an ACTIVE contract: no further money may be resolved against it (DM §1.3, §3 invariant 17).
+	 *
+	 * <p>Writes {@code status}, {@code closed_at} and {@code closed_reason} in one row update so the V4
+	 * coherence CHECKs ({@code ck_contract_active_coherence}, {@code ck_contract_closed_coherence})
+	 * always see a coherent row. Closing is idempotent by state: repeating it on an already CLOSED
+	 * contract writes nothing and returns {@code false}, so two callers that both resolve the last
+	 * installment cannot produce a second transition.
+	 *
+	 * @param reason   why the contract ends — {@code MATURITY} for the auto-close after the last
+	 *                 installment is paid (invariant 17, ADR-011), {@code SETTLEMENT} for E2
+	 * @param closedAt business instant of the closing event, from the resolution that caused it
+	 * @return {@code true} when this call performed the transition
+	 * @throws ContractStateException if the contract is DRAFT or TERMINATED — neither can be closed
+	 */
+	public boolean close(ClosedReason reason, OffsetDateTime closedAt) {
+		Objects.requireNonNull(reason, "reason");
+		Objects.requireNonNull(closedAt, "closedAt");
+		if (status == ContractStatus.CLOSED) {
+			return false;
+		}
+		if (status != ContractStatus.ACTIVE) {
+			throw new ContractStateException("contract " + contractNo + " is " + status + " and cannot be closed");
+		}
+		this.status = ContractStatus.CLOSED;
+		this.closedAt = closedAt;
+		this.closedReason = reason;
+		return true;
 	}
 
 	public UUID getId() {

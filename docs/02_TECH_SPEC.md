@@ -24,13 +24,15 @@ com.serfira
 
 Aturan dependency:
 - `payment`, `penalty`, `settlement` boleh bergantung ke `ledger` (posting jurnal).
-- `payment` juga boleh bergantung ke `contract` melalui **application interface**-nya (ADR-010):
+- `payment` juga boleh bergantung ke `contract` melalui **application interface**-nya (ADR-010, ADR-011):
   `InstallmentReceivablePort` (`contract.application`) adalah satu-satunya jalur bagi write path pembayaran
-  untuk membaca receivable angsuran dan menerapkan hasil resolusinya. Edge ini satu arah
+  untuk membaca receivable angsuran dan menerapkan hasil resolusinya, dan `InstallmentBillingPort` adalah
+  satu-satunya jalur untuk billing/recognition bunga due date sebelum alokasi dihitung. Keduanya satu arah
   (`payment` → port `contract`); `contract` tidak tahu modul `payment`, dan `payment` tetap dilarang menyentuh
   tabel/entity `contract`/`installment` langsung.
 - `contract` juga boleh bergantung ke `ledger` (ADR-008): aktivasi mem-posting jurnal disbursement di transaksi
-  yang sama, sehingga piutang yang dibuat jadwal langsung tercatat sebagai receivable. Edge ini satu arah —
+  yang sama, sehingga piutang yang dibuat jadwal langsung tercatat sebagai receivable; sejak C4 langkah billing
+  mem-posting jurnal `BILLING` per installment lewat service yang sama (ADR-011). Edge ini satu arah —
   `ledger` tetap tidak tahu modul lain.
 - `ledger` tidak boleh bergantung ke module lain (paling dasar).
 - `reporting` boleh baca semua (read-only).
@@ -153,6 +155,16 @@ pembayaran, lalu baris kredit diagregasi per komponen dengan urutan tetap
 `PIUTANG_DENDA → PIUTANG_BUNGA → PIUTANG_POKOK → TITIPAN_NASABAH` (komponen bernilai nol dilewati). Setiap
 baris membawa `contract_id` sehingga rekonsiliasi per kontrak tidak perlu join ke `payment`. Credit application
 (E3) dan void (E4) menyusul sebagai jurnal terpisah, bukan sebagai UPDATE jurnal pembayaran ini.
+
+**C4 (ADR-011):** "Billing bunga installment" direalisasikan sebagai **satu** `journal_entry` per installment —
+`ref_type = BILLING`, `ref_id = installment.id`, `entry_date = due_date` (pukul 00:00 Asia/Jakarta) — debit
+`PIUTANG_BUNGA` dan kredit `PENDAPATAN_BUNGA` sebesar **selisih** `interest_amount − recognized_interest_amount`,
+dengan `contract_id` di kedua baris. Billing dijalankan (a) di dalam transaksi `POST /payments` sebelum alokasi
+dihitung, sehingga pembayaran **pada** due date menemukan bunga yang sudah receivable, dan (b) sebagai step
+mandiri `InstallmentBillingPort.billDueInterest(contractId, businessDate)` yang siap dibungkus job harian (D2).
+Installment dengan `due_date > business date`, `SETTLED`/`WRITTEN_OFF`, kontrak non-ACTIVE, dan periode berbunga
+nol tidak pernah di-bill — sehingga re-run tidak mem-posting apa pun.
+
 | Write-off piutang | BIAYA_PENGHAPUSAN_PIUTANG | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
 
 Settlement wajib membuat transaction record + allocation + satu atau beberapa journal entry yang seluruhnya balance. `rebate` diposting sebagai contra-receivable terhadap eligible interest, bukan sebagai penghapusan future interest yang belum billed. Admin fee diakui ke `PENDAPATAN_ADMIN`.

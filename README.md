@@ -36,7 +36,12 @@ Sprint 3 (payment & ledger) — **selesai** (lihat [ADR-008](docs/adr/ADR-008-le
 - [x] C3 — `POST /api/v1/payments` (`Idempotency-Key` wajib): alokasi lewat engine C2, resolusi `InstallmentStatus`/`paid_at` di modul `contract` lewat port `InstallmentReceivablePort`, satu jurnal double-entry per pembayaran (`KAS` vs `PIUTANG_DENDA`/`PIUTANG_BUNGA`/`PIUTANG_POKOK`/`TITIPAN_NASABAH`), replay idempotent tanpa double-post; excess hanya dicatat sebagai baris `EXCESS` (credit row milik E3)
 - [ ] E3 — credit application (`contract_credit`), E4 — payment void: **deferred** ke Sprint 5
 
-Sprint 4+ (billing/recognition, statement, penalty, settlement) belum dimulai.
+Sprint 4 (penalty, aging & phase-1 close) — **berjalan** (lihat [ADR-011](docs/adr/ADR-011-billing-recognition-and-maturity-close.md)):
+
+- [x] C4 — Billing/recognition: port `InstallmentBillingPort` (`billDueInterest(contractId, businessDate)`) dengan **lazy billing** di transaksi `POST /payments` (bunga receivable pada due date — PRD skenario 1 tanpa seeding), satu jurnal `BILLING` per installment (`PIUTANG_BUNGA` debit / `PENDAPATAN_BUNGA` kredit, `entry_date = due_date`, `ref_id = installment.id`), dan **maturity auto-close** (`closed_reason=MATURITY`) ketika final regular payment melunasi seluruh installment (invariant 17)
+- [ ] C5 — statement endpoint, D1 — penalty accrual, D2 — job harian (ShedLock + `job_run`; billing step sudah tersedia, scheduler-nya belum), D3 — aging report
+
+Sprint 5+ (settlement, credit application, void, consistency check, write-off, frontend) belum dimulai.
 
 ## Arsitektur
 

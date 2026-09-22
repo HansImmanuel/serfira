@@ -100,6 +100,14 @@ Derived:
 - `outstanding = recognized_total − resolved_amount`
 - Future `interest_amount − recognized_interest_amount` is schedule-only and is never a ledger receivable until recognition.
 - For an in-period settlement, accrued interest is first added to `recognized_interest_amount`, then included in settlement.
+- Billing (C4, ADR-011) mengakui bunga pada due date yang sudah tercapai (window inklusif): satu jurnal `BILLING`
+  per installment sebesar selisih `interest_amount − recognized_interest_amount`. `SETTLED`/`WRITTEN_OFF` tidak
+  pernah di-bill (settlement mengakui bunga berjalannya sendiri; write-off membatasi receivable, invariant 15),
+  dan installment yang sudah `PAID` sebelum bunganya di-bill **tetap** `PAID` — sisa
+  `recognized_interest_amount − paid_amount` menjadi piutang dengan kelebihan bayar nasabah sebagai `TITIPAN_NASABAH`.
+- Auto-close maturity (invariant 17) dijalankan pemilik data `contract` setelah resolusi pembayaran: bila seluruh
+  installment `PAID` → `status = CLOSED`, `closed_reason = MATURITY`, `closed_at` = instant event resolusi.
+  `SETTLED`/`WRITTEN_OFF` tidak memicunya karena alur settlement/write-off memutuskan `closed_reason`-nya sendiri.
 
 State transition:
 ```
