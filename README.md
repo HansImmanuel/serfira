@@ -29,11 +29,12 @@ Sprint 2 (contract API & activation) — **selesai** (B5; lihat [ADR-006](docs/a
 - [x] V7 — `contract.idempotency_key` backstop + partial unique index `(customer_id, asset_id) WHERE status IN ('DRAFT','ACTIVE')` (invariant #18)
 - [ ] C-5 — update contract saat DRAFT: **deferred**
 
-Sprint 3 (payment & ledger) — **berjalan** (C1 selesai; lihat [ADR-008](docs/adr/ADR-008-ledger-posting-semantics.md)):
+Sprint 3 (payment & ledger) — **selesai** (lihat [ADR-008](docs/adr/ADR-008-ledger-posting-semantics.md), [ADR-009](docs/adr/ADR-009-allocation-engine-semantics.md), [ADR-010](docs/adr/ADR-010-payment-contract-seam.md)):
 
 - [x] C1 — Modul `ledger`: entity immutable `journal_entry`/`journal_line` (`ImmutableAuditable`), `LedgerPostingService` (`MANDATORY`, guard satu entry non-reversal per `(ref_type, ref_id)`), vocabulary `LedgerRefType`, akun type-safe `LedgerAccount`, dan jurnal disbursement (`PIUTANG_POKOK`/`KAS`) yang diposting di transaksi aktivasi kontrak
 - [x] C2 — Allocation engine murni di modul `payment`: denda → bunga → pokok, angsuran jatuh tempo tertua dahulu (hanya `due_date <= business date`), cap identik trigger V3, satu baris `EXCESS` untuk kelebihan; test 20+ skenario + guard value object (lihat [ADR-009](docs/adr/ADR-009-allocation-engine-semantics.md))
-- [ ] C3 — `POST /api/v1/payments` + `Idempotency-Key` + double-post test
+- [x] C3 — `POST /api/v1/payments` (`Idempotency-Key` wajib): alokasi lewat engine C2, resolusi `InstallmentStatus`/`paid_at` di modul `contract` lewat port `InstallmentReceivablePort`, satu jurnal double-entry per pembayaran (`KAS` vs `PIUTANG_DENDA`/`PIUTANG_BUNGA`/`PIUTANG_POKOK`/`TITIPAN_NASABAH`), replay idempotent tanpa double-post; excess hanya dicatat sebagai baris `EXCESS` (credit row milik E3)
+- [ ] E3 — credit application (`contract_credit`), E4 — payment void: **deferred** ke Sprint 5
 
 Sprint 4+ (billing/recognition, statement, penalty, settlement) belum dimulai.
 

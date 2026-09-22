@@ -24,6 +24,11 @@ com.serfira
 
 Aturan dependency:
 - `payment`, `penalty`, `settlement` boleh bergantung ke `ledger` (posting jurnal).
+- `payment` juga boleh bergantung ke `contract` melalui **application interface**-nya (ADR-010):
+  `InstallmentReceivablePort` (`contract.application`) adalah satu-satunya jalur bagi write path pembayaran
+  untuk membaca receivable angsuran dan menerapkan hasil resolusinya. Edge ini satu arah
+  (`payment` → port `contract`); `contract` tidak tahu modul `payment`, dan `payment` tetap dilarang menyentuh
+  tabel/entity `contract`/`installment` langsung.
 - `contract` juga boleh bergantung ke `ledger` (ADR-008): aktivasi mem-posting jurnal disbursement di transaksi
   yang sama, sehingga piutang yang dibuat jadwal langsung tercatat sebagai receivable. Edge ini satu arah —
   `ledger` tetap tidak tahu modul lain.
@@ -42,6 +47,9 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 - `paid_at`, `quoted_at`, `executed_at`, dan timestamp audit berasal dari server/application clock.
 - Payment `paid_at` tidak boleh future. Backdated payment tidak didukung pada MVP; request yang mencoba backdate di luar business date policy ditolak.
 - Semua business date menggunakan injected `Clock` Asia/Jakarta agar deterministic di test.
+- Timestamp yang di-serialisasi ke wire memakai timezone bisnis yang sama
+  (`spring.jackson.time-zone=Asia/Jakarta`, ADR-010) sehingga respons pertama dan respons hasil replay
+  `response_json` (§2.5) identik — Jackson merender `OffsetDateTime` pada zone mapper, bukan pada offset aslinya.
 
 ## 2. Konvensi Teknis
 
@@ -79,11 +87,16 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 - Tabel `idempotency_keys(key, endpoint, request_hash, response_json, status, created_at, expires_at, request_id)`.
 - `request_hash` = digest keyed (HMAC-SHA-256 atas canonical JSON request + endpoint scope). Dokumen ini semula menyebut "SHA-256"; karena payload dapat memuat PII, implementasi B5 memakai HMAC keyed dari ADR-004 (ADR-007) — semantik kesamaan identik dan nilainya tidak reversible.
 - Request sama + key sama → return response tersimpan tanpa eksekusi ulang.
-- Request beda + key sama → 409 CONFLICT.
-- Key expired hanya boleh dibersihkan setelah retention policy; cleanup tidak boleh membuat retry lama diam-diam mengeksekusi transaksi baru.
-- **Implementasi B5 (ADR-007):** claim dilakukan dengan `INSERT … ON CONFLICT (endpoint, key) DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernilai `COMPLETED` setelah respons tersimpan, `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS` (config), dan mekanisme hidup di `com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup baris kedaluwarsa belum diimplementasikan (menyusul C3).
-
-### 2.6 Authentication & Session
+- **Implementasi B5 (ADR-007):** claim dilakukan dengan `INSERT … ON CONFLICT (endpoint, key)
+DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernilai `COMPLETED` setelah respons
+tersimpan, `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS` (config), dan mekanisme hidup di
+`com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup baris
+kedaluwarsa belum diimplementasikan — **dijadwalkan di F4**, bukan C3 (ADR-010).
+- **Implementasi C3 (ADR-010):** `POST /api/v1/payments` memakai endpoint scope `POST /api/v1/payments` dengan
+canonical JSON dari field request (amount dinormalkan ke skala 2). Claim berjalan di dalam `@Transactional`
+application service, jadi kegagalan operasi me-rollback claim dan retry dengan key yang sama tetap sah
+memperbaiki body; retry identik mengembalikan `response_json` tersimpan tanpa eksekusi ulang (tanpa baris
+`payment`/jurnal kedua).
 - Password hash: Argon2id. Jangan simpan password plaintext.
 - Access token JWT short-lived (15 menit).
 - Refresh token random, disimpan hashed di DB, **rotated on use**; token lama langsung `revoked_at` diisi.
@@ -133,6 +146,13 @@ Posting rules (contoh):
 | Settlement - consume available credit | TITIPAN_NASABAH | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
 | Excess payment diterima | KAS | TITIPAN_NASABAH |
 | Credit diaplikasikan ke installment | TITIPAN_NASABAH | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
+
+**C3 (ADR-010):** "Terima payment regular" direalisasikan sebagai **satu** `journal_entry` per pembayaran
+(`ref_type = PAYMENT`, `ref_id = payment.id`, `entry_date = paid_at`): satu baris debit `KAS` sebesar jumlah
+pembayaran, lalu baris kredit diagregasi per komponen dengan urutan tetap
+`PIUTANG_DENDA → PIUTANG_BUNGA → PIUTANG_POKOK → TITIPAN_NASABAH` (komponen bernilai nol dilewati). Setiap
+baris membawa `contract_id` sehingga rekonsiliasi per kontrak tidak perlu join ke `payment`. Credit application
+(E3) dan void (E4) menyusul sebagai jurnal terpisah, bukan sebagai UPDATE jurnal pembayaran ini.
 | Write-off piutang | BIAYA_PENGHAPUSAN_PIUTANG | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
 
 Settlement wajib membuat transaction record + allocation + satu atau beberapa journal entry yang seluruhnya balance. `rebate` diposting sebagai contra-receivable terhadap eligible interest, bukan sebagai penghapusan future interest yang belum billed. Admin fee diakui ke `PENDAPATAN_ADMIN`.

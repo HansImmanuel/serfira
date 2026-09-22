@@ -55,4 +55,29 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 			group by i.contract.id
 			""")
 	Optional<ContractInstallmentTotals> sumTotalsByContractId(@Param("contractId") UUID contractId);
+
+	/**
+	 * Σ penalty adjustments per installment, for the receivable snapshot handed to other modules
+	 * (DM §1.4 invariant 9: effective penalty = {@code penalty_amount − Σ adjustments}).
+	 *
+	 * <p><b>Temporary read seam (ADR-010):</b> {@code penalty_adjustment} is written by the penalty
+	 * module (D1/E5), which does not exist yet, while the effective penalty is part of the receivable
+	 * this module exposes — and V3's {@code assert_payment_allocation_component_caps} computes the very
+	 * same sum for the very same cap. Only rows that exist are returned, so the caller treats a missing
+	 * installment as "no adjustments". E5 replaces this with the penalty module's own interface.
+	 *
+	 * <p>Native and mapped explicitly because there is deliberately no {@code PenaltyAdjustment} entity
+	 * in this module: the projection is two columns and nothing here is ever written.
+	 *
+	 * @return rows of {@code [installment_id (UUID), total (BigDecimal)]}, one per installment that has
+	 *         adjustments
+	 */
+	@Query(value = """
+			select installment_id, sum(amount)
+			from penalty_adjustment
+			where installment_id in (:installmentIds)
+			group by installment_id
+			""", nativeQuery = true)
+	List<Object[]> sumPenaltyAdjustmentsByInstallmentIds(
+			@Param("installmentIds") Collection<UUID> installmentIds);
 }

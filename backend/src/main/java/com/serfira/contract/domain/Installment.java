@@ -16,8 +16,10 @@ import jakarta.persistence.UniqueConstraint;
 import jakarta.persistence.Version;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -33,6 +35,9 @@ import java.util.UUID;
 		@UniqueConstraint(name = "uk_installment_period", columnNames = {"contract_id", "period_no"})
 })
 public class Installment extends Auditable {
+
+	/** Money is scale-2 ({@code NUMERIC(19,2)}); resolution amounts are never rounded. */
+	private static final int MONEY_SCALE = 2;
 
 	@Id
 	@GeneratedValue(strategy = GenerationType.UUID)
@@ -102,6 +107,49 @@ public class Installment extends Auditable {
 
 	public UUID getId() {
 		return id;
+	}
+
+	/**
+	 * Applies a resolved payment amount to this installment (DM §1.4, PRD P-3): raises
+	 * {@code paid_amount}, stamps {@code paid_at} the first time the installment is resolved, and
+	 * derives {@code PARTIALLY_PAID} / {@code PAID} from the receivable definition
+	 * ({@link InstallmentBalance}).
+	 *
+	 * <p>Called by the allocation write path (payment C3) with the engine's output only; the amount is
+	 * therefore already capped by {@code recognized_total − resolved_amount} (ADR-009, V3 trigger).
+	 * Resolution that is <b>not</b> a payment keeps its own state: this method never downgrades
+	 * {@code SETTLED} / {@code WRITTEN_OFF}. A never-paid installment that receives a partial payment
+	 * leaves the {@code OVERDUE} aging state for {@code PARTIALLY_PAID} (PRD P-3); the aging job
+	 * re-marks it if it is still overdue.
+	 *
+	 * <p><b>Extension point for E5:</b> the derived state ignores penalty adjustments, exactly like
+	 * {@link InstallmentBalance#of(Installment)}. When the waiver flow exists, it must pass the
+	 * adjustment sum ({@link InstallmentBalance#of(Installment, BigDecimal)}) so a waived penalty does
+	 * not keep a resolved installment in {@code PARTIALLY_PAID}.
+	 *
+	 * @param amount scale-2 money, {@code > 0}
+	 * @param paidAt business instant of the payment; kept from the first resolving payment
+	 * @throws IllegalArgumentException if the amount is not positive scale-2 money
+	 * @throws ArithmeticException      if the amount is finer than scale 2
+	 */
+	public void applyPayment(BigDecimal amount, OffsetDateTime paidAt) {
+		Objects.requireNonNull(paidAt, "paidAt");
+		if (amount == null) {
+			throw new IllegalArgumentException("amount is required");
+		}
+		BigDecimal resolution = amount.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
+		if (resolution.signum() <= 0) {
+			throw new IllegalArgumentException("a payment resolution must be > 0 but was " + resolution);
+		}
+		this.paidAmount = this.paidAmount.add(resolution);
+		if (this.paidAt == null) {
+			this.paidAt = paidAt;
+		}
+		if (status != InstallmentStatus.SETTLED && status != InstallmentStatus.WRITTEN_OFF) {
+			this.status = InstallmentBalance.of(this).outstanding().signum() == 0
+					? InstallmentStatus.PAID
+					: InstallmentStatus.PARTIALLY_PAID;
+		}
 	}
 
 	public Contract getContract() {
