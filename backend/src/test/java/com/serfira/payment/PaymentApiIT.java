@@ -12,8 +12,10 @@ import com.serfira.contract.api.CreateAssetRequest;
 import com.serfira.contract.api.CreateContractRequest;
 import com.serfira.contract.api.CreateCustomerRequest;
 import com.serfira.contract.application.ContractCommandService;
+import com.serfira.contract.application.InstallmentBillingPort;
 import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
+import com.serfira.penalty.application.PenaltyAccrualPort;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
 import org.junit.jupiter.api.AfterEach;
@@ -58,8 +60,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  *
  * <p>Interest is <b>only receivable once billed</b> (TS §3/§5, Addendum §12) and since C4 the payment path
  * bills the contract's due installments inside its own transaction (ADR-011), so a payment received on a
- * due date resolves interest with no seeding at all — that is PRD scenario 1. Only the daily penalty
- * accrual (story D1) is still seeded with SQL, exactly as before.
+ * due date resolves interest with no seeding at all — that is PRD scenario 1. Denda is recognized by the
+ * daily penalty step (D1) and is never seeded: the late-payment case runs that step itself, exactly as the
+ * D2 job will, so PRD scenario 2 is real end to end too (ADR-012).
  */
 @Import({TestcontainersConfiguration.class, PaymentClockTestConfiguration.class})
 @SpringBootTest
@@ -81,6 +84,18 @@ class PaymentApiIT {
 	/** Periods 1–7 are due on the fixture business date; period 8 (2026-09-30) is the first future one. */
 	private static final int LAST_DUE_PERIOD = 7;
 
+	/**
+	 * Business date of the late-payment case: one month after the first due date, so period 1 is 31 days late
+	 * and period 2 falls due on that very day (its denda is therefore still zero).
+	 */
+	private static final LocalDate LATE_BUSINESS_DATE = LocalDate.of(2026, 3, 31);
+
+	/** 31 days late with the snapshotted 3-day grace period: 28 charged days at 1,573.33 (TS §4.3). */
+	private static final String ACCRUED_PENALTY = "44053.24";
+
+	/** Period 1 in full: 1,333,333.33 principal + 240,000.00 interest + 44,053.24 denda. */
+	private static final String LATE_PAYMENT_TOTAL = "1617386.57";
+
 	@Autowired
 	MockMvc mockMvc;
 
@@ -95,6 +110,12 @@ class PaymentApiIT {
 
 	@Autowired
 	ContractCommandService contracts;
+
+	@Autowired
+	InstallmentBillingPort billing;
+
+	@Autowired
+	PenaltyAccrualPort penalty;
 
 	private UUID actorId;
 	private String token;
@@ -288,21 +309,36 @@ class PaymentApiIT {
 
 	@Test
 	void aLatePaymentConsumesTheAccruedPenaltyBeforeInterestAndPrincipal() throws Exception {
-		accruePenalty(1, "10000.00");
+		fixedClock().setDate(LATE_BUSINESS_DATE);
+		// The daily job's order (D2): billing first so the receivable exists, then the penalty step, which
+		// charges denda on billed pokok+bunga only (PRD §5C, ADR-012). Period 1 is 31 days late, so 28 of
+		// them are outside the 3-day grace window.
+		billing.billDueInterest(contractId, LATE_BUSINESS_DATE);
+		assertThat(penalty.accrueDuePenalty(contractId, LATE_BUSINESS_DATE)).isEqualTo(28);
 
-		MvcResult result = pay("late-period-1", "1583333.33");
+		MvcResult result = pay("late-period-1", LATE_PAYMENT_TOTAL);
 
 		assertThat(result.getResponse().getStatus()).isEqualTo(201);
 		JsonNode payment = data(result);
 		assertThat(allocationTypes(payment)).containsExactly("PENALTY", "INTEREST", "PRINCIPAL");
-		assertThat(decimal(payment.get("allocations").get(0), "amount")).isEqualByComparingTo("10000.00");
+		assertThat(decimal(payment.get("allocations").get(0), "amount")).isEqualByComparingTo(ACCRUED_PENALTY);
 		assertThat(decimal(payment, "excess_amount")).isEqualByComparingTo("0.00");
 		assertThat(installmentRow(1).get("status")).isEqualTo("PAID");
 		assertThat(creditByAccount(onlyPaymentEntry(UUID.fromString(payment.get("id").asText()))))
-				.containsEntry("PIUTANG_DENDA", new BigDecimal("10000.00"))
+				.containsEntry("PIUTANG_DENDA", new BigDecimal(ACCRUED_PENALTY))
 				.containsEntry("PIUTANG_BUNGA", new BigDecimal(PERIOD_INTEREST))
 				.containsEntry("PIUTANG_POKOK", new BigDecimal(PERIOD_PRINCIPAL))
 				.hasSize(3);
+		// One accrual row per late day, all of them keyed to period 1: 28 × 1,573.33 (TS §4.3, ADR-012).
+		assertThat(jdbc.queryForObject("select count(*) from penalty_accrual where installment_id = ?",
+				Long.class, installmentId(1))).isEqualTo(28L);
+		assertThat(jdbc.queryForObject("select sum(amount) from penalty_accrual where installment_id = ?",
+				BigDecimal.class, installmentId(1))).isEqualByComparingTo(ACCRUED_PENALTY);
+		// Period 2 falls due on this business date, so it is billed but not late: no denda yet.
+		assertThat(installmentRow(2).get("status")).isEqualTo("PENDING");
+		assertThat(jdbc.queryForObject("select count(*) from penalty_accrual where installment_id = ?",
+				Long.class, installmentId(2))).isZero();
+		assertThat(journalEntryCount("BILLING")).isEqualTo(2L);
 	}
 
 	@Test
@@ -578,12 +614,6 @@ class PaymentApiIT {
 
 	private OffsetDateTime closedAtOf(UUID contractId) {
 		return jdbc.queryForObject("select closed_at from contract where id = ?", OffsetDateTime.class, contractId);
-	}
-
-	/** Test-only SQL: the daily accrual job is story D1, so a late installment's penalty is seeded here. */
-	private void accruePenalty(int periodNo, String amount) {
-		jdbc.update("update installment set penalty_amount = ?, status = 'OVERDUE' "
-				+ "where contract_id = ? and period_no = ?", new BigDecimal(amount), contractId, periodNo);
 	}
 
 	private UUID onlyPaymentEntry(UUID paymentId) {

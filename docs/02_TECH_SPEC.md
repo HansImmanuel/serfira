@@ -34,6 +34,13 @@ Aturan dependency:
   yang sama, sehingga piutang yang dibuat jadwal langsung tercatat sebagai receivable; sejak C4 langkah billing
   mem-posting jurnal `BILLING` per installment lewat service yang sama (ADR-011). Edge ini satu arah —
   `ledger` tetap tidak tahu modul lain.
+- `penalty` menyentuh `installment` hanya lewat **application interface** milik `contract`
+  (`InstallmentPenaltyPort`, ADR-012): step harian membaca due date, penalty base dan status, lalu menaikkan
+  `penalty_amount` lewat seam itu, sementara tabel `penalty_accrual` tetap milik `penalty`. Arahnya satu arah
+  (`penalty` → port `contract`); `contract` tidak tahu modul `penalty`, dan `penalty` dilarang menyentuh
+  tabel/entity `contract`/`installment` langsung. `penalty_accrual` (D1) dan `penalty_adjustment` (E5) adalah
+  tabel modul `penalty`; pembacaan `penalty_adjustment` native di `contract` (ADR-010) tetap seam sementara
+  sampai E5 menggantinya dengan interface modul `penalty`.
 - `ledger` tidak boleh bergantung ke module lain (paling dasar).
 - `reporting` boleh baca semua (read-only).
 
@@ -164,6 +171,17 @@ dihitung, sehingga pembayaran **pada** due date menemukan bunga yang sudah recei
 mandiri `InstallmentBillingPort.billDueInterest(contractId, businessDate)` yang siap dibungkus job harian (D2).
 Installment dengan `due_date > business date`, `SETTLED`/`WRITTEN_OFF`, kontrak non-ACTIVE, dan periode berbunga
 nol tidak pernah di-bill — sehingga re-run tidak mem-posting apa pun.
+
+**D1 (ADR-012):** "Penalty accrual harian" direalisasikan sebagai **satu** `journal_entry` per **hari terlambat** —
+`ref_type = PENALTY_ACCRUAL`, `ref_id = penalty_accrual.id`, `entry_date = accrual_date` (pukul 00:00 Asia/Jakarta)
+— debit `PIUTANG_DENDA` = kredit `PENDAPATAN_DENDA`, dengan `contract_id` di kedua baris. Untuk business date `D`,
+step `PenaltyAccrualPort.accrueDuePenalty(contractId, businessDate)` menagih setiap tanggal `x` dengan
+`due_date + grace + 1 ≤ x ≤ D` yang **belum punya baris accrual**, sebesar
+`round((pokok + bunga yang sudah di-bill − yang sudah dibayar/settled/write-off) × penalty_rate_daily, HALF_EVEN, 2)`
+dan `days_late = max(0, x − due_date − grace)` (TS §4.3). Kelayakan bersifat **per tanggal**, bukan kumulatif:
+re-run dan backfill gratis, base yang turun karena pembayaran sebagian tidak menekan accrual hari berikutnya, dan
+hari yang belum tertagih tetap bisa ditagih setelah void (Addendum §6). Installment `SETTLED`/`WRITTEN_OFF` dan
+hari di dalam grace tidak pernah ditagih; denda tidak berbunga di atas denda.
 
 | Write-off piutang | BIAYA_PENGHAPUSAN_PIUTANG | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
 

@@ -108,6 +108,13 @@ Derived:
 - Auto-close maturity (invariant 17) dijalankan pemilik data `contract` setelah resolusi pembayaran: bila seluruh
   installment `PAID` → `status = CLOSED`, `closed_reason = MATURITY`, `closed_at` = instant event resolusi.
   `SETTLED`/`WRITTEN_OFF` tidak memicunya karena alur settlement/write-off memutuskan `closed_reason`-nya sendiri.
+- Denda (D1, ADR-012) memakai `penalty_base = max(0, principal_amount + recognized_interest_amount − paid_amount −
+  settled_amount − written_off_amount)` — bacaan komputabel dari "saldo tagihan pokok+bunga yang belum dibayar"
+  (TS §4.3, PRD D-1). Hanya bunga yang **sudah di-bill** yang dihitung (PRD §5C), dan denda belum dibayar tidak
+  berbunga di atas denda.
+- `penalty_amount` adalah **gross** denda yang sudah diakui: `Σ penalty_accrual.amount` untuk satu installment
+  selalu sama dengan nilainya (invariant 8, ADR-012). Payment dan `penalty_adjustment` tidak mengubahnya — keduanya
+  mengurangi `effective_penalty` (invariant 9).
 
 State transition:
 ```
@@ -197,6 +204,14 @@ Allocation row bersifat append-only. Setelah payment VOIDED, allocation lama tet
 | days_late | INT | |
 | amount | NUMERIC(19,2) | > 0; incremental daily accrual, bukan cumulative snapshot |
 | version | BIGINT | |
+
+Catatan implementasi (D1, ADR-012): ringkasan ini ditulis modul `penalty`; satu baris = satu hari terlambat di luar
+grace, dengan `days_late = hariTelat(x) = max(0, x − due_date − grace)` dan
+`amount = round(penalty_base × penalty_rate_daily, HALF_EVEN, 2)` untuk hari itu. Penagihan ditentukan **per
+tanggal** terhadap himpunan `accrual_date` yang sudah ada (bukan kumulatif), sehingga re-run/backfill gratis, base
+yang turun karena pembayaran sebagian tidak menekan hari berikutnya, dan hari yang belum tertagih tetap bisa ditagih
+setelah void (Addendum §6). Jurnalnya `PENALTY_ACCRUAL` dengan `ref_id = penalty_accrual.id` dan
+`entry_date = accrual_date`. Penurunan denda bukan UPDATE/DELETE baris ini, melainkan `penalty_adjustment` (E5).
 
 ### 1.10 PenaltyAdjustment
 | Field | Type | Keterangan |

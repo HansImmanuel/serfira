@@ -187,6 +187,42 @@ Story baru "done" kalau **semua** terpenuhi:
   - ⚠️ Sisa untuk D2: ShedLock lock provider + tabel `shedlock` (belum ada di V1 → perlu migrasi sendiri), job harian
     yang memanggil `billDueInterest` per kontrak ACTIVE, dan pencatatan `job_run`.
 
+- **Status D1 — kalkulasi denda + accrual harian selesai; scheduler menunggu D2 (lihat ADR-012):**
+  - **Modul baru `penalty`:** `PenaltyCalculator` (pure, tanpa Spring/JPA), `PenaltyTerms`/`PenaltyCharge`, entity
+    `PenaltyAccrual` di tabel `penalty_accrual` (V1: `uk_penalty_accrual(installment_id, accrual_date)`,
+    `amount > 0`, `days_late >= 0`), dan entry point `penalty.application.PenaltyAccrualPort` +
+    `PenaltyAccrualService` yang `@Transactional` (`REQUIRED`) karena step ini bisa dipanggil job (D2) maupun
+    pemanggil yang sudah punya transaksi (catch-up void E4).
+  - **Seam baru:** `contract.application.InstallmentPenaltyPort` (`loadPenaltySnapshot(contractId)` +
+    `applyPenaltyAccrual(contractId, perInstallment)`), diimplementasikan `InstallmentPenaltyService`
+    (non-`@Transactional`, caller-owned). `Installment.accruePenalty` menaikkan **gross** `penalty_amount`, dan
+    `InstallmentBalance.penaltyBase` menghitung "pokok+bunga yang belum dibayar" — satu definisi base, di
+    aggregate pemiliknya. Edge baru: `penalty → contract (application interface)` dan `penalty → ledger`; TS §1
+    diperbarui.
+  - **Semantik accrual (ADR-012 keputusan 3–4):** untuk business date `D`, setiap tanggal `x` dengan
+    `due_date + grace + 1 ≤ x ≤ D` yang **belum punya baris accrual** ditagih
+    `round(penalty_base × penalty_rate_daily, HALF_EVEN, 2)` (TS §2.1), `days_late = hariTelat(x)`, satu jurnal
+    `PENALTY_ACCRUAL` (`ref_id = penalty_accrual.id`, `entry_date = x`). Kelayakan bersifat **per tanggal** (bukan
+    kumulatif terhadap nilai yang sudah diakui), sehingga re-run/backfill gratis, base yang turun karena
+    pembayaran sebagian hanya membuat hari berikutnya lebih murah (tidak menekan accrual), dan tanggal yang belum
+    tertagih tetap bisa ditagih setelah void (Addendum §6). Hanya nilai positif yang ditulis; penurunan denda
+    tetap milik `penalty_adjustment` (E5).
+  - **Bukan scope D1:** step tidak dipanggil dari `PaymentApplicationService`, dan denda tidak menandai
+    `OVERDUE` — lazy trigger di jalur pembayaran serta penandaan aging diputuskan di **D2** bersama ShedLock +
+    `job_run` (PRD D-1/Addendum §12 menyebut "job harian"; ADR-012 alternatif 8). **Tanpa migrasi**, tanpa
+    endpoint/OpenAPI baru.
+  - Test: +31 — `PenaltyCalculatorTest` (14 unit murni: grace boundary, window per tanggal, backfill tanpa baris,
+    base turun tetap menagih, periode berbunga 0%, pembulatan `HALF_EVEN`, leap year, guard), 
+    `InstallmentPenaltyAccrualTest` (6 unit domain: akumulasi delta, guard state, base pokok+bunga yang di-bill,
+    denda tidak berbunga di atas denda), dan `PenaltyAccrualIT` (11 IT: bentuk jurnal & `entry_date`, Σ baris =
+    `penalty_amount`, re-run/backfill, base turun, installment lunas, skip `SETTLED`/`WRITTEN_OFF`, penolakan
+    non-ACTIVE/unknown). `PaymentApiIT` kehilangan seed SQL `accruePenalty`: skenario 2 PRD kini memakai step D1
+    yang nyata (28 hari × 1.573,33 = `44.053,24`, pembayaran `1.617.386,57`). Golden test tidak disentuh.
+  - ⚠️ Sisa untuk D2/E2: job harian per kontrak ACTIVE dengan urutan **billing → accrual** plus pencatatan
+    `job_run`; keputusan lazy accrual di jalur pembayaran; dan catatan untuk E2 — settlement harus menjalankan
+    step accrual untuk tanggal bisnisnya sebelum menghitung `penaltyOutstanding` (TS §4.4), jika tidak hari-hari
+    yang belum ter-accrual tidak ikut masuk quote.
+
 ### Sprint 5 — Settlement, Credit & Waive
 **Goal:** Settlement semantics dan excess credit benar sebelum void/auth.
 - E1 (3), E2 (3), E3 (3), E5 (2) = **11 pts**

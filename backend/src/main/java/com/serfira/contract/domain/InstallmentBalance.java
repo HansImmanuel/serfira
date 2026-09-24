@@ -31,6 +31,36 @@ public record InstallmentBalance(BigDecimal recognizedTotal, BigDecimal resolved
 	}
 
 	/**
+	 * The base a late-payment penalty accrues on (02_TECH_SPEC.md §4.3, PRD D-1): "saldo tagihan
+	 * pokok+bunga yang belum dibayar", read as the installment's principal plus its <b>recognized</b>
+	 * interest minus everything that has resolved against it.
+	 *
+	 * <pre>
+	 * penaltyBase = max(0, principalAmount + recognizedInterestAmount − paid − settled − writtenOff)
+	 * </pre>
+	 *
+	 * <p>Only billed interest counts (PRD §5C: future scheduled interest is never a receivable), and the
+	 * installment's own penalty is deliberately excluded so a penalty never accrues on an unpaid penalty.
+	 * Zero means nothing is outstanding and the day is not chargeable.
+	 *
+	 * <p>Documented conservatism (ADR-012 decision 2): the component split of a payment is not part of this
+	 * aggregate, so denda already paid also reduces this base — the owed pokok+bunga can therefore be
+	 * understated by at most the denda paid, never overstated.
+	 *
+	 * @param installment installment whose penalty base is needed; must not be null
+	 * @return scale-2 money, {@code >= 0}
+	 */
+	public static BigDecimal penaltyBase(Installment installment) {
+		Objects.requireNonNull(installment, "installment");
+		BigDecimal base = installment.getPrincipalAmount()
+				.add(installment.getRecognizedInterestAmount())
+				.subtract(installment.getPaidAmount())
+				.subtract(installment.getSettledAmount())
+				.subtract(installment.getWrittenOffAmount());
+		return base.signum() > 0 ? base : BigDecimal.ZERO;
+	}
+
+	/**
 	 * Balance net of penalty adjustments. This overload is the documented E5 extension point; today
 	 * it is exercised by unit tests only, because no waiver flow exists yet.
 	 *

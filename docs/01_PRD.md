@@ -136,7 +136,7 @@ Write-off hanya mencatat keputusan bisnis yang sudah disetujui; workflow collect
 ## 5. Skenario Bisnis Kritis (harus ditangani benar)
 
 1. **Angsuran normal tepat waktu** — alokasi penuh, installment PAID.
-2. **Telat 10 hari** — denda 10 hari terhitung; bayar → denda duluan baru sisanya ke bunga/pokok.
+2. **Telat 10 hari** — denda = jumlah hari setelah grace yang terhitung; dengan grace 3 hari (PRD D-3, TS §4.3) yang ditagih 7 hari (10 hari bila grace 0); bayar → denda duluan baru sisanya ke bunga/pokok.
 3. **Bayar sebagian** — installment PARTIALLY_PAID, sisa tetap tertagih.
 4. **Bayar lebih** — excess jadi prepayment, tidak otomatis lunasi angsuran berikutnya (kebijakan konfigurabel).
 5. **Pelunasan dipercepat bulan ke-6 dari 11** — quote benar, kontrak CLOSED, ledger balance.

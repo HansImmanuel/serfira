@@ -191,6 +191,42 @@ public class Installment extends Auditable {
 		this.recognizedInterestAmount = total;
 	}
 
+	/**
+	 * Recognizes one day's late-payment penalty of this installment as receivable (DM §1.9, PRD D-1,
+	 * TS §4.3): raises {@code penalty_amount} by {@code amount}.
+	 *
+	 * <p>Called by the daily penalty step (D1) with one day's charge, after the grace period of the
+	 * installment's due date has passed; the caller decides <b>which</b> days are still owed, this method only
+	 * records the amount (ADR-012). Because {@code penalty_amount} is the <b>gross</b> recognized penalty, the
+	 * sum of an installment's {@code penalty_accrual} rows equals the value written here — payment and waiver
+	 * never change it; they reduce the effective outstanding penalty instead (invariant 9).
+	 *
+	 * <p>The resolution state is deliberately left alone: a penalty is recognized against a late day even if
+	 * the installment has since been paid, and the aging state ({@code OVERDUE}) stays the aging job's decision
+	 * (story D2). {@code SETTLED}/{@code WRITTEN_OFF} installments can never accrue more: settlement settles the
+	 * denda outstanding and a write-off caps the recognized receivable (invariant 15), so that guard is
+	 * defensive — the penalty step skips those states before calling here.
+	 *
+	 * @param amount scale-2 money, {@code > 0}
+	 * @throws ContractStateException   if the installment is already {@code SETTLED} / {@code WRITTEN_OFF}
+	 * @throws IllegalArgumentException if the amount is not positive
+	 * @throws ArithmeticException      if the amount is finer than scale 2
+	 */
+	public void accruePenalty(BigDecimal amount) {
+		if (amount == null) {
+			throw new IllegalArgumentException("amount is required");
+		}
+		BigDecimal accrued = amount.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
+		if (accrued.signum() <= 0) {
+			throw new IllegalArgumentException("an accrued penalty amount must be > 0 but was " + accrued);
+		}
+		if (status == InstallmentStatus.SETTLED || status == InstallmentStatus.WRITTEN_OFF) {
+			throw new ContractStateException(
+					"installment " + periodNo + " is " + status + " and can no longer accrue a penalty");
+		}
+		this.penaltyAmount = this.penaltyAmount.add(accrued);
+	}
+
 	public Contract getContract() {
 		return contract;
 	}

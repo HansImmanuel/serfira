@@ -61,10 +61,11 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 	 * (DM §1.4 invariant 9: effective penalty = {@code penalty_amount − Σ adjustments}).
 	 *
 	 * <p><b>Temporary read seam (ADR-010):</b> {@code penalty_adjustment} is written by the penalty
-	 * module (D1/E5), which does not exist yet, while the effective penalty is part of the receivable
-	 * this module exposes — and V3's {@code assert_payment_allocation_component_caps} computes the very
-	 * same sum for the very same cap. Only rows that exist are returned, so the caller treats a missing
-	 * installment as "no adjustments". E5 replaces this with the penalty module's own interface.
+	 * module (story E5; the module itself now exists — D1 owns {@code penalty_accrual}), while the
+	 * effective penalty is part of the receivable this module exposes — and V3's
+	 * {@code assert_payment_allocation_component_caps} computes the very same sum for the very same cap.
+	 * Only rows that exist are returned, so the caller treats a missing installment as "no adjustments".
+	 * E5 replaces this with the penalty module's own interface.
 	 *
 	 * <p>Native and mapped explicitly because there is deliberately no {@code PenaltyAdjustment} entity
 	 * in this module: the projection is two columns and nothing here is ever written.
