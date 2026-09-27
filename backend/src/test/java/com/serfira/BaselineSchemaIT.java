@@ -8,6 +8,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -200,6 +201,23 @@ class BaselineSchemaIT {
 				.replace("repeat('c', 64)", "repeat('d', 64)")
 				.replace("repeat('r', 64)", "repeat('s', 64)")
 				.replace("'MF-TEST-0003'", "'MF-TEST-0004'")))
+				.isInstanceOf(DataAccessException.class);
+	}
+
+	@Test
+	void systemPrincipalIsInactiveAndItsStoredCredentialCannotVerify() {
+		Map<String, Object> row = jdbc.queryForMap(
+			"select password_hash, is_active, role from app_user where username = 'SYSTEM'");
+
+		assertThat(row.get("role")).isEqualTo("SYSTEM");
+		assertThat(row.get("is_active")).isEqualTo(false);
+		/* {noop}! is the plaintext encoder id of Spring Security; it may never guard a seeded principal (V8). */
+		assertThat((String) row.get("password_hash")).doesNotStartWith("{noop}");
+	}
+
+	@Test
+	void theSystemRoleCanNeverBeAnInteractivePrincipal() {
+		assertThatThrownBy(() -> jdbc.update("update app_user set is_active = TRUE where username = 'SYSTEM'"))
 				.isInstanceOf(DataAccessException.class);
 	}
 

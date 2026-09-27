@@ -17,18 +17,25 @@ import java.util.Base64;
 @Configuration(proxyBeanMethods = false)
 public class PiiSecurityConfiguration {
 
-	private static final String MISSING_KEY_MESSAGE = "'%s' is required (base64-encoded, AES-256 key = 32 bytes)"
-			+ " — set it via SERFIRA_PII_ENCRYPTION_KEY / SERFIRA_PII_HMAC_KEY environment variables";
+	/** AES key must decode to exactly 32 bytes (see PiiSecuritySupport.configure). */
+	private static final String MISSING_ENCRYPTION_KEY_MESSAGE =
+			"'serfira.security.pii.encryption-key' is required (base64, AES-256 key = 32 bytes)"
+					+ "; set the SERFIRA_SECURITY_PII_ENCRYPTION_KEY environment variable";
+
+	/** HMAC key must decode to at least 32 bytes. */
+	private static final String MISSING_HMAC_KEY_MESSAGE =
+			"'serfira.security.pii.hmac-key' is required (base64, >= 32 bytes)"
+					+ "; set the SERFIRA_SECURITY_PII_HMAC_KEY environment variable";
 
 	@Bean
 	PiiKeyMaterial piiKeyMaterial(
 			@Value("${serfira.security.pii.encryption-key:}") String encryptionKeyBase64,
 			@Value("${serfira.security.pii.hmac-key:}") String hmacKeyBase64) {
 		if (encryptionKeyBase64 == null || encryptionKeyBase64.isBlank()) {
-			throw new IllegalStateException(MISSING_KEY_MESSAGE.formatted("serfira.security.pii.encryption-key"));
+			throw new IllegalStateException(MISSING_ENCRYPTION_KEY_MESSAGE);
 		}
 		if (hmacKeyBase64 == null || hmacKeyBase64.isBlank()) {
-			throw new IllegalStateException(MISSING_KEY_MESSAGE.formatted("serfira.security.pii.hmac-key"));
+			throw new IllegalStateException(MISSING_HMAC_KEY_MESSAGE);
 		}
 		PiiSecuritySupport.configure(
 				Base64.getDecoder().decode(encryptionKeyBase64),

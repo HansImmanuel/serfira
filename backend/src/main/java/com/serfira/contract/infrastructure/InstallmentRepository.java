@@ -21,8 +21,6 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 
 	List<Installment> findByContractIdOrderByPeriodNo(UUID contractId);
 
-	long countByContractId(UUID contractId);
-
 	/**
 	 * Outstanding totals per contract for a set of contracts, in one query.
 	 *

@@ -26,9 +26,6 @@ public interface ContractRepository extends JpaRepository<Contract, UUID>, JpaSp
 
 	Optional<Contract> findByContractNo(String contractNo);
 
-	/** Retry-safety lookup: the contract created by an idempotent request (V7 unique index). */
-	Optional<Contract> findByIdempotencyKey(String idempotencyKey);
-
 	/** Used by the invariant-18 guard: is there already a live contract for this customer + asset? */
 	boolean existsByCustomerIdAndAssetIdAndStatusIn(UUID customerId, UUID assetId, Collection<ContractStatus> statuses);
 

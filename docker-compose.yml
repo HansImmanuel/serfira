@@ -2,16 +2,17 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: serfira
-      POSTGRES_USER: serfira
+      POSTGRES_DB: ${POSTGRES_DB:-serfira}
+      POSTGRES_USER: ${POSTGRES_USER:-serfira}
       # Local-development credential only — override via POSTGRES_PASSWORD or .env outside dev.
-      POSTGRES_PASSWORD: serfira_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-serfira_dev}
     ports:
-      - "5432:5432"
+      # Published on localhost only: the development database must not be reachable from the network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - serfira_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U serfira -d serfira"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-serfira} -d ${POSTGRES_DB:-serfira}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -20,15 +21,15 @@ services:
     build:
       context: ./backend
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/serfira
-      SPRING_DATASOURCE_USERNAME: serfira
-      SPRING_DATASOURCE_PASSWORD: serfira_dev
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-serfira}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-serfira}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-serfira_dev}
       # Local-development keys only — override via these variables or .env outside dev.
       # Missing keys fail fast at startup (no plaintext/JWT fallback).
       # Env names mirror the Spring properties (serfira.security.*) via relaxed binding.
-      SERFIRA_SECURITY_PII_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
-      SERFIRA_SECURITY_PII_HMAC_KEY: YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=
-      SERFIRA_SECURITY_JWT_SECRET_BASE64: c2VyZmlyYS1kZXYtb25seS1qd3Qtc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm
+      SERFIRA_SECURITY_PII_ENCRYPTION_KEY: ${SERFIRA_SECURITY_PII_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      SERFIRA_SECURITY_PII_HMAC_KEY: ${SERFIRA_SECURITY_PII_HMAC_KEY:-YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=}
+      SERFIRA_SECURITY_JWT_SECRET_BASE64: ${SERFIRA_SECURITY_JWT_SECRET_BASE64:-c2VyZmlyYS1kZXYtb25seS1qd3Qtc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm}
     ports:
       - "8080:8080"
     depends_on:

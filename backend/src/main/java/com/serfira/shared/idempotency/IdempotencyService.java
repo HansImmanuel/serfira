@@ -33,6 +33,12 @@ import java.util.function.Supplier;
  * supplier is <b>never</b> invoked again; a different request under the same key → 409
  * {@code CONFLICT}; no key → 400 {@code VALIDATION_ERROR}. Only the keyed request fingerprint and
  * the response payload are stored — never the raw request, so no plaintext PII is persisted.
+ *
+ * <p>Retention (TS §2.5, ADR-007 decision 9): the claim carries {@code expires_at} =
+ * {@code now + IDEMPOTENCY_KEY_RETENTION_DAYS}. While that window is open the behaviours above
+ * hold; once it has elapsed the key may be claimed again, because a request that old is no
+ * longer a retry of this one. Deleting expired rows stays a separate job (story F4) — this only
+ * stops an expired key from blocking a legitimate new request forever.
  */
 @Service
 public class IdempotencyService {
@@ -65,11 +71,20 @@ public class IdempotencyService {
 
 		OffsetDateTime now = clock.now();
 		int retentionDays = systemParameters.requireInt(SystemParameterKeys.IDEMPOTENCY_KEY_RETENTION_DAYS);
+		OffsetDateTime expiresAt = now.plusDays(retentionDays);
+		UUID actor = auditContext.actorId();
 		int claimed = keys.claim(UUID.randomUUID(), key, endpoint, fingerprint, IdempotencyKey.STATUS_IN_PROGRESS,
-				now.plusDays(retentionDays), now, auditContext.actorId());
+				expiresAt, now, actor);
 
 		if (claimed == 0) {
-			return replay(endpoint, key, fingerprint, responseType);
+			// Inside the retention window the key is a retry: replay or conflict, never a second
+			// execution. An expired key names a new request, so its row is taken over instead of
+			// replaying a stale response (ADR-007 decision 9).
+			int reclaimed = keys.reclaimExpired(key, endpoint, fingerprint, IdempotencyKey.STATUS_IN_PROGRESS,
+					expiresAt, now, actor);
+			if (reclaimed == 0) {
+				return replay(endpoint, key, fingerprint, responseType);
+			}
 		}
 
 		T response = operation.get();

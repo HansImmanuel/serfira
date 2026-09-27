@@ -83,8 +83,9 @@ docker compose up --build
 # Aplikasi: http://localhost:8080  (OpenAPI UI: /swagger-ui.html)
 ```
 
-Variabel `POSTGRES_PASSWORD` / `SPRING_DATASOURCE_PASSWORD` di `docker-compose.yml`
-adalah kredensial **lokal-dev saja**; override lewat `.env` untuk lingkungan lain.
+`docker-compose.yml` memuat default **lokal-dev saja** (`POSTGRES_PASSWORD`, kunci PII, kunci JWT)
+dan membacanya lewat `${VAR:-default}`, jadi override cukup lewat environment atau file `.env`
+(dibaca otomatis oleh `docker compose`). Port PostgreSQL hanya dipublikasikan ke `127.0.0.1`.
 
 ## Keamanan PII (ADR-004)
 
@@ -109,6 +110,17 @@ lihat ADR-005):
   ```
   Nilai dev/portofolio ada di `docker-compose.yml` (dan `src/test/resources/application.properties`
   untuk test) — **bukan production value**.
+
+## Autentikasi & Akun SYSTEM (V8)
+
+Akun `SYSTEM` (principal non-interaktif untuk job, Addendum §3.3) di-seed `is_active = FALSE`
+dengan `password_hash = '{disabled}'`: id encoder itu tidak terdaftar, sehingga verifikasi password
+selalu gagal. `{noop}` **tidak boleh** dipakai untuk principal mana pun (nilai lama `{noop}!`
+membuat password literal `!` valid), dan constraint `ck_app_user_system_inactive` menjaganya:
+`role = 'SYSTEM'` selalu non-aktif, jadi mengaktifkannya kembali butuh migrasi forward-only.
+
+Story F2 wajib menolak user non-aktif sebelum verifikasi password. Job tetap memakai `AuditContext`
+(bukan login), sehingga `created_by`/`updated_by` akun SYSTEM tetap atributabel.
 
 ## Struktur Repositori
 
