@@ -337,4 +337,48 @@ class AccountingInvariantsIT {
 		assertThatThrownBy(() -> jdbc.update("delete from settlement_quote where id = ?", quoteId))
 				.isInstanceOf(DataAccessException.class);
 	}
+
+	// -------------------------------------------------------------------------------------
+	// V9 — penalty_accrual immutability and days_late integrity (T2, ADR-012 decision 5,
+	// invariant 8: accrual rows are append-only; reductions are penalty_adjustment rows, E5).
+	// -------------------------------------------------------------------------------------
+
+	@Test
+	void penaltyAccrualCannotBeUpdatedOrDeleted() {
+		UUID accrualId = insertAccrual(1);
+
+		assertThatThrownBy(() -> jdbc.update("update penalty_accrual set amount = 1.00 where id = ?", accrualId))
+				.isInstanceOf(DataAccessException.class);
+		assertThatThrownBy(() -> jdbc.update("delete from penalty_accrual where id = ?", accrualId))
+				.isInstanceOf(DataAccessException.class);
+	}
+
+	@Test
+	void penaltyAccrualRejectsDaysLateBelowOne() {
+		assertThatThrownBy(() -> jdbc.update("""
+				insert into penalty_accrual (installment_id, accrual_date, days_late, amount,
+					created_at, updated_at)
+					values (?, date '2026-03-01', 0, 10.00, clock_timestamp(), clock_timestamp())""",
+				installmentId))
+				.isInstanceOf(DataIntegrityViolationException.class);
+	}
+
+	@Test
+	void shedlockTableExistsWithTheProvidersExpectedColumns() {
+		jdbc.update("insert into shedlock (name, lock_until, locked_at, locked_by) "
+				+ "values ('test-lock', clock_timestamp(), clock_timestamp(), 'it-runner')");
+
+		assertThat(jdbc.queryForObject("select locked_by from shedlock where name = 'test-lock'", String.class))
+				.isEqualTo("it-runner");
+
+		jdbc.update("delete from shedlock where name = 'test-lock'");
+	}
+
+	private UUID insertAccrual(int daysLate) {
+		return jdbc.queryForObject("""
+				insert into penalty_accrual (installment_id, accrual_date, days_late, amount,
+					created_at, updated_at)
+					values (?, date '2026-03-01', ?, 10.00, clock_timestamp(), clock_timestamp())
+					returning id""", UUID.class, installmentId, daysLate);
+	}
 }

@@ -36,9 +36,11 @@ Aturan dependency:
   `ledger` tetap tidak tahu modul lain.
 - `penalty` menyentuh `installment` hanya lewat **application interface** milik `contract`
   (`InstallmentPenaltyPort`, ADR-012): step harian membaca due date, penalty base dan status, lalu menaikkan
-  `penalty_amount` lewat seam itu, sementara tabel `penalty_accrual` tetap milik `penalty`. Arahnya satu arah
-  (`penalty` → port `contract`); `contract` tidak tahu modul `penalty`, dan `penalty` dilarang menyentuh
-  tabel/entity `contract`/`installment` langsung. `penalty_accrual` (D1) dan `penalty_adjustment` (E5) adalah
+  `penalty_amount` lewat seam itu, sementara tabel `penalty_accrual` tetap milik `penalty`. Job T3 juga
+  memperoleh daftar/status kontrak ACTIVE hanya lewat `ActiveContractListingPort`; repository/entity
+  `contract` tidak pernah keluar dari modul pemiliknya. Arahnya satu arah (`penalty` → port `contract`);
+  `contract` tidak tahu modul `penalty`, dan `penalty` dilarang menyentuh tabel/entity
+  `contract`/`installment` langsung. `penalty_accrual` (D1) dan `penalty_adjustment` (E5) adalah
   tabel modul `penalty`; pembacaan `penalty_adjustment` native di `contract` (ADR-010) tetap seam sementara
   sampai E5 menggantinya dengan interface modul `penalty`.
 - `ledger` tidak boleh bergantung ke module lain (paling dasar).
@@ -86,7 +88,17 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   (Contract, Installment, Payment).
 - Transaksi boundary di application service (`@Transactional`), bukan di controller.
 - Semua write path mengikuti pola: validasi → hitung → tulis aggregate → tulis jurnal → commit.
-- Job (denda harian, aging) pakai shedlock agar aman multi-instance.
+- Daily servicing T3 memakai ShedLock JDBC dengan DB time dan keep-alive lease; cron dan explicit backfill
+  masuk lewat locked public facade yang sama, sehingga invocation kedua dengan nama lock yang sama dilewati.
+  Cron property berjalan di Asia/Jakarta dan bernilai `-` di test agar tidak menyentuh fixture secara
+  asinkron.
+- Batch orchestrator tidak transactional. Setiap contract diproses melalui bean terpisah dengan satu
+  transaksi baru berurutan **billing → penalty**; kedua langkah/jurnal commit atau rollback bersama, sedangkan
+  contract lain tetap independen. Optimistic-lock dan unique-key conflict (SQLSTATE `23505`) di-retry paling
+  banyak 5 total attempts; error deterministik tidak di-retry. Contract yang menjadi non-ACTIVE saat menunggu
+  gilirannya dilewati.
+- Lifecycle `job_run` ditulis `REQUIRES_NEW`, terpisah dari transaksi finansial per contract, dengan actor
+  `SYSTEM`. V10 menyimpan `business_date` eksplisit agar backfill dapat dibedakan dari waktu eksekusinya.
 
 ### 2.4 Audit
 - Semua tabel punya `created_at`, `created_by`, `updated_at`, `updated_by` (envers dibolehkan, tapi
@@ -215,6 +227,13 @@ recognized_penalty = Σ denda_harian yang sudah diakui
 penalty_amount pada Installment = recognized_penalty (gross, sebelum payment/adjustment). `effective_penalty = penalty_amount − active penalty allocations − penalty adjustments`.
 ```
 Denda dihitung job harian dan **diakui incremental** sebagai `PenaltyAccrual.amount` per tanggal. `PenaltyAccrual.amount` adalah delta hari itu, **bukan cumulative snapshot**, sehingga tidak double-count saat dijumlah. Job mem-posting delta ke ledger dan update gross `penalty_amount`. Recalc setelah void hanya menambah catch-up accrual bila expected recognized penalty lebih besar dari nilai yang sudah diakui.
+
+**Invariant accrue-before-resolve (ADR-013):** setiap alur yang menurunkan base denda sebuah installment
+(pembayaran, settlement, write-off) wajib membilling dan meng-accrue denda melalui tanggal bisnisnya di
+transaksi yang sama, sebelum resolusi itu diterapkan. Ini menjamin tanggal `D` selalu ditagih dengan base
+yang berlaku pada awal `D` (A-1), karena tidak ada resolusi yang menyisip sebelum accrual berjalan. Void
+adalah satu-satunya alur yang menaikkan base retroaktif, dan tidak memicu re-pricing tanggal yang sudah
+ter-accrual (Addendum §6, ADR-012 keputusan 7, dipertegas ADR-013).
 
 ### 4.4 Settlement quote
 Quote harus menghindari future scheduled interest yang belum menjadi tagihan. Snapshot minimal:

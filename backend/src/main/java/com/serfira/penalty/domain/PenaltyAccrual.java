@@ -33,6 +33,13 @@ import java.util.UUID;
  *
  * <p>{@code amount} is that day's delta, never a cumulative snapshot, so summing an installment's rows gives
  * the gross {@code penalty_amount} without double counting (TS §4.3, DM §1.9).
+ *
+ * <p>{@code version} stays mapped even though the table is immutable at the database level from V9 onward
+ * (a {@code BEFORE UPDATE OR DELETE} trigger rejects both). It is harmless: this entity has no setters, and
+ * {@code PenaltyAccrualService} only ever persists a transient instance via {@code repository.save(new
+ * PenaltyAccrual(...))}, so JPA only ever issues an INSERT here — the trigger never sees an UPDATE to
+ * reject. The column documents this row as audited/versioned like every other entity rather than implying
+ * updates are expected (T2).
  */
 @Entity
 @Table(name = "penalty_accrual", uniqueConstraints = {

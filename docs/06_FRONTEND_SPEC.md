@@ -256,15 +256,21 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 ### 2.7 `/contracts/[id]/statement` — Rekening Koran
 **Komponen:** tabel mutasi per kontrak secara kronologis.
 
-**Kolom:**
+**Kolom (ADR-013, menutup A-8 — ledger-literal, bukan customer balance view):**
 | Kolom | Source |
 |---|---|
 | Tanggal | `entry_date` |
-| Keterangan | `description` |
-| Ref Type | `ref_type` (PAYMENT/SETTLEMENT/PENALTY/BILLING) |
-| Debit | `debit` sum per entry |
-| Kredit | `credit` sum per entry |
+| Akun | `account_code` (+ nama akun) |
+| Keterangan | `description` (dari `journal_entry` induk) |
+| Ref Type | `ref_type` (PAYMENT/SETTLEMENT/PENALTY_ACCRUAL/BILLING/...) |
+| Debit | `debit` — nilai `journal_line` literal untuk baris itu, bukan agregat |
+| Kredit | `credit` — nilai `journal_line` literal untuk baris itu, bukan agregat |
+| Reversal | flag bila `reversal_of_id IS NOT NULL` |
 | Kontrak Ref | link ke payment/settlement |
+
+Tidak ada kolom running balance pada Phase 1: baris melintasi akun yang berbeda arti (`PIUTANG_*`, `KAS`,
+`PENDAPATAN_*`, `TITIPAN_NASABAH`), dan sebuah saldo tunggal berjalan lintas akun tidak mewakili apa pun yang
+berguna. Agregat outstanding yang berarti tersedia lewat laporan aging (§2.9).
 
 **Filter:** date range, ref_type.
 
@@ -285,13 +291,16 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 ---
 
 ### 2.9 `/reports/aging` — Laporan Aging
-**Filter:** as-of date (default today).
+**Filter:** as-of date (default today). ADR-013 (menutup A-6): hanya `today` yang valid pada Phase 1, tidak
+ada rekonstruksi historis — nilai lain ditolak backend dengan `400 INVALID_AS_OF_DATE`. UI mengunci filter
+ke hari ini (read-only atau disabled) sampai historical `as_of` benar-benar didukung.
 
-**Tampilan:** tabel dengan kolom aging bucket:
+**Tampilan:** tabel dengan kolom aging bucket, dihitung per installment lalu dijumlahkan per kontrak
+(ADR-013, menutup A-7):
 | Contract No | Customer | Outstanding | Current | 1-30 DPD | 31-60 DPD | 61-90 DPD | >90 DPD |
 |---|---|---|---|---|---|---|---|
 
-**Summary baris total** di atas tabel.
+Hanya kontrak `ACTIVE` yang tampil. **Summary baris total** di atas tabel.
 
 ---
 

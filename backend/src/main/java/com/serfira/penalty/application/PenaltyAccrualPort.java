@@ -38,8 +38,9 @@ public interface PenaltyAccrualPort {
 	 *
 	 * @param contractId   contract whose due penalty is to be recognized
 	 * @param businessDate business date the step runs for; no later day is ever charged
-	 * @return how many accrual rows (and journal entries) this call wrote, {@code 0} when nothing was due —
-	 *         the counter the daily job reports as {@code job_run.records_processed} (D2)
+	 * @return how many accrual rows (and journal entries) this call wrote, {@code 0} when nothing was due;
+	 *         this is a financial-write diagnostic only — {@code job_run.records_processed} counts contracts
+	 *         processed by the daily step (ADR-013), not accrual rows
 	 * @throws ContractNotFoundException if no contract has that id (404 {@code CONTRACT_NOT_FOUND})
 	 * @throws ContractStateException    if the contract is not ACTIVE (409 {@code CONTRACT_STATE_INVALID}) —
 	 *                                   only a serviced contract accrues penalty

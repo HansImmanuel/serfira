@@ -120,10 +120,20 @@ State transition:
 ```
 PENDING ── partial ──▶ PARTIALLY_PAID ── full payment ──▶ PAID
 PENDING/PARTIALLY_PAID ── overdue job ──▶ OVERDUE
+OVERDUE ── partial payment ──▶ PARTIALLY_PAID
 PENDING/PARTIALLY_PAID/OVERDUE ── settlement ──▶ SETTLED
 PENDING/PARTIALLY_PAID/OVERDUE ── write-off ──▶ WRITTEN_OFF
 OVERDUE ── full regular pay ──▶ PAID
 ```
+
+**Definisi DPD dan `OVERDUE` (ADR-013, menutup A-4/A-5):** installment `PENDING`/`PARTIALLY_PAID` menjadi
+`OVERDUE` pada hari pertama yang chargeable menurut denda, `today >= due_date + grace_period_days + 1`,
+sehingga aging dan penalty (TS §4.3) selalu memakai definisi hari-mulai yang sama. `DPD` pada tanggal bisnis
+`D` = `max(0, D − due_date − grace_period_days)`. Pembayaran sebagian pada installment `OVERDUE` menjadikannya
+`PARTIALLY_PAID` (kode `Installment.applyPayment` yang sudah ada, bukan diagram lama yang mempertahankan
+`OVERDUE`); job aging harian menandainya `OVERDUE` kembali pada run berikutnya bila `outstanding > 0` dan
+`DPD >= 1`. Tidak ada laporan yang membaca status mentah untuk DPD — laporan aging (D3) menghitung DPD
+langsung dari `due_date`, bukan dari status installment.
 
 Weekend/public holiday tidak menggeser due date pada MVP.
 
@@ -283,7 +293,11 @@ Semantik posting (implementasi C1, ADR-008):
 
 Implementasi B5 (ADR-007): key bersifat endpoint-scoped (`(endpoint, key)` unique), claim dilakukan dengan `INSERT … ON CONFLICT DO NOTHING` di dalam transaksi bisnis, `request_hash` adalah digest keyed (HMAC-SHA-256) atas JSON canonical request, dan `response_json` menyimpan payload proyeksi ter-mask untuk direplay. `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS`. Cleanup baris kedaluwarsa belum diimplementasikan (menyusul story C3).
 
-`job_run`: `job_name, started_at, finished_at, records_processed, records_failed, status`.
+`job_run`: `job_name, business_date, started_at, finished_at, records_processed, records_failed, status`.
+Satu row merekam satu step dari satu invocation (ADR-013, klarifikasi T3), bukan satu contract. Rerun pada
+`business_date` yang sama membuat row invocation baru agar histori percobaan dan stale `RUNNING` tidak
+ditimpa. `records_processed`/`records_failed` menghitung contract; final status `COMPLETED` hanya bila failed
+nol, selain itu `FAILED`. Start/finish dicatat dalam transaksi terpisah dari write finansial per contract.
 
 `reconciliation_exception`: `contract_id, check_date, check_type, expected_amount, actual_amount, diff_amount, status, resolved_note, resolved_by, resolved_at`.
 

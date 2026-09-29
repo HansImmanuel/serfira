@@ -45,7 +45,7 @@ class BaselineSchemaIT {
 				"contract_credit", "contract_credit_application",
 				"settlement_quote", "settlement", "settlement_allocation", "settlement_credit_application",
 				"document_number_counter", "system_parameter", "idempotency_keys", "refresh_token",
-				"job_run", "reconciliation_exception", "outbox_events");
+				"job_run", "reconciliation_exception", "outbox_events", "shedlock");
 	}
 
 	@Test

@@ -150,6 +150,12 @@ Story baru "done" kalau **semua** terpenuhi:
   - ⚠️ Sisa untuk story lanjutan: `PaymentStatus.VOIDED`/`voided_at`/`void_reason` belum pernah ditulis (E4); perhitungan Σ alokasi aktif memakai baris `POSTED` saja sementara trigger V3 masih menghitung semua baris — ditinjau ulang saat E4 memperkenalkan baris `VOIDED`.
 
 ### Sprint 4 — Penalty, Aging & Phase-1 Close
+> **Re-planned in `docs/tasks.md`.** C4/D1 dan task re-plan T1–T3 sudah selesai; C5/D3 dan T4–T11 masih
+> mengikuti **Sprint 4b** (penalty correctness & daily job) / **Sprint 4c** (access control & Phase-1 reads)
+> di `docs/tasks.md`. `tasks.md` adalah sumber kebenaran untuk status/scope; rincian C4/D1 di bawah tetap
+> mempertahankan konteks keputusan aslinya, dengan catatan penyelesaian T3 disinkronkan agar tidak menyatakan
+> scheduler masih kosong.
+
 **Goal:** Sistem hidup dengan denda dan aging harian yang bisa diaudit.
 - C4 (3), C5 (2), D1 (3), D2 (3), D3 (2) = **13 pts**
 - ⚠️ C4 (billing/recognition) dinaikkan ke 3 pts: seam billing baru + lazy trigger di jalur pembayaran + jurnal
@@ -157,7 +163,7 @@ Story baru "done" kalau **semua** terpenuhi:
   tetap milik D2, jadi exit "automated billing/recognition … berjalan" baru tertutup setelah D2 selesai.
 - **Exit:** automated billing/recognition + penalty + aging + `job_run` berjalan (billing step ada di C4, scheduler
   hariannya di D2); final regular payment dapat auto-close contract; **Fase 1 selesai**.
-- **Status C4 — billing/recognition + maturity close selesai; scheduler menunggu D2 (lihat ADR-011):**
+- **Status C4 — billing/recognition + maturity close selesai; scheduler billing → penalty selesai di T3:**
   - **Seam baru:** `contract.application.InstallmentBillingPort` (`billDueInterest(contractId, businessDate)`)
     diimplementasikan `InstallmentBillingService` — port terpisah dari `InstallmentReceivablePort` (resolusi uang
     vs fakta akuntansi jadwal; satu port satu implementasi). Edge `payment → contract (application interface)` kini
@@ -184,13 +190,13 @@ Story baru "done" kalau **semua** terpenuhi:
     end-to-end maturity close di `PaymentApiIT` (termasuk 409 untuk pembayaran setelah close). `PaymentApiIT` kini
     membuktikan PRD skenario 1 tanpa seeding dan memverifikasi billing ikut rollback pada snapshot korup.
     Total 357 hijau / 0 gagal; golden test & `InstallmentBalanceIT` tidak diubah.
-  - ⚠️ Sisa untuk D2: ShedLock lock provider + tabel `shedlock` (belum ada di V1 → perlu migrasi sendiri), job harian
-    yang memanggil `billDueInterest` per kontrak ACTIVE, dan pencatatan `job_run`.
+  - ✅ **T3 selesai:** V9 menyediakan tabel ShedLock; job harian memanggil `billDueInterest` lalu penalty
+    secara atomik per contract ACTIVE, dan V10 + `JobRunService` mencatat setiap invocation step.
 
-- **Status D1 — kalkulasi denda + accrual harian selesai; scheduler menunggu D2 (lihat ADR-012):**
+- **Status D1 — kalkulasi denda + accrual harian selesai; scheduler billing → penalty selesai di T3:**
   - **Modul baru `penalty`:** `PenaltyCalculator` (pure, tanpa Spring/JPA), `PenaltyTerms`/`PenaltyCharge`, entity
-    `PenaltyAccrual` di tabel `penalty_accrual` (V1: `uk_penalty_accrual(installment_id, accrual_date)`,
-    `amount > 0`, `days_late >= 0`), dan entry point `penalty.application.PenaltyAccrualPort` +
+    `PenaltyAccrual` di tabel `penalty_accrual` (`uk_penalty_accrual(installment_id, accrual_date)`,
+    `amount > 0`, `days_late >= 1` setelah V9), dan entry point `penalty.application.PenaltyAccrualPort` +
     `PenaltyAccrualService` yang `@Transactional` (`REQUIRED`) karena step ini bisa dipanggil job (D2) maupun
     pemanggil yang sudah punya transaksi (catch-up void E4).
   - **Seam baru:** `contract.application.InstallmentPenaltyPort` (`loadPenaltySnapshot(contractId)` +
@@ -208,9 +214,8 @@ Story baru "done" kalau **semua** terpenuhi:
     tertagih tetap bisa ditagih setelah void (Addendum §6). Hanya nilai positif yang ditulis; penurunan denda
     tetap milik `penalty_adjustment` (E5).
   - **Bukan scope D1:** step tidak dipanggil dari `PaymentApplicationService`, dan denda tidak menandai
-    `OVERDUE` — lazy trigger di jalur pembayaran serta penandaan aging diputuskan di **D2** bersama ShedLock +
-    `job_run` (PRD D-1/Addendum §12 menyebut "job harian"; ADR-012 alternatif 8). **Tanpa migrasi**, tanpa
-    endpoint/OpenAPI baru.
+    `OVERDUE`. Re-plan memisahkannya: scheduler + `job_run` selesai di T3; lazy payment trigger tetap T4;
+    aging tetap T6. Tidak ada endpoint/OpenAPI baru untuk job internal.
   - Test: +31 — `PenaltyCalculatorTest` (14 unit murni: grace boundary, window per tanggal, backfill tanpa baris,
     base turun tetap menagih, periode berbunga 0%, pembulatan `HALF_EVEN`, leap year, guard), 
     `InstallmentPenaltyAccrualTest` (6 unit domain: akumulasi delta, guard state, base pokok+bunga yang di-bill,
@@ -218,10 +223,10 @@ Story baru "done" kalau **semua** terpenuhi:
     `penalty_amount`, re-run/backfill, base turun, installment lunas, skip `SETTLED`/`WRITTEN_OFF`, penolakan
     non-ACTIVE/unknown). `PaymentApiIT` kehilangan seed SQL `accruePenalty`: skenario 2 PRD kini memakai step D1
     yang nyata (28 hari × 1.573,33 = `44.053,24`, pembayaran `1.617.386,57`). Golden test tidak disentuh.
-  - ⚠️ Sisa untuk D2/E2: job harian per kontrak ACTIVE dengan urutan **billing → accrual** plus pencatatan
-    `job_run`; keputusan lazy accrual di jalur pembayaran; dan catatan untuk E2 — settlement harus menjalankan
-    step accrual untuk tanggal bisnisnya sebelum menghitung `penaltyOutstanding` (TS §4.4), jika tidak hari-hari
-    yang belum ter-accrual tidak ikut masuk quote.
+  - ✅ **T3 selesai:** job per contract ACTIVE menjalankan **billing → accrual** dalam satu transaksi,
+    memakai ShedLock renewable dan mencatat invocation `job_run`. **Sisa T4/E2:** payment path dan settlement
+    harus menjalankan accrual untuk tanggal bisnisnya sebelum menurunkan/membaca `penaltyOutstanding`; jika
+    tidak, hari yang belum ter-accrual dapat hilang dari base/quote.
 
 ### Sprint 5 — Settlement, Credit & Waive
 **Goal:** Settlement semantics dan excess credit benar sebelum void/auth.

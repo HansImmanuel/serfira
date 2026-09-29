@@ -12,6 +12,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -36,4 +37,10 @@ public interface ContractRepository extends JpaRepository<Contract, UUID>, JpaSp
 	@EntityGraph(attributePaths = {"customer", "asset"})
 	@Query("select c from Contract c where c.id = :id")
 	Optional<Contract> findDetailById(@Param("id") UUID id);
+
+	/** Contract-owned projection for background servicing jobs; never exposes entities across modules. */
+	@Query("select c.id from Contract c where c.status = :status order by c.id")
+	List<UUID> findIdsByStatusOrderById(@Param("status") ContractStatus status);
+
+	boolean existsByIdAndStatus(UUID id, ContractStatus status);
 }

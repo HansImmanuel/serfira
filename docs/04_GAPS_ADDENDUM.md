@@ -227,7 +227,9 @@ sama nyaris bersamaan.
   backoff kecil (mis. 50ms, 150ms, 400ms) di service layer sebelum melempar error ke
   client. Kalau tetap gagal setelah 3x, return `409 CONFLICT` dengan kode
   `CONCURRENT_MODIFICATION` — user diminta refresh & retry manual.
-- Job harian (denda, aging): retry per installment sampai maksimum 5 percobaan dalam window job. Setelah itu record ditandai gagal, di-log, dan diproses alert; kegagalan satu installment tidak menghentikan batch.
+- Job harian T3 memproses unit atomik **per contract** (billing → penalty) sampai maksimum 5 percobaan
+dalam window job. Step aging T6 mengikuti unit transisinya sendiri. Setelah retry habis, record ditandai
+gagal, di-log, dan batch lanjut; kegagalan satu contract tidak menghentikan contract lain.
 - Job memakai shedlock (sudah disebut di tech spec) untuk memastikan hanya satu
   instance yang jalan — ini mencegah job-vs-job race, tapi retry di atas tetap perlu
   untuk job-vs-payment race.
@@ -252,6 +254,12 @@ transaksi yang sama dengan void), bukan menunggu job harian berikutnya:
 Ini juga berarti fungsi kalkulasi denda harus dipisah dari "job scheduler wrapper"-nya
 — job cuma orkestrasi (iterasi semua installment overdue), sementara kalkulasi per
 installment adalah pure function yang dipanggil dari dua tempat: job & void handler.
+
+**Final (ADR-013, menutup A-3):** tidak ada re-pricing retroaktif atas tanggal yang sudah punya baris
+`penalty_accrual`. Catch-up setelah void hanya menagih tanggal yang belum punya baris
+(`unique(installment_id, accrual_date)` tetap satu baris per tanggal selamanya); tanggal yang sudah
+ter-accrual dengan base yang lebih rendah tidak pernah ditagih ulang dengan base yang lebih tinggi. Ini
+adalah undercharge yang diterima secara sadar, konsisten dengan arah konservatif ADR-012.
 
 ---
 
@@ -294,7 +302,8 @@ Excess tidak masuk `installment.paid_amount`, tetapi tetap harus muncul sebagai 
 | resolved_at | TIMESTAMP NULL | |
 
 ### 7.3 Frekuensi & respons
-- Job jalan harian (setelah job denda selesai, urutan: denda → aging → consistency check).
+- Job jalan harian. Urutan lengkap: **billing → penalty → aging → consistency check** (T3 membangun dua
+  langkah pertama; T6 dan F1 menambahkan langkah berikutnya tanpa mengubah urutan ini).
 - **Tidak auto-correct.** Sistem finansial tidak boleh mengubah angka sendiri tanpa
   jejak manusia. Job hanya mencatat exception dan mengirim alert (log level ERROR
   minimal; notifikasi eksternal di luar scope Fase 1).
@@ -359,10 +368,18 @@ dengan angka bunga berjalan yang dihitung manual memakai konvensi ini.
   semua log line dan disimpan di `idempotency_keys` table supaya retry bisa di-trace.
 - **Structured logging**: JSON log (bukan plain text), field wajib: `timestamp`,
   `level`, `request_id`, `contract_id` (kalau relevan), `module`.
-- **Job metrics minimal**: setiap job (denda, aging, consistency check) mencatat
-  `job_run(job_name, started_at, finished_at, records_processed, records_failed,
+- **Job metrics minimal**: setiap job (billing, denda, aging, consistency check) mencatat
+  `job_run(job_name, business_date, started_at, finished_at, records_processed, records_failed,
   status)` — satu tabel sederhana, cukup untuk portofolio menunjukkan bahwa job
   berjalan reliably dan bisa diaudit tanpa perlu infra monitoring eksternal (Prometheus/Grafana opsional Fase 4).
+- **Granularitas `job_run` (ADR-013, diklarifikasi T3):** satu baris per **step per invocation**, dengan
+  `business_date` sebagai tanggal target eksplisit (V10). Satu invocation untuk `D` menulis satu row
+  `job_name = "billing"` dan satu row `job_name = "penalty-accrual"`; rerun untuk `D` yang sama menulis
+  pasangan invocation baru agar percobaan lama/stale `RUNNING` tidak ditimpa, tetapi financial rows tetap
+  idempotent. `records_processed` = jumlah kontrak yang berhasil diproses langkah itu;
+  `records_failed` = jumlah kontrak yang gagal setelah retry habis. `status` akhir = `COMPLETED` bila
+  `records_failed = 0`, selain itu `FAILED` — tidak ada status partial-success tersendiri; kedua counter
+  bersama sudah membedakan gagal total dari gagal sebagian.
 
 ---
 
@@ -401,6 +418,15 @@ Settlement menggunakan `settlement_quote` sebagai snapshot dan `settlement` + im
 - **AR:** outstanding dari installment yang due pada as-of date.
 - **NPL:** outstanding kontrak dengan DPD > 90 / total active outstanding.
 - **Collection rate:** regular-payment cash applied to installments due during period / recognized installment receivable due during period. Settlement cash ditampilkan sebagai metric terpisah.
+- **Aging bucket dan `as_of` (ADR-013, menutup A-6/A-7):** bucket dihitung **per installment** — setiap
+  installment kontrak ACTIVE dengan `outstanding > 0` dikelompokkan ke Current/1–30/31–60/61–90/>90
+  berdasarkan DPD-nya sendiri (`DM §1.4`), dan `amount` bucket-nya adalah `outstanding` installment itu.
+  Level kontrak dan portofolio adalah penjumlahan bucket seluruh installment terkait, sehingga
+  Σ bucket = outstanding berlaku di setiap level tanpa formula kedua. Installment yang belum jatuh tempo
+  selalu masuk Current. Cakupan kontrak: **ACTIVE saja** (`DRAFT` belum punya receivable;
+  `CLOSED`/`TERMINATED` sudah selesai; installment `SETTLED`/`WRITTEN_OFF` sudah outstanding nol lewat
+  formula `InstallmentBalance`, tidak perlu exclude eksplisit). `as_of` hanya boleh `clock.today()` — tidak
+  ada rekonstruksi historis pada Phase 1; nilai lain ditolak `400 INVALID_AS_OF_DATE`.
 
 ---
 
