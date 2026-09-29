@@ -123,10 +123,24 @@ setiap hari. Yang belum diputuskan:
   `job_run.records_processed` membuat backlog terlihat.
 - **(−) Base catch-up memakai base saat run**, bukan base historis tiap hari; arah kesalahannya selalu
   konservatif (menagih lebih sedikit), tidak pernah menagih lebih.
-- **Risiko residual:** (i) pembayaran sebelum run harian pada installment yang langsung lunas membuat hari itu
-  tidak tertagih — calon utama lazy trigger di D2; (ii) E2 (settlement) harus menjalankan step ini untuk
-  tanggal bisnisnya sebelum menghitung `penaltyOutstanding` (TS §4.4), jika tidak hari-hari yang belum
-  ter-accrual tidak ikut masuk quote — dicatat di sprint plan story E2.
+- **Risiko residual pada penutupan D1:** (i) pembayaran sebelum run harian pada installment yang langsung
+  lunas membuat hari itu tidak tertagih — calon utama lazy trigger di D2; (ii) E2 (settlement) harus
+  menjalankan step ini untuk tanggal bisnisnya sebelum menghitung `penaltyOutstanding` (TS §4.4), jika tidak
+  hari-hari yang belum ter-accrual tidak ikut masuk quote — dicatat di sprint plan story E2.
+
+### Implementation Note — T4 (2026-09-30)
+
+Keputusan 8 dan alternatif 8 di atas tetap dipertahankan sebagai konteks historis scope D1: pada saat ADR ini
+diterima, `PaymentApplicationService` memang belum memanggil accrual dan lazy trigger sengaja ditunda ke D2.
+T4 kemudian mengimplementasikan keputusan lanjutan itu melalui ADR-014. Jalur pembayaran sekarang memanggil
+`PenaltyAccrualPort` di dalam supplier idempotensi dan transaksi pembayaran, setelah billing serta sebelum
+snapshot/allocation/resolution, dengan satu business date yang ditangkap untuk seluruh urutan tersebut.
+
+Dengan implementasi itu, risiko residual **(i) ditutup oleh ADR-014**: pembayaran tidak lagi dapat menurunkan
+base sebelum hari chargeable melalui tanggal bisnisnya di-accrue. Risiko residual **(ii) tetap terbuka** untuk
+settlement T12/T13. Race unique `(installment_id, accrual_date)` antara job dan payment juga tetap diterima
+sementara dan menjadi scope T5; catatan ini tidak menyatakan retry konkurensi sudah selesai. Tidak ada
+perubahan formula, skema, atau API/OpenAPI dari amandemen T4.
 
 **Referensi:** DM §1.4/§1.9/§1.10, §3 invariant 8/9/10; PRD D-1/D-3, §5 skenario 2, §5A, §5C; TS §2.1/§2.3/§3/
 §4.3/§4.4/§5/§6; Addendum §6/§10/§12/§16.4/§18.1; V1 (`penalty_accrual`, `penalty_adjustment`, `accounts`),

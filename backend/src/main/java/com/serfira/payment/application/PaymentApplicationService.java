@@ -16,7 +16,6 @@ import com.serfira.payment.api.PaymentResponse;
 import com.serfira.payment.domain.AllocationType;
 import com.serfira.payment.domain.Payment;
 import com.serfira.payment.domain.PaymentAllocation;
-import com.serfira.payment.domain.PaymentChannel;
 import com.serfira.payment.domain.PaymentStatus;
 import com.serfira.payment.domain.allocation.AllocationLine;
 import com.serfira.payment.domain.allocation.AllocationResult;
@@ -25,6 +24,7 @@ import com.serfira.payment.domain.allocation.PaymentAllocationEngine;
 import com.serfira.payment.infrastructure.ActiveAllocationTotal;
 import com.serfira.payment.infrastructure.PaymentAllocationRepository;
 import com.serfira.payment.infrastructure.PaymentRepository;
+import com.serfira.penalty.application.PenaltyAccrualPort;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.document.DocumentNumberGenerator;
 import com.serfira.shared.document.DocumentType;
@@ -39,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -58,9 +59,10 @@ import java.util.UUID;
  *
  * <p><b>Module boundaries</b> (02_TECH_SPEC.md §1, ADR-010): this service owns {@code payment} and
  * {@code payment_allocation} and never touches {@code installment}. It asks the {@code contract} module
- * to bill the contract's due interest ({@link InstallmentBillingPort}), reads a receivable snapshot
- * through {@link InstallmentReceivablePort} and hands the engine's resolved amounts back, and it posts
- * the journal through the {@code ledger} module's application service.
+ * to bill the contract's due interest ({@link InstallmentBillingPort}), asks the {@code penalty} module
+ * to recognize every due late-day charge ({@link PenaltyAccrualPort}), then reads a receivable snapshot
+ * through {@link InstallmentReceivablePort} and hands the engine's resolved amounts back. It posts the
+ * payment journal through the {@code ledger} module's application service.
  *
  * <p>Scope: money received is recorded and allocated. Voiding a payment (E4) and turning EXCESS into a
  * {@code contract_credit} row with an application history (E3) are later stories — here an excess is
@@ -97,19 +99,21 @@ public class PaymentApplicationService {
 	private final PaymentAllocationRepository allocations;
 	private final InstallmentReceivablePort receivables;
 	private final InstallmentBillingPort billing;
+	private final PenaltyAccrualPort penalty;
 	private final DocumentNumberGenerator documentNumbers;
 	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
 	private final Clock clock;
 
 	public PaymentApplicationService(PaymentRepository payments, PaymentAllocationRepository allocations,
-			InstallmentReceivablePort receivables, InstallmentBillingPort billing,
+			InstallmentReceivablePort receivables, InstallmentBillingPort billing, PenaltyAccrualPort penalty,
 			DocumentNumberGenerator documentNumbers, IdempotencyService idempotency, LedgerPostingService ledger,
 			Clock clock) {
 		this.payments = payments;
 		this.allocations = allocations;
 		this.receivables = receivables;
 		this.billing = billing;
+		this.penalty = penalty;
 		this.documentNumbers = documentNumbers;
 		this.idempotency = idempotency;
 		this.ledger = ledger;
@@ -134,15 +138,18 @@ public class PaymentApplicationService {
 	}
 
 	/**
-	 * The mutation itself: bill the due interest, read the receivable, allocate, persist, resolve
-	 * installments, post the journal. Runs inside the idempotency claim, inside the caller's transaction.
+	 * The mutation itself: capture one business date, bill due interest, recognize due penalty, read the
+	 * receivable, allocate, persist, resolve installments, and post the payment journal. Runs inside the
+	 * idempotency claim and the caller's transaction, so a replay skips every financial step and any later
+	 * failure rolls them all back together.
 	 */
 	private PaymentResponse receive(String idempotencyKey, PaymentRequest request, BigDecimal amount) {
-		// Billing comes first: interest is receivable from its due date, so a payment received on the due
-		// date must find it (PRD scenario 1) instead of booking the whole amount as customer credit. This is
-		// the same step the daily job runs on its own (D2); here it joins this transaction, so the
-		// recognition journal and the payment commit or roll back together (ADR-011).
-		billing.billDueInterest(request.contractId(), clock.today());
+		LocalDate businessDate = clock.today();
+		// Billing must precede penalty because the daily charge is based on recognized principal and interest.
+		// Both steps join this payment transaction and use this single captured date; the snapshot and allocation
+		// therefore observe exactly the receivables recognized by this attempt (ADR-013).
+		billing.billDueInterest(request.contractId(), businessDate);
+		penalty.accrueDuePenalty(request.contractId(), businessDate);
 		ContractReceivableSnapshot snapshot = receivables.loadReceivableSnapshot(request.contractId());
 		if (snapshot.status() != ContractStatus.ACTIVE) {
 			// The port already refuses anything else; the same invariant is asserted again where money is
@@ -152,7 +159,7 @@ public class PaymentApplicationService {
 		}
 
 		AllocationResult allocation =
-				ALLOCATION_ENGINE.allocate(amount, clock.today(), toAllocationInputs(snapshot));
+				ALLOCATION_ENGINE.allocate(amount, businessDate, toAllocationInputs(snapshot));
 
 		OffsetDateTime paidAt = clock.now();
 		Payment payment = new Payment(documentNumbers.next(DocumentType.PAYMENT), snapshot.contractId(), amount,

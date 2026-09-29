@@ -12,15 +12,14 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 
 ## Current Project State
 
-**Snapshot:** `main` @ `cdce254` (2026-09-27), in sync with `serfira/main`. Three local, uncommitted changes
-are unrelated to this plan: `.gitignore` (+`.kiro/`), `backend/build.gradle.kts` (SonarQube plugin), and
-`backend/gradle/wrapper/gradle-wrapper.properties` (`systemProp.sonar.host.url`).
+**Snapshot:** `main` @ `f80f9e3` (2026-09-29), in sync with `serfira/main`. The current working tree
+contains the uncommitted T4 implementation and this documentation update; no commit was created for T4.
 
-**Verified on 2026-09-29 (through T3):**
-- `./gradlew compileJava compileTestJava`: builds.
-- Targeted T3 unit and Testcontainers suites: green.
-- Full `./gradlew test`: 56 suites, 411 tests, 0 failures/errors/skips.
-- `./gradlew check`: green.
+**Verified on 2026-09-30 (through T4):**
+- `./gradlew compileJava compileTestJava`: pass.
+- `./gradlew test --tests com.serfira.payment.PaymentApiIT`: 17 tests pass.
+- Full `./gradlew test --rerun`: 413 tests pass.
+- `./gradlew check`: pass.
 
 **Implemented (verified in source):**
 - Modules `contract`, `payment`, `penalty`, `ledger`, `shared`. `settlement` and `reporting` do not exist.
@@ -31,20 +30,23 @@ are unrelated to this plan: `.gitignore` (+`.kiro/`), `backend/build.gradle.kts`
 - Daily servicing T3 is live: configurable Jakarta cron and explicit backfill entry share one renewable
   ShedLock; every ACTIVE contract is processed atomically in billing → penalty order with five-attempt
   conflict retry, failure isolation, SYSTEM audit, and step-level `job_run` rows.
+- Lazy payment accrual T4 is live: `POST /api/v1/payments` calls `PenaltyAccrualPort` after billing and before
+  snapshot/allocation/resolution inside the idempotency supplier, using one captured business date. Replay
+  skips the supplier and a failed attempt rolls back accrual, journals, payment writes, resolution, and the
+  claim together (ADR-014).
 - Endpoints: `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`, and `POST /api/v1/payments`.
 - Security: JWT HS256 resource server with default-deny **authentication**. There is **no role-based
   authorization** and no login/refresh/logout (ADR-005).
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
-T1–T3 are DONE. C5/D3 and T4–T11 remain. The remaining work is planned below as **Sprint 4b** and
+T1–T4 are DONE. C5/D3 and T5–T11 remain. The remaining work is planned below as **Sprint 4b** and
 **Sprint 4c**.
 
 **Blockers and critical gaps:**
-1. **A payment can still resolve an installment before the daily job reaches it.** The T3 job charges
-   penalty in production, but the payment path still bills interest without accruing through its business
-   date. A late installment paid in full before that day's run can therefore lose elapsed penalty. ADR-012
-   residual risk (i) is closed by the lazy trigger in **T4**.
+1. **The payment write path does not retry job-versus-payment conflicts yet.** T4 now performs lazy accrual,
+   but a concurrent job and payment can race on unique `(installment_id, accrual_date)`. The job retries;
+   payment still needs the whole-transaction fresh-claim retry specified by **T5**.
 2. **Aging state is not maintained yet.** T3 implements billing → penalty only; the third daily step that
    marks eligible installments OVERDUE is **T6**.
 3. **The Addendum §3.4 role matrix is not enforced.** Any valid token can create contracts and post
@@ -84,8 +86,9 @@ ADRs listed.
 | C2 | Allocation engine | DONE | ADR-009 |
 | C3 | `POST /payments` + idempotency | DONE | ADR-010 |
 | C4 | Due-date billing + maturity auto-close. **The scheduler half is moved to T3** | DONE | ADR-011 |
-| D1 | Penalty calculator + per-date idempotent accrual. **Residual risks moved to T4/T10** | DONE | ADR-012 |
+| D1 | Penalty calculator + per-date idempotent accrual. **The payment-before-job risk is closed by T4; component-exact precision remains deferred in T10** | DONE | ADR-012, ADR-014 |
 | T1–T3 | Phase-1 decisions, V9 integrity/ShedLock schema, daily billing→penalty job + V10 audit date | DONE | ADR-013, V9/V10 |
+| T4 | Lazy penalty accrual in the idempotent payment transaction | DONE | ADR-014 |
 | — | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover, open-in-view off | DONE | `cdce254` |
 
 ---
@@ -274,8 +277,20 @@ handled by T5.
 
 ### T4 — Lazy penalty accrual in the payment path (D2, part 2)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-09-30): Accepted in `ADR-014-lazy-penalty-accrual-in-payment-path.md` and
+implemented through the one-way `payment → penalty.application.PenaltyAccrualPort` edge; payment never
+touches penalty persistence. Inside the idempotency supplier, one captured business date drives billing →
+accrual → snapshot → allocation → resolution → payment journal in the same transaction. A completed replay
+skips every financial step; a failure rolls back the claim, billing/accrual rows and journals,
+payment/allocation, installment resolution, and payment journal together. The HTTP ITs cover grace (no
+accrual), first chargeable day (`1,573.33`), 28-day catch-up (`44,053.24`, total payment `1,617,386.57`),
+penalty-first allocation, replay across the next chargeable date, multi-installment resolution, rollback,
+authenticated audit actor, and maturity close. Verification: `compileJava compileTestJava` pass;
+`PaymentApiIT` 17 pass; full `test --rerun` 413 pass; `check` pass. No schema or API/OpenAPI change was
+required.
 
 Goal: Make sure no payment can resolve an installment before the penalty for already-elapsed days has been
 recognized. This closes ADR-012 residual risk (i).
@@ -311,7 +326,8 @@ Tests:
 - IT (HTTP): PRD scenario 2 with no manual `accrueDuePenalty`. Payment within grace → no accrual. Payment on
   the first chargeable day → exactly one row. Replay → no new rows. Rolled-back payment → no rows. Final
   payment → contract CLOSED only after the penalty is paid.
-- Regression: remove the manual priming at `PaymentApiIT.java:316-318` and keep the scenario green.
+- Regression: the former manual accrual priming is absent; `PaymentApiIT` keeps the end-to-end late-payment
+  scenario green through the real payment path.
 
 Risks: A job-vs-payment race on the same `(installment_id, accrual_date)` makes the loser fail. T5 is
 required before this runs under load.
@@ -618,16 +634,15 @@ Risks: None.
 
 ## Planning Notes
 
-### Accrue-before-resolve invariant (proposed for T1.a)
+### Accrue-before-resolve invariant (accepted in ADR-013; implemented for payment by T4)
 
 Every flow that lowers an installment's penalty base (payment, settlement, write-off) must first bill and
 accrue through its business date in the same transaction. If that holds, the run-time base that
 `PenaltyCalculator` uses equals the base that was actually in force on each missing date. With no
-resolution in between, the base did not change. So the historical-base concern from the review reduces to
-two cases:
+resolution in between, the base did not change. The historical-base concern therefore reduces to:
 - **Void (E4):** the base goes *up* retroactively (A-3).
-- **Any resolution path that skips accrual.** Today that is the payment path (T4). Later it would be
-  settlement and write-off (T12, T13, T19).
+- **A resolution path that still skips accrual:** payment no longer does so after T4/ADR-014. Settlement and
+  write-off must implement the same invariant in T12, T13, and T19.
 
 This is why T10 is conditional rather than planned.
 
@@ -637,8 +652,8 @@ The review rated run-time pricing (F-01) CRITICAL and "undocumented", and said l
 backfill across a missed job window. Both claims were wrong:
 - ADR-012 *Consequences* explicitly accepts the run-time base as a conservative trade-off, and records the
   pay-before-run loss as residual risk (i), with lazy accrual deferred to D2.
-- Under the invariant above, lazy accrual also covers backfill after a missed window. The loss is real only
-  while the payment path skips accrual, which is exactly T4.
+- Under the invariant above, lazy accrual also covers backfill after a missed window. At review time, the
+  loss was real only while the payment path skipped accrual; T4/ADR-014 now closes that payment risk.
 
 Also already documented, not new findings:
 - F-05 is ADR-012 decision 2.

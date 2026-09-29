@@ -30,6 +30,11 @@ Aturan dependency:
   satu-satunya jalur untuk billing/recognition bunga due date sebelum alokasi dihitung. Keduanya satu arah
   (`payment` → port `contract`); `contract` tidak tahu modul `payment`, dan `payment` tetap dilarang menyentuh
   tabel/entity `contract`/`installment` langsung.
+- Sejak T4, `payment` boleh bergantung ke `penalty` hanya melalui
+  `penalty.application.PenaltyAccrualPort` (ADR-014). Edge ini satu arah (`payment` → port `penalty`):
+  `penalty` tidak tahu modul `payment`, dan `payment` dilarang membaca/menulis repository, entity, atau tabel
+  `penalty_accrual`/persistence denda secara langsung. Kepemilikan accrual tetap di modul `penalty`; perubahan
+  aggregate installment tetap melalui port milik `contract`.
 - `contract` juga boleh bergantung ke `ledger` (ADR-008): aktivasi mem-posting jurnal disbursement di transaksi
   yang sama, sehingga piutang yang dibuat jadwal langsung tercatat sebagai receivable; sejak C4 langkah billing
   mem-posting jurnal `BILLING` per installment lewat service yang sama (ADR-011). Edge ini satu arah —
@@ -88,6 +93,15 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   (Contract, Installment, Payment).
 - Transaksi boundary di application service (`@Transactional`), bukan di controller.
 - Semua write path mengikuti pola: validasi → hitung → tulis aggregate → tulis jurnal → commit.
+- Khusus `POST /api/v1/payments` sejak T4 (ADR-014), supplier idempotensi menangkap satu business date lalu
+  menjalankan satu transaksi dengan urutan keputusan finansial **billing → penalty accrual → snapshot
+  receivable → allocation → resolution → jurnal `PAYMENT`**. Persistensi `payment`/`payment_allocation`
+  dilakukan dari hasil allocation sebelum resolution. Billing dan accrual memakai tanggal yang sama dan
+  bergabung lewat propagasi `REQUIRED`; claim idempotensi, jurnal `BILLING`/`PENALTY_ACCRUAL`/`PAYMENT`,
+  accrual, payment, allocation, serta perubahan installment commit atau rollback bersama. Replay key yang
+  sudah `COMPLETED` mengembalikan respons tersimpan tanpa mengeksekusi supplier atau menangkap tanggal baru.
+  Retry fresh-transaction untuk race unique `(installment_id, accrual_date)` job-versus-payment belum
+  diimplementasikan dan tetap scope T5.
 - Daily servicing T3 memakai ShedLock JDBC dengan DB time dan keep-alive lease; cron dan explicit backfill
   masuk lewat locked public facade yang sama, sehingga invocation kedua dengan nama lock yang sama dilewati.
   Cron property berjalan di Asia/Jakarta dan bernilai `-` di test agar tidak menyentuh fixture secara
@@ -226,7 +240,12 @@ denda_harian = rateHarian × saldo tagihan pokok+bunga yang belum dibayar
 recognized_penalty = Σ denda_harian yang sudah diakui
 penalty_amount pada Installment = recognized_penalty (gross, sebelum payment/adjustment). `effective_penalty = penalty_amount − active penalty allocations − penalty adjustments`.
 ```
-Denda dihitung job harian dan **diakui incremental** sebagai `PenaltyAccrual.amount` per tanggal. `PenaltyAccrual.amount` adalah delta hari itu, **bukan cumulative snapshot**, sehingga tidak double-count saat dijumlah. Job mem-posting delta ke ledger dan update gross `penalty_amount`. Recalc setelah void hanya menambah catch-up accrual bila expected recognized penalty lebih besar dari nilai yang sudah diakui.
+Denda dihitung job harian dan **diakui incremental** sebagai `PenaltyAccrual.amount` per tanggal. Sejak T4,
+jalur pembayaran juga menjalankan lazy accrual melalui tanggal bisnis yang sama sebelum mengambil snapshot dan
+menerapkan resolusi (ADR-014); ini bukan implementasi formula kedua. `PenaltyAccrual.amount` adalah delta hari
+itu, **bukan cumulative snapshot**, sehingga tidak double-count saat dijumlah. Job atau jalur pembayaran
+mem-posting delta ke ledger dan update gross `penalty_amount`. Recalc setelah void hanya menambah catch-up
+accrual bila expected recognized penalty lebih besar dari nilai yang sudah diakui.
 
 **Invariant accrue-before-resolve (ADR-013):** setiap alur yang menurunkan base denda sebuah installment
 (pembayaran, settlement, write-off) wajib membilling dan meng-accrue denda melalui tanggal bisnisnya di

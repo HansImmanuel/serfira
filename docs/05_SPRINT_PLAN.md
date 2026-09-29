@@ -150,11 +150,11 @@ Story baru "done" kalau **semua** terpenuhi:
   - ⚠️ Sisa untuk story lanjutan: `PaymentStatus.VOIDED`/`voided_at`/`void_reason` belum pernah ditulis (E4); perhitungan Σ alokasi aktif memakai baris `POSTED` saja sementara trigger V3 masih menghitung semua baris — ditinjau ulang saat E4 memperkenalkan baris `VOIDED`.
 
 ### Sprint 4 — Penalty, Aging & Phase-1 Close
-> **Re-planned in `docs/tasks.md`.** C4/D1 dan task re-plan T1–T3 sudah selesai; C5/D3 dan T4–T11 masih
-> mengikuti **Sprint 4b** (penalty correctness & daily job) / **Sprint 4c** (access control & Phase-1 reads)
-> di `docs/tasks.md`. `tasks.md` adalah sumber kebenaran untuk status/scope; rincian C4/D1 di bawah tetap
-> mempertahankan konteks keputusan aslinya, dengan catatan penyelesaian T3 disinkronkan agar tidak menyatakan
-> scheduler masih kosong.
+> **Re-planned in `docs/tasks.md`.** C4/D1 dan task re-plan T1–T4 sudah selesai; T3 menyediakan scheduler
+> billing → penalty dan T4 menambahkan lazy penalty accrual di jalur pembayaran (ADR-014). C5/D3 dan
+> T5–T11 masih mengikuti **Sprint 4b** (penalty correctness & daily job) / **Sprint 4c** (access control &
+> Phase-1 reads) di `docs/tasks.md`. `tasks.md` adalah sumber kebenaran untuk status/scope; rincian C4/D1 di
+> bawah mempertahankan konteks keputusan aslinya.
 
 **Goal:** Sistem hidup dengan denda dan aging harian yang bisa diaudit.
 - C4 (3), C5 (2), D1 (3), D2 (3), D3 (2) = **13 pts**
@@ -213,9 +213,10 @@ Story baru "done" kalau **semua** terpenuhi:
     pembayaran sebagian hanya membuat hari berikutnya lebih murah (tidak menekan accrual), dan tanggal yang belum
     tertagih tetap bisa ditagih setelah void (Addendum §6). Hanya nilai positif yang ditulis; penurunan denda
     tetap milik `penalty_adjustment` (E5).
-  - **Bukan scope D1:** step tidak dipanggil dari `PaymentApplicationService`, dan denda tidak menandai
-    `OVERDUE`. Re-plan memisahkannya: scheduler + `job_run` selesai di T3; lazy payment trigger tetap T4;
-    aging tetap T6. Tidak ada endpoint/OpenAPI baru untuk job internal.
+  - **Konteks historis scope D1:** pada saat D1 ditutup, step belum dipanggil dari
+    `PaymentApplicationService` dan denda belum menandai `OVERDUE`. Re-plan kemudian memisahkannya:
+    scheduler + `job_run` selesai di T3, lazy payment trigger selesai di T4/ADR-014, sedangkan aging tetap
+    T6. Tidak ada endpoint/OpenAPI baru untuk job internal.
   - Test: +31 — `PenaltyCalculatorTest` (14 unit murni: grace boundary, window per tanggal, backfill tanpa baris,
     base turun tetap menagih, periode berbunga 0%, pembulatan `HALF_EVEN`, leap year, guard), 
     `InstallmentPenaltyAccrualTest` (6 unit domain: akumulasi delta, guard state, base pokok+bunga yang di-bill,
@@ -224,9 +225,24 @@ Story baru "done" kalau **semua** terpenuhi:
     non-ACTIVE/unknown). `PaymentApiIT` kehilangan seed SQL `accruePenalty`: skenario 2 PRD kini memakai step D1
     yang nyata (28 hari × 1.573,33 = `44.053,24`, pembayaran `1.617.386,57`). Golden test tidak disentuh.
   - ✅ **T3 selesai:** job per contract ACTIVE menjalankan **billing → accrual** dalam satu transaksi,
-    memakai ShedLock renewable dan mencatat invocation `job_run`. **Sisa T4/E2:** payment path dan settlement
-    harus menjalankan accrual untuk tanggal bisnisnya sebelum menurunkan/membaca `penaltyOutstanding`; jika
-    tidak, hari yang belum ter-accrual dapat hilang dari base/quote.
+    memakai ShedLock renewable dan mencatat invocation `job_run`.
+
+- **Status T4 — lazy penalty accrual di jalur pembayaran selesai (lihat ADR-014):**
+  - `PaymentApplicationService` memakai edge satu arah `payment → penalty.application.PenaltyAccrualPort`;
+    modul `payment` tidak menyentuh persistence denda. Di dalam supplier idempotensi dan satu transaksi,
+    urutannya **billing → accrual → snapshot → allocation → resolution → jurnal payment**, menggunakan satu
+    business date untuk billing, accrual, dan allocation.
+  - Replay respons tersimpan tidak mengeksekusi accrual. Kegagalan setelah claim me-rollback billing,
+    accrual/jurnal denda, payment/allocation, resolution, jurnal payment, dan claim bersama-sama.
+  - Nilai IT yang dipertahankan: 28 hari × `1.573,33` = denda `44.053,24`, total pembayaran
+    `1.617.386,57`; hari chargeable pertama menghasilkan denda `1.573,33` dan total `1.574.906,66`.
+    `PaymentApiIT` membuktikan grace window, first chargeable day, penalty-first allocation, replay,
+    rollback, authenticated audit actor, dan maturity close tanpa manual accrual.
+  - Verifikasi T4: `compileJava compileTestJava` pass; `PaymentApiIT` 17 pass; full test 413 pass;
+    `check` pass.
+  - **Sisa:** race unique `(installment_id, accrual_date)` job-versus-payment dan retry seluruh transaksi
+    tetap T5; aging tetap T6; settlement tetap wajib melakukan accrual sendiri pada T12/T13. Tidak ada
+    perubahan skema atau API/OpenAPI pada T4.
 
 ### Sprint 5 — Settlement, Credit & Waive
 **Goal:** Settlement semantics dan excess credit benar sebelum void/auth.

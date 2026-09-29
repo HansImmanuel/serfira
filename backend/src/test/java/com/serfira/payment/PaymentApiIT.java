@@ -12,10 +12,8 @@ import com.serfira.contract.api.CreateAssetRequest;
 import com.serfira.contract.api.CreateContractRequest;
 import com.serfira.contract.api.CreateCustomerRequest;
 import com.serfira.contract.application.ContractCommandService;
-import com.serfira.contract.application.InstallmentBillingPort;
 import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
-import com.serfira.penalty.application.PenaltyAccrualPort;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
 import org.junit.jupiter.api.AfterEach;
@@ -60,9 +58,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  *
  * <p>Interest is <b>only receivable once billed</b> (TS §3/§5, Addendum §12) and since C4 the payment path
  * bills the contract's due installments inside its own transaction (ADR-011), so a payment received on a
- * due date resolves interest with no seeding at all — that is PRD scenario 1. Denda is recognized by the
- * daily penalty step (D1) and is never seeded: the late-payment case runs that step itself, exactly as the
- * D2 job will, so PRD scenario 2 is real end to end too (ADR-012).
+ * due date resolves interest with no seeding at all — that is PRD scenario 1. T4 likewise recognizes
+ * every due late-day penalty inside the idempotent payment transaction before taking the allocation
+ * snapshot, so the HTTP scenarios exercise billing, accrual, allocation, audit, and rollback end to end.
  */
 @Import({TestcontainersConfiguration.class, PaymentClockTestConfiguration.class})
 @SpringBootTest
@@ -81,19 +79,21 @@ class PaymentApiIT {
 	private static final String PERIOD_INTEREST = "240000.00";
 	private static final String PERIOD_TOTAL = "1573333.33";
 
-	/** Periods 1–7 are due on the fixture business date; period 8 (2026-09-30) is the first future one. */
-	private static final int LAST_DUE_PERIOD = 7;
+	/** Only period 1 is due on the fixture business date; period 2 is the first future installment. */
+	private static final int LAST_DUE_PERIOD = 1;
 
-	/**
-	 * Business date of the late-payment case: one month after the first due date, so period 1 is 31 days late
-	 * and period 2 falls due on that very day (its denda is therefore still zero).
-	 */
+	private static final LocalDate WITHIN_GRACE_DATE = LocalDate.of(2026, 3, 3);
+	private static final LocalDate FIRST_CHARGEABLE_DATE = LocalDate.of(2026, 3, 4);
+	private static final LocalDate NEXT_CHARGEABLE_DATE = FIRST_CHARGEABLE_DATE.plusDays(1);
+	private static final String FIRST_DAY_PENALTY = "1573.33";
+
+	/** Period 1 is 31 days late, with 28 days outside its snapshotted three-day grace period. */
 	private static final LocalDate LATE_BUSINESS_DATE = LocalDate.of(2026, 3, 31);
 
-	/** 31 days late with the snapshotted 3-day grace period: 28 charged days at 1,573.33 (TS §4.3). */
+	/** 28 charged days at 1,573.33 per day (TS §4.3). */
 	private static final String ACCRUED_PENALTY = "44053.24";
 
-	/** Period 1 in full: 1,333,333.33 principal + 240,000.00 interest + 44,053.24 denda. */
+	/** Period 1 principal, interest, and all 28 recognized penalty days. */
 	private static final String LATE_PAYMENT_TOTAL = "1617386.57";
 
 	@Autowired
@@ -110,12 +110,6 @@ class PaymentApiIT {
 
 	@Autowired
 	ContractCommandService contracts;
-
-	@Autowired
-	InstallmentBillingPort billing;
-
-	@Autowired
-	PenaltyAccrualPort penalty;
 
 	private UUID actorId;
 	private String token;
@@ -161,7 +155,7 @@ class PaymentApiIT {
 		assertThat(payment.get("status").asText()).isEqualTo("POSTED");
 		assertThat(payment.get("channel").asText()).isEqualTo("CASH");
 		assertThat(payment.get("contract_id").asText()).isEqualTo(contractId.toString());
-		assertThat(payment.get("payment_no").asText()).matches("PAY-202609-\\d{4}");
+		assertThat(payment.get("payment_no").asText()).matches("PAY-202602-\\d{4}");
 		// paid_at comes from the application clock, never from the request (TS §2.0).
 		assertThat(OffsetDateTime.parse(payment.get("paid_at").asText())).isEqualTo(clock.now());
 		assertThat(decimal(payment, "amount")).isEqualByComparingTo(PERIOD_TOTAL);
@@ -250,11 +244,9 @@ class PaymentApiIT {
 
 	@Test
 	void anOverpaymentSettlesEveryDueInstallmentAndBooksTheRestAsCustomerCredit() throws Exception {
-		// Capacity of the due window once the payment's own billing step has recognized every due period
-		// (C4/ADR-011): seven periods of 1,333,333.33 principal + 240,000.00 interest = 11,013,333.31. The
-		// FLAT residual lands in period 12, so periods 1–7 each carry exactly 1,333,333.33 of principal.
-		String dueWindowCapacity = "11013333.31";
-		String excess = "986666.69";
+		// Capacity of the only due installment after the payment's billing step recognizes its interest.
+		String dueWindowCapacity = "1573333.33";
+		String excess = "10426666.67";
 
 		MvcResult result = pay("overpayment", "12000000.00");
 
@@ -274,8 +266,8 @@ class PaymentApiIT {
 		}
 		// PRD P-4 / skenario 4: credit never rolls into an installment that is not due yet, so the
 		// installment after the window keeps its full receivable.
-		assertThat(installmentRow(8).get("status")).isEqualTo("PENDING");
-		assertThat(decimalOf(installmentRow(8), "paid_amount")).isEqualByComparingTo("0.00");
+		assertThat(installmentRow(2).get("status")).isEqualTo("PENDING");
+		assertThat(decimalOf(installmentRow(2), "paid_amount")).isEqualByComparingTo("0.00");
 
 		// The customer credit is a liability: TITIPAN_NASABAH, not revenue (TS §3, Addendum §2).
 		UUID entryId = onlyPaymentEntry(UUID.fromString(payment.get("id").asText()));
@@ -284,7 +276,7 @@ class PaymentApiIT {
 		assertThat(creditTotal(entryId).subtract(new BigDecimal(excess))).isEqualByComparingTo(dueWindowCapacity);
 		// E3 owns contract_credit; C3 records the EXCESS allocation only.
 		assertThat(count("contract_credit")).isZero();
-		// Periods 8–12 are still unresolved, so no maturity close happens (invariant 17, ADR-011).
+		// Periods 2–12 are still unresolved, so no maturity close happens (invariant 17, ADR-011).
 		assertThat(jdbc.queryForObject("select status from contract where id = ?", String.class, contractId))
 				.isEqualTo("ACTIVE");
 	}
@@ -308,13 +300,25 @@ class PaymentApiIT {
 	}
 
 	@Test
+	void aPaymentWithinTheGraceWindowAccruesNoPenaltyOrJournal() throws Exception {
+		fixedClock().setDate(WITHIN_GRACE_DATE);
+
+		MvcResult result = pay("within-penalty-grace", PERIOD_TOTAL);
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(201);
+		assertThat(allocationTypes(data(result))).containsExactly("INTEREST", "PRINCIPAL");
+		assertThat(decimal(data(result), "excess_amount")).isEqualByComparingTo("0.00");
+		assertThat(accrualCount(1)).isZero();
+		assertThat(journalEntryCount("PENALTY_ACCRUAL")).isZero();
+		assertThat(penaltyAmountOf(1)).isEqualByComparingTo("0.00");
+		assertThat(installmentRow(1).get("status")).isEqualTo("PAID");
+	}
+
+	@Test
 	void aLatePaymentConsumesTheAccruedPenaltyBeforeInterestAndPrincipal() throws Exception {
 		fixedClock().setDate(LATE_BUSINESS_DATE);
-		// The daily job's order (D2): billing first so the receivable exists, then the penalty step, which
-		// charges denda on billed pokok+bunga only (PRD §5C, ADR-012). Period 1 is 31 days late, so 28 of
-		// them are outside the 3-day grace window.
-		billing.billDueInterest(contractId, LATE_BUSINESS_DATE);
-		assertThat(penalty.accrueDuePenalty(contractId, LATE_BUSINESS_DATE)).isEqualTo(28);
+		// The HTTP use case performs the daily servicing order itself: bill, accrue, snapshot, allocate.
+		// Period 1 is 31 days late, so 28 days fall outside the three-day grace window.
 
 		MvcResult result = pay("late-period-1", LATE_PAYMENT_TOTAL);
 
@@ -334,6 +338,7 @@ class PaymentApiIT {
 				Long.class, installmentId(1))).isEqualTo(28L);
 		assertThat(jdbc.queryForObject("select sum(amount) from penalty_accrual where installment_id = ?",
 				BigDecimal.class, installmentId(1))).isEqualByComparingTo(ACCRUED_PENALTY);
+		assertThat(journalEntryCount("PENALTY_ACCRUAL")).isEqualTo(28L);
 		// Period 2 falls due on this business date, so it is billed but not late: no denda yet.
 		assertThat(installmentRow(2).get("status")).isEqualTo("PENDING");
 		assertThat(jdbc.queryForObject("select count(*) from penalty_accrual where installment_id = ?",
@@ -342,34 +347,159 @@ class PaymentApiIT {
 	}
 
 	@Test
-	void anIdenticalRetryReplaysTheStoredResponseAndReceivesTheMoneyOnce() throws Exception {
-		MvcResult first = pay("retry-key", PERIOD_TOTAL);
-		MvcResult retry = pay("retry-key", PERIOD_TOTAL);
+	void aLatePaymentSpansMultipleDueInstallmentsAndLeavesTheNextInstallmentUntouched() throws Exception {
+		fixedClock().setDate(LATE_BUSINESS_DATE);
+		BigDecimal paymentAmount = new BigDecimal("2000000.00");
+		BigDecimal periodOneResolution = new BigDecimal(LATE_PAYMENT_TOTAL);
+		BigDecimal periodTwoResolution = paymentAmount.subtract(periodOneResolution);
+		BigDecimal periodTwoPrincipal = periodTwoResolution.subtract(new BigDecimal(PERIOD_INTEREST));
+		BigDecimal totalInterest = new BigDecimal(PERIOD_INTEREST).multiply(BigDecimal.valueOf(2));
+		BigDecimal totalPrincipal = new BigDecimal(PERIOD_PRINCIPAL).add(periodTwoPrincipal);
+
+		assertThat(periodTwoResolution).isEqualByComparingTo("382613.43");
+		assertThat(periodTwoPrincipal).isEqualByComparingTo("142613.43");
+		assertThat(totalInterest).isEqualByComparingTo("480000.00");
+		assertThat(totalPrincipal).isEqualByComparingTo("1475946.76");
+
+		MvcResult result = pay("late-multiple-due-installments", paymentAmount.toPlainString());
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(201);
+		JsonNode payment = data(result);
+		assertThat(allocationTypes(payment))
+				.containsExactly("PENALTY", "INTEREST", "PRINCIPAL", "INTEREST", "PRINCIPAL");
+		assertThat(decimal(payment.get("allocations").get(0), "amount")).isEqualByComparingTo(ACCRUED_PENALTY);
+		assertThat(decimal(payment.get("allocations").get(1), "amount")).isEqualByComparingTo(PERIOD_INTEREST);
+		assertThat(decimal(payment.get("allocations").get(2), "amount")).isEqualByComparingTo(PERIOD_PRINCIPAL);
+		assertThat(decimal(payment.get("allocations").get(3), "amount")).isEqualByComparingTo(PERIOD_INTEREST);
+		assertThat(decimal(payment.get("allocations").get(4), "amount")).isEqualByComparingTo(periodTwoPrincipal);
+		UUID periodOneId = installmentId(1);
+		UUID periodTwoId = installmentId(2);
+		assertThat(payment.get("allocations").get(0).get("installment_id").asText())
+				.isEqualTo(periodOneId.toString());
+		assertThat(payment.get("allocations").get(1).get("installment_id").asText())
+				.isEqualTo(periodOneId.toString());
+		assertThat(payment.get("allocations").get(2).get("installment_id").asText())
+				.isEqualTo(periodOneId.toString());
+		assertThat(payment.get("allocations").get(3).get("installment_id").asText())
+				.isEqualTo(periodTwoId.toString());
+		assertThat(payment.get("allocations").get(4).get("installment_id").asText())
+				.isEqualTo(periodTwoId.toString());
+		assertThat(decimal(payment, "excess_amount")).isEqualByComparingTo("0.00");
+
+		assertThat(decimalOf(installmentRow(1), "paid_amount")).isEqualByComparingTo(periodOneResolution);
+		assertThat(installmentRow(1).get("status")).isEqualTo("PAID");
+		assertThat(decimalOf(installmentRow(2), "paid_amount")).isEqualByComparingTo(periodTwoResolution);
+		assertThat(installmentRow(2).get("status")).isEqualTo("PARTIALLY_PAID");
+		assertThat(decimalOf(installmentRow(3), "paid_amount")).isEqualByComparingTo("0.00");
+		assertThat(installmentRow(3).get("status")).isEqualTo("PENDING");
+
+		UUID paymentId = UUID.fromString(payment.get("id").asText());
+		assertThat(jdbc.queryForObject("select count(*) from payment_allocation where payment_id = ?",
+				Long.class, paymentId)).isEqualTo(5L);
+		assertThat(jdbc.queryForObject("select sum(amount) from payment_allocation where payment_id = ?",
+				BigDecimal.class, paymentId)).isEqualByComparingTo(paymentAmount);
+		UUID paymentEntryId = onlyPaymentEntry(paymentId);
+		assertThat(debitByAccount(paymentEntryId))
+				.containsOnlyKeys("KAS")
+				.containsEntry("KAS", paymentAmount);
+		assertThat(creditByAccount(paymentEntryId))
+				.containsOnlyKeys("PIUTANG_DENDA", "PIUTANG_BUNGA", "PIUTANG_POKOK")
+				.containsEntry("PIUTANG_DENDA", new BigDecimal(ACCRUED_PENALTY))
+				.containsEntry("PIUTANG_BUNGA", totalInterest)
+				.containsEntry("PIUTANG_POKOK", totalPrincipal);
+		assertThat(debitTotal(paymentEntryId)).isEqualByComparingTo(paymentAmount);
+		assertThat(creditTotal(paymentEntryId)).isEqualByComparingTo(paymentAmount);
+		assertThat(debitTotal(paymentEntryId)).isEqualByComparingTo(creditTotal(paymentEntryId));
+
+		assertThat(accrualCount(1)).isEqualTo(28L);
+		assertThat(jdbc.queryForObject("select sum(amount) from penalty_accrual where installment_id = ?",
+				BigDecimal.class, periodOneId)).isEqualByComparingTo(ACCRUED_PENALTY);
+		assertThat(accrualCount(2)).isZero();
+		assertThat(penaltyAmountOf(2)).isEqualByComparingTo("0.00");
+		assertThat(journalEntryCount("PENALTY_ACCRUAL")).isEqualTo(28L);
+		assertThat(journalEntryCount("BILLING")).isEqualTo(2L);
+	}
+
+	@Test
+	void firstChargeableDateAccruesOnceAllocatesPenaltyFirstAndReplayAddsNothing() throws Exception {
+		fixedClock().setDate(FIRST_CHARGEABLE_DATE);
+
+		MvcResult first = pay("first-chargeable-day", FIRST_DAY_PENALTY);
 
 		assertThat(first.getResponse().getStatus()).isEqualTo(201);
-		assertThat(retry.getResponse().getStatus()).isEqualTo(201);
-		assertThat(data(retry).get("id").asText()).isEqualTo(data(first).get("id").asText());
-		assertThat(data(retry).get("payment_no").asText()).isEqualTo(data(first).get("payment_no").asText());
-		assertThat(retry.getResponse().getContentAsString())
-				.isEqualTo(first.getResponse().getContentAsString());
+		JsonNode payment = data(first);
+		assertThat(allocationTypes(payment)).containsExactly("PENALTY");
+		assertThat(decimal(payment.get("allocations").get(0), "amount"))
+				.isEqualByComparingTo(FIRST_DAY_PENALTY);
+		assertThat(decimal(payment, "excess_amount")).isEqualByComparingTo("0.00");
+
+		BigDecimal positivePenaltyBase = new BigDecimal(PERIOD_PRINCIPAL)
+				.add(new BigDecimal(PERIOD_INTEREST))
+				.subtract(new BigDecimal(FIRST_DAY_PENALTY));
+		assertThat(positivePenaltyBase).isEqualByComparingTo("1571760.00");
+		assertThat(jdbc.queryForObject("""
+				select principal_amount + recognized_interest_amount - paid_amount
+					- settled_amount - written_off_amount
+				from installment where id = ?
+				""", BigDecimal.class, installmentId(1))).isEqualByComparingTo(positivePenaltyBase);
+		// If lazy accrual escaped the completed-idempotency boundary, the next day would add 1,571.76.
+		assertThat(positivePenaltyBase.multiply(new BigDecimal("0.0010")))
+				.isEqualByComparingTo("1571.76");
+
+		// T4 completed replay only: T5 conflict retries remain a separate write-path concern.
+		fixedClock().setDate(NEXT_CHARGEABLE_DATE);
+		MvcResult replay = pay("first-chargeable-day", FIRST_DAY_PENALTY);
+
+		assertThat(replay.getResponse().getStatus()).isEqualTo(201);
+		assertThat(replay.getResponse().getContentAsString()).isEqualTo(first.getResponse().getContentAsString());
+		assertThat(accrualCount(1)).isEqualTo(1L);
+		assertThat(jdbc.queryForObject("select count(*) from penalty_accrual where installment_id = ? "
+				+ "and accrual_date = ?", Long.class, installmentId(1), NEXT_CHARGEABLE_DATE)).isZero();
+		assertThat(jdbc.queryForObject("select accrual_date from penalty_accrual where installment_id = ?",
+				LocalDate.class, installmentId(1))).isEqualTo(FIRST_CHARGEABLE_DATE);
+		assertThat(jdbc.queryForObject("select days_late from penalty_accrual where installment_id = ?",
+				Integer.class, installmentId(1))).isEqualTo(1);
+		assertThat(accrualAmountOf(1, FIRST_CHARGEABLE_DATE)).isEqualByComparingTo(FIRST_DAY_PENALTY);
+		assertThat(penaltyAmountOf(1)).isEqualByComparingTo(FIRST_DAY_PENALTY);
+		assertThat(decimalOf(installmentRow(1), "paid_amount")).isEqualByComparingTo(FIRST_DAY_PENALTY);
+		assertThat(installmentRow(1).get("status")).isEqualTo("PARTIALLY_PAID");
+		assertThat(accrualCount(2)).isZero();
+
+		UUID penaltyEntryId = accrualEntryOf(1, FIRST_CHARGEABLE_DATE);
+		assertThat(jdbc.queryForObject("select entry_date from journal_entry where id = ?",
+				OffsetDateTime.class, penaltyEntryId).toInstant())
+				.isEqualTo(FIRST_CHARGEABLE_DATE.atStartOfDay(clock.zone()).toInstant());
+		assertThat(debitByAccount(penaltyEntryId))
+				.containsOnlyKeys("PIUTANG_DENDA")
+				.containsEntry("PIUTANG_DENDA", new BigDecimal(FIRST_DAY_PENALTY));
+		assertThat(creditByAccount(penaltyEntryId))
+				.containsOnlyKeys("PENDAPATAN_DENDA")
+				.containsEntry("PENDAPATAN_DENDA", new BigDecimal(FIRST_DAY_PENALTY));
+		assertThat(jdbc.queryForObject("select count(*) from journal_line where journal_entry_id = ? "
+				+ "and contract_id <> ?", Long.class, penaltyEntryId, contractId)).isZero();
+
+		// Payment-triggered financial writes retain the authenticated request actor, never SYSTEM.
+		UUID paymentId = UUID.fromString(payment.get("id").asText());
+		UUID accrualId = accrualIdOf(1, FIRST_CHARGEABLE_DATE);
+		assertThat(jdbc.queryForObject("select created_by from payment where id = ?", UUID.class, paymentId))
+				.isEqualTo(actorId);
+		assertThat(jdbc.queryForObject("select created_by from penalty_accrual where id = ?", UUID.class, accrualId))
+				.isEqualTo(actorId);
+		assertThat(jdbc.queryForObject("select created_by from journal_entry where id = ?", UUID.class,
+				penaltyEntryId)).isEqualTo(actorId);
+		assertThat(jdbc.queryForObject("select count(*) from journal_line where journal_entry_id = ? "
+				+ "and created_by <> ?", Long.class, penaltyEntryId, actorId)).isZero();
 
 		assertThat(count("payment")).isEqualTo(1L);
-		assertThat(count("payment_allocation")).isEqualTo(2L);
-		// One disbursement, one payment and the billing step's one entry per due installment — the replay
-		// adds none of them a second time.
+		assertThat(count("payment_allocation")).isEqualTo(1L);
 		assertThat(journalEntryCount("CONTRACT_ACTIVATION")).isEqualTo(1L);
 		assertThat(journalEntryCount("PAYMENT")).isEqualTo(1L);
-		assertThat(journalEntryCount("BILLING")).isEqualTo(LAST_DUE_PERIOD);
-		assertThat(decimalOf(installmentRow(1), "paid_amount")).isEqualByComparingTo(PERIOD_TOTAL);
+		assertThat(journalEntryCount("BILLING")).isEqualTo(1L);
+		assertThat(journalEntryCount("PENALTY_ACCRUAL")).isEqualTo(1L);
 		assertThat(jdbc.queryForObject("""
 				select count(*) from idempotency_keys
 				where endpoint = 'POST /api/v1/payments' and status = 'COMPLETED'
 				""", Long.class)).isEqualTo(1L);
-
-		// Second distinct payment under its own key is still received normally.
-		MvcResult other = pay("another-key", "100.00");
-		assertThat(other.getResponse().getStatus()).isEqualTo(201);
-		assertThat(count("payment")).isEqualTo(2L);
 	}
 
 	@Test
@@ -451,6 +581,7 @@ class PaymentApiIT {
 
 	@Test
 	void anUnusableReceivableSnapshotIsRejectedAndRollsTheWholePaymentBack() throws Exception {
+		fixedClock().setDate(FIRST_CHARGEABLE_DATE);
 		// Data the engine cannot allocate against: a waiver bigger than the penalty it reduces. The
 		// receivable snapshot is at fault, so the request must fail loudly and write nothing at all.
 		jdbc.update("""
@@ -464,15 +595,18 @@ class PaymentApiIT {
 		assertThat(result.getResponse().getStatus()).isEqualTo(500);
 		assertThat(errorCode(result)).isEqualTo("INTERNAL_ERROR");
 		// No half-written payment: the row, its allocations, the installment resolution, the journal entry
-		// and the idempotency claim all rolled back together (TS §2.3) — including the interest the use
-		// case's billing step recognized before the snapshot failed.
+		// and the idempotency claim all rolled back together (TS §2.3) — including billing and the one
+		// penalty day recognized before the corrupt snapshot failed.
 		assertThat(count("payment")).isZero();
 		assertThat(count("payment_allocation")).isZero();
 		assertThat(countPaymentClaims()).isZero();
 		assertThat(count("journal_entry")).isEqualTo(1L);
 		assertThat(journalEntryCount("BILLING")).isZero();
+		assertThat(journalEntryCount("PENALTY_ACCRUAL")).isZero();
+		assertThat(count("penalty_accrual")).isZero();
 		assertThat(jdbc.queryForObject("select recognized_interest_amount from installment where id = ?",
 				BigDecimal.class, installmentId(1))).isEqualByComparingTo("0.00");
+		assertThat(penaltyAmountOf(1)).isEqualByComparingTo("0.00");
 		assertThat(decimalOf(installmentRow(1), "paid_amount")).isEqualByComparingTo("0.00");
 		assertThat(installmentRow(1).get("status")).isEqualTo("PENDING");
 	}
@@ -503,33 +637,46 @@ class PaymentApiIT {
 	}
 
 	@Test
-	void payingTheLastInstallmentOfASinglePeriodContractClosesItAsMaturity() throws Exception {
-		// A one-period contract whose only due date (2026-08-31) has passed: the final regular payment ends
-		// it, so the same use case that resolves the installment closes the contract (invariant 17, ADR-011).
+	void aSinglePeriodContractClosesOnlyAfterItsFirstChargeablePenaltyIsPaid() throws Exception {
 		UUID singlePeriodContract = activateContract(new CreateContractRequest(
 				new CreateCustomerRequest("Siti Aminah", "3171012501900002", "08123456780", "Bandung"),
 				new CreateAssetRequest(AssetType.MOTORCYCLE, "Yamaha", "Mio", null, "B9999ZZ"),
 				new BigDecimal("20000000.00"), new BigDecimal("4000000.00"), 1, InterestScheme.FLAT,
-				new BigDecimal("0.0150"), LocalDate.of(2026, 7, 31)), LocalDate.of(2026, 7, 31));
+				new BigDecimal("0.0150"), LocalDate.of(2026, 1, 31)), LocalDate.of(2026, 1, 31));
+		fixedClock().setDate(FIRST_CHARGEABLE_DATE);
 
-		MvcResult result = postPayment("closing-payment",
+		MvcResult penaltyPayment = postPayment("single-period-penalty",
+				body(singlePeriodContract, "16240.00", "CASH"));
+
+		assertThat(penaltyPayment.getResponse().getStatus()).isEqualTo(201);
+		assertThat(allocationTypes(data(penaltyPayment))).containsExactly("PENALTY");
+		assertThat(decimal(data(penaltyPayment).get("allocations").get(0), "amount"))
+				.isEqualByComparingTo("16240.00");
+		assertThat(contractRow(singlePeriodContract).get("status")).isEqualTo("ACTIVE");
+		assertThat(count("penalty_accrual")).isEqualTo(1L);
+		assertThat(journalEntryCount("PENALTY_ACCRUAL")).isEqualTo(1L);
+
+		MvcResult closingPayment = postPayment("single-period-closing",
 				body(singlePeriodContract, "16240000.00", "CASH"));
 
-		assertThat(result.getResponse().getStatus()).isEqualTo(201);
-		assertThat(decimal(data(result), "excess_amount")).isEqualByComparingTo("0.00");
-		assertThat(decimal(data(result), "amount")).isEqualByComparingTo("16240000.00");
+		assertThat(closingPayment.getResponse().getStatus()).isEqualTo(201);
+		assertThat(decimal(data(closingPayment), "excess_amount")).isEqualByComparingTo("0.00");
+		assertThat(allocationTypes(data(closingPayment))).containsExactly("INTEREST", "PRINCIPAL");
+		assertThat(decimal(data(closingPayment).get("allocations").get(0), "amount"))
+				.isEqualByComparingTo("240000.00");
+		assertThat(decimal(data(closingPayment).get("allocations").get(1), "amount"))
+				.isEqualByComparingTo("16000000.00");
 
 		Map<String, Object> contract = contractRow(singlePeriodContract);
 		assertThat(contract.get("status")).isEqualTo("CLOSED");
 		assertThat(contract.get("closed_reason")).isEqualTo("MATURITY");
-		// closed_at is the resolving event's instant: the closing payment and the resolution share it.
 		assertThat(closedAtOf(singlePeriodContract).toInstant()).isEqualTo(clock.now().toInstant());
 		// Closing is a state rule, not a UI flag: a closed contract refuses further money (409).
 		MvcResult afterClose = postPayment("payment-after-close",
 				body(singlePeriodContract, "1000.00", "CASH"));
 		assertThat(afterClose.getResponse().getStatus()).isEqualTo(409);
 		assertThat(errorCode(afterClose)).isEqualTo("CONTRACT_STATE_INVALID");
-		assertThat(count("payment")).isEqualTo(1L);
+		assertThat(count("payment")).isEqualTo(2L);
 	}
 
 	private MvcResult pay(String idempotencyKey, String amount) throws Exception {
@@ -591,6 +738,31 @@ class PaymentApiIT {
 	private Map<String, Object> installmentRow(int periodNo) {
 		return jdbc.queryForMap("select paid_amount, status, paid_at, version from installment "
 				+ "where contract_id = ? and period_no = ?", contractId, periodNo);
+	}
+
+	private long accrualCount(int periodNo) {
+		return jdbc.queryForObject("select count(*) from penalty_accrual where installment_id = ?",
+				Long.class, installmentId(periodNo));
+	}
+
+	private BigDecimal accrualAmountOf(int periodNo, LocalDate accrualDate) {
+		return jdbc.queryForObject("select amount from penalty_accrual where installment_id = ? and accrual_date = ?",
+				BigDecimal.class, installmentId(periodNo), accrualDate);
+	}
+
+	private UUID accrualIdOf(int periodNo, LocalDate accrualDate) {
+		return jdbc.queryForObject("select id from penalty_accrual where installment_id = ? and accrual_date = ?",
+				UUID.class, installmentId(periodNo), accrualDate);
+	}
+
+	private BigDecimal penaltyAmountOf(int periodNo) {
+		return jdbc.queryForObject("select penalty_amount from installment where id = ?", BigDecimal.class,
+				installmentId(periodNo));
+	}
+
+	private UUID accrualEntryOf(int periodNo, LocalDate accrualDate) {
+		return jdbc.queryForObject("select id from journal_entry where ref_type = 'PENALTY_ACCRUAL' and ref_id = ?",
+				UUID.class, accrualIdOf(periodNo, accrualDate));
 	}
 
 	/** The recognition entry of a period, keyed by the installment it recognizes (C4/ADR-011). */

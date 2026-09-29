@@ -9,13 +9,14 @@ import org.springframework.context.annotation.Primary;
 import java.time.LocalDate;
 
 /**
- * Deterministic application clock for the payment integration tests.
+ * Deterministic clock shared by payment integration suites.
  *
- * <p>Payment behaviour is time dependent in two ways that must not depend on the day the suite runs:
- * {@code paid_at} comes from the clock (TS §2.0) and the allocation window is
- * {@code due_date <= business date} (ADR-009). Pinning the business date at 2026-09-21 against a
- * schedule that starts 2026-01-31 makes periods 1–7 due and period 8 (2026-08-31 → 2026-09-30) the
- * first future installment, today and in five years.
+ * <p>Payment behaviour is time dependent in three ways that must not depend on the day the suite runs:
+ * {@code paid_at} comes from the clock (TS §2.0), the allocation window is
+ * {@code due_date <= business date} (ADR-009), and T4 recognizes due penalties before taking the payment
+ * snapshot. Pinning the business date at the first due date, 2026-02-28, makes only period 1 due and keeps
+ * the normal payment fixtures outside the penalty grace boundary. Tests for late behavior move this same
+ * clock explicitly.
  *
  * <p>Same recipe as {@code DocumentNumberGeneratorIT}: named differently from
  * {@code ClockConfiguration#clock} so both definitions coexist, and {@code @Primary} so the fixed bean
@@ -24,8 +25,8 @@ import java.time.LocalDate;
 @TestConfiguration(proxyBeanMethods = false)
 public class PaymentClockTestConfiguration {
 
-	/** Business date the payment suites run at. */
-	public static final LocalDate BUSINESS_DATE = LocalDate.of(2026, 9, 21);
+	/** First installment due date used as the normal payment-suite business date. */
+	public static final LocalDate BUSINESS_DATE = LocalDate.of(2026, 2, 28);
 
 	@Bean
 	@Primary

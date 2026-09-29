@@ -7,22 +7,24 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 /**
- * The {@code penalty} module's entry point for daily penalty recognition (story D1, DM §1.9, TS §4.3,
- * Addendum §12, ADR-012): makes the penalty of every late day that has not been charged yet a receivable.
+ * The {@code penalty} module's entry point for penalty recognition (story D1/T4, DM §1.9, TS §4.3,
+ * Addendum §12, ADR-012/ADR-013): makes the penalty of every late day that has not been charged yet a
+ * receivable.
  *
  * <p><b>One transaction per call.</b> {@code REQUIRED} propagation is deliberate: called by the daily job
- * (D2) it opens the transaction itself; called by a flow that already has one (the void catch-up of E4,
- * per Addendum §6) it joins it, so the accrual rows, the installment's {@code penalty_amount} and the
- * journal entries commit or roll back together. Posting on the ledger side is {@code MANDATORY}, so this
- * entry point is what guarantees a transaction exists.
+ * (D2) it opens the transaction itself; called by a financial flow that already has one, including payment
+ * receipt (T4) and the void catch-up of E4, it joins that transaction. The accrual rows, installment
+ * {@code penalty_amount}, and journal entries therefore commit or roll back with the calling use case.
+ * Posting on the ledger side is {@code MANDATORY}, so this entry point guarantees a transaction exists.
  *
  * <p>Idempotent by state: a day that already has an accrual row is never charged twice, so repeating the
  * call for the same business date posts nothing (V1 {@code uk_penalty_accrual}), while a later business date
  * charges only the days that are still missing — including days that a previous run could not charge because
- * nothing was outstanding.
+ * nothing was outstanding. Endpoint idempotency remains the caller's responsibility.
  *
- * <p>Deliberately <b>not</b> part of the payment path on D1: PRD D-1 and Addendum §12 make this a daily job
- * step, and the lazy trigger belongs to the story that owns the scheduler (D2, with its own ADR).
+ * <p>The payment path calls this port after billing and before reading its receivable snapshot, with the
+ * same captured business date. That ordering makes due interest part of the penalty base and makes the new
+ * penalty visible to the allocation waterfall in one transaction (ADR-013).
  */
 public interface PenaltyAccrualPort {
 
@@ -37,7 +39,7 @@ public interface PenaltyAccrualPort {
 	 * one increment of the installment's gross {@code penalty_amount}.
 	 *
 	 * @param contractId   contract whose due penalty is to be recognized
-	 * @param businessDate business date the step runs for; no later day is ever charged
+	 * @param businessDate single business date captured by the caller; no later day is ever charged
 	 * @return how many accrual rows (and journal entries) this call wrote, {@code 0} when nothing was due;
 	 *         this is a financial-write diagnostic only — {@code job_run.records_processed} counts contracts
 	 *         processed by the daily step (ADR-013), not accrual rows

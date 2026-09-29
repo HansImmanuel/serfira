@@ -217,8 +217,22 @@ invariant 17 yang diperlukan.
 - **Tidak ada migrasi baru dari ADR ini sendiri.** T2 (V9) tetap scope migrasinya sendiri (lock table +
   immutability trigger `penalty_accrual` + `ck_penalty_accrual_days >= 1`), tidak berubah oleh keputusan di
   atas.
-- **Risiko residual ADR-012 (i, ii) tidak berubah** — tetap closed oleh T4 dan catatan E2, sekarang dengan
-  invariant accrue-before-resolve sebagai payung eksplisit untuk keduanya.
+- **Risiko residual ADR-012 kini dibedakan statusnya:** risiko (i) untuk pembayaran ditutup oleh implementasi
+  T4/ADR-014; risiko (ii) tetap terbuka sampai settlement T12/T13 menjalankan accrue-before-resolve pada
+  tanggal quote/execution.
+
+### Implementation Note — T4 (2026-09-30)
+
+T4 telah mengimplementasikan kewajiban keputusan 1 untuk jalur pembayaran. `PaymentApplicationService`
+sekarang memanggil `accrueDuePenalty` setelah billing dan sebelum `loadReceivableSnapshot`, semuanya di dalam
+supplier idempotensi dan transaksi yang sama dengan allocation, resolution, dan jurnal pembayaran. Satu
+business date dipakai oleh billing, accrual, dan allocation; replay tidak menjalankan supplier, sedangkan
+kegagalan me-rollback claim serta seluruh write finansial.
+
+Catatan ini tidak menghapus konteks keputusan D1 di ADR-012: lazy trigger memang belum ada saat D1 ditutup dan
+baru diterima/diimplementasikan melalui ADR-014. Risiko race job-versus-payment pada unique
+`(installment_id, accrual_date)` tetap diterima sementara dan menjadi T5; tidak ada klaim bahwa retry
+fresh-transaction sudah tersedia.
 
 **Referensi:** `tasks.md` T1/T3/T4/T6/T8/T9/T10/T16 dan §Planning Notes; ADR-010/ADR-011/ADR-012; DM
 §1.4/§1.9, §3 invariant 17; TS §2.0/§4.3; Addendum §6/§7.3/§10/§10A/§14; `06_FRONTEND_SPEC.md` §2.7/§2.9.
