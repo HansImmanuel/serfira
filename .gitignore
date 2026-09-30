@@ -22,6 +22,12 @@ Thumbs.db
 # Logs
 *.log
 
+review-pr.ps1
+review-pr-1.md
+
+# Kiro local backups
+.kiro/*.zip
+
 # Frontend (placeholder for future phases)
 node_modules/
 .next/

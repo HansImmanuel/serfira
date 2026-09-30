@@ -203,12 +203,12 @@ PASSWORD = os.getenv('DB_PASSWORD')
 
 **SECURE**:
 ```python
-import os
-ALLOWED_DIR = '/var/www/uploads'
+from pathlib import Path
+ALLOWED_DIR = Path('/var/www/uploads').resolve()
 file_name = request.args.get('file')
-file_path = os.path.join(ALLOWED_DIR, file_name)
-file_path = os.path.realpath(file_path)
-if not file_path.startswith(os.path.realpath(ALLOWED_DIR)):
+file_path = (ALLOWED_DIR / file_name).resolve()
+# Compare path components, not string prefixes: /var/www/uploads_evil must not pass
+if not file_path.is_relative_to(ALLOWED_DIR):
     raise ValueError("Invalid file path")
 with open(file_path, 'r') as f:
     content = f.read()
@@ -358,28 +358,31 @@ class MultiLanguageSASTScanner:
             'findings': []
         }
 
-        self.run_semgrep_scan()
-        scan_results['tools_executed'].append('semgrep')
-
-        if 'python' in languages:
-            self.run_bandit_scan()
-            scan_results['tools_executed'].append('bandit')
-        if 'javascript' in languages or 'typescript' in languages:
-            self.run_eslint_security_scan()
-            scan_results['tools_executed'].append('eslint-security')
+        # This example only wires Semgrep; add Bandit/ESLint runners the same way if needed.
+        if self.run_semgrep_scan():
+            scan_results['tools_executed'].append('semgrep')
+        else:
+            scan_results['tools_failed'] = ['semgrep']
 
         scan_results['findings'] = [vars(f) for f in self.findings]
         scan_results['summary'] = self.generate_summary()
         return scan_results
 
-    def run_semgrep_scan(self):
-        """Run Semgrep"""
+    def run_semgrep_scan(self) -> bool:
+        """Run Semgrep; returns False if any ruleset failed to execute."""
+        ok = True
         for ruleset in ['auto', 'p/security-audit', 'p/owasp-top-ten']:
             try:
                 result = subprocess.run([
                     'semgrep', '--config', ruleset, '--json', '--quiet',
                     str(self.project_path)
                 ], capture_output=True, text=True, timeout=300)
+
+                # Semgrep exits 0 (no findings) or 1 (findings); anything else is a tool failure
+                if result.returncode not in (0, 1):
+                    print(f"Semgrep {ruleset} failed with exit code {result.returncode}")
+                    ok = False
+                    continue
 
                 if result.stdout:
                     data = json.loads(result.stdout)
@@ -396,8 +399,10 @@ class MultiLanguageSASTScanner:
                             owasp=f.get('extra', {}).get('metadata', {}).get('owasp', ''),
                             confidence=f.get('extra', {}).get('metadata', {}).get('confidence', 'MEDIUM')
                         ))
-            except Exception as e:
+            except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 print(f"Semgrep {ruleset} failed: {e}")
+                ok = False
+        return ok
 
     def generate_summary(self) -> Dict[str, Any]:
         """Generate statistics"""
@@ -444,10 +449,11 @@ jobs:
 
       - name: Run scans
         run: |
-          bandit -r . -f json -o bandit.json || true
-          semgrep --config=auto --json --output=semgrep.json || true
+          bandit -r . -f json -o bandit.json
+          semgrep --config=auto --json --output=semgrep.json
 
       - name: Upload reports
+        if: always()
         uses: actions/upload-artifact@v3
         with:
           name: sast-reports
@@ -464,9 +470,10 @@ sast:
   image: python:3.11
   script:
     - pip install bandit semgrep
-    - bandit -r . -f json -o bandit.json || true
-    - semgrep --config=auto --json --output=semgrep.json || true
+    - bandit -r . -f json -o bandit.json
+    - semgrep --config=auto --json --output=semgrep.json
   artifacts:
+    when: always
     reports:
       sast: bandit.json
 ```

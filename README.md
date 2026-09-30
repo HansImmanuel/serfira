@@ -140,7 +140,9 @@ PostgreSQL 16, so Docker must be running). CI runs the same task on every push a
 
 Every endpoint except health and OpenAPI requires a bearer JWT (HS256). The login endpoint is not
 built yet (planned for Sprint 6b), so for now tokens must be signed with the configured dev secret.
-The `sub` claim must be the UUID of an existing `app_user`; it becomes `created_by` on every write.
+Use the UUID of an existing `app_user` as the `sub` claim; it is recorded as `created_by` on writes.
+Known gap (CR-01, fixed in T7): a signed token with a non-UUID `sub` is not rejected yet and writes as
+`SYSTEM`, and a `sub` that is not an existing `app_user` is not checked before the write.
 
 | Method | Endpoint                              | Purpose                                                            |
 | ------ | ------------------------------------- | ------------------------------------------------------------------ |
@@ -155,8 +157,9 @@ The `sub` claim must be the UUID of an existing `app_user`; it becomes `created_
 
 - **Default-deny.** Only health, info, and OpenAPI paths are public.
   → [ADR-005](docs/adr/ADR-005-resource-server-before-auth-stories.md)
-- **Attributable writes.** The JWT subject is bound to the audit context, so every row records
-  who created it. Scheduled jobs run as a seeded `SYSTEM` principal that can never log in
+- **Attributable writes.** A UUID JWT subject is bound to the audit context and recorded as
+  `created_by`/`updated_by`. Rejecting tokens whose subject is not a valid `app_user` is planned
+  for T7 (CR-01). Scheduled jobs run as a seeded `SYSTEM` principal that can never log in
   (inactive, unusable password hash, enforced by a check constraint).
 - **Fail-fast secrets.** The app refuses to start without its PII encryption key, HMAC key, and
   JWT secret:

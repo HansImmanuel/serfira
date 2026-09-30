@@ -3,8 +3,8 @@
 - **Language**: Java 21 (Gradle toolchain)
 - **Framework**: Spring Boot 4.1 (web MVC, data JPA, validation, actuator, security, OAuth2 resource server)
 - **Database**: PostgreSQL 16, schema owned by Flyway (`spring.jpa.hibernate.ddl-auto=validate`)
-- **Scheduling**: Spring scheduling + ShedLock 6.9 (JDBC provider) for the daily servicing job
-- **API docs**: springdoc-openapi 2.8 (`/swagger-ui.html`)
+- **Scheduling**: Spring scheduling + ShedLock 7.10 (JDBC provider) for the daily servicing job
+- **API docs**: springdoc-openapi 3.1 (`/swagger-ui.html`)
 - **Auth**: bearer JWT, HS256, via Spring OAuth2 resource server. Default-deny. No login endpoint yet.
 - **JSON**: Jackson 3 (`tools.jackson.*` packages; annotations still `com.fasterxml.jackson.annotation`)
 - **Testing**: JUnit 5, AssertJ, Spring Boot Test, MockMvc, spring-security-test, Testcontainers 2.0 (PostgreSQL 16)
