@@ -6,6 +6,7 @@ import com.serfira.contract.api.CreateAssetRequest;
 import com.serfira.contract.api.CreateContractRequest;
 import com.serfira.contract.api.CreateCustomerRequest;
 import com.serfira.contract.application.ContractCommandService;
+import com.serfira.contract.application.InstallmentAgingPort;
 import com.serfira.contract.application.InstallmentBillingPort;
 import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
@@ -94,10 +95,11 @@ class DailyServicingLockIT {
 		}
 
 		assertThat(processor.invocations()).isEqualTo(1);
+		// One invocation writes one row per step: billing, penalty-accrual and aging (A-9, T6).
 		assertThat(jdbc.queryForObject("select count(*) from job_run where business_date = ?", Long.class,
-				BUSINESS_DATE)).isEqualTo(2L);
+				BUSINESS_DATE)).isEqualTo(3L);
 		assertThat(jdbc.queryForObject("select count(*) from job_run where status = 'COMPLETED' "
-				+ "and records_processed = 1 and records_failed = 0", Long.class)).isEqualTo(2L);
+				+ "and records_processed = 1 and records_failed = 0", Long.class)).isEqualTo(3L);
 	}
 
 	private void truncateDomainTables() {
@@ -119,8 +121,9 @@ class DailyServicingLockIT {
 		private volatile CountDownLatch entered = new CountDownLatch(1);
 		private volatile CountDownLatch release = new CountDownLatch(1);
 
-		BlockingContractProcessor(InstallmentBillingPort billing, PenaltyAccrualPort penalty) {
-			super(billing, penalty);
+		BlockingContractProcessor(InstallmentBillingPort billing, PenaltyAccrualPort penalty,
+				InstallmentAgingPort aging) {
+			super(billing, penalty, aging);
 		}
 
 		@Override
@@ -169,8 +172,8 @@ class DailyServicingLockIT {
 		@Bean
 		@Primary
 		BlockingContractProcessor blockingContractProcessor(InstallmentBillingPort billing,
-				PenaltyAccrualPort penalty) {
-			return new BlockingContractProcessor(billing, penalty);
+				PenaltyAccrualPort penalty, InstallmentAgingPort aging) {
+			return new BlockingContractProcessor(billing, penalty, aging);
 		}
 	}
 }

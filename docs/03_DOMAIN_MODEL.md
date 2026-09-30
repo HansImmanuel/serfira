@@ -135,6 +135,12 @@ sehingga aging dan penalty (TS §4.3) selalu memakai definisi hari-mulai yang sa
 `DPD >= 1`. Tidak ada laporan yang membaca status mentah untuk DPD — laporan aging (D3) menghitung DPD
 langsung dari `due_date`, bukan dari status installment.
 
+**Implementasi (T6):** transisi `PENDING/PARTIALLY_PAID → OVERDUE` ada di `Installment.markOverdue` dan
+formula hari-mulai/DPD di `contract.domain.InstallmentAging`, dipanggil job harian lewat
+`InstallmentAgingPort`. Aging hanya bergerak **masuk** ke `OVERDUE`: installment yang sudah `OVERDUE` tidak
+ditulis ulang (tanpa version bump), dan `PAID`/`SETTLED`/`WRITTEN_OFF` tidak pernah diubah. Keluar dari
+`OVERDUE` hanya lewat pembayaran, settlement, atau write-off.
+
 Weekend/public holiday tidak menggeser due date pada MVP.
 
 ### 1.5 SettlementQuote

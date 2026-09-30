@@ -12,13 +12,14 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 
 ## Current Project State
 
-**Snapshot:** `main` @ `f80f9e3` (2026-09-29), in sync with `serfira/main`. The current working tree
-contains the uncommitted T4 implementation and this documentation update; no commit was created for T4.
+**Snapshot:** `main` @ `4aa3765` (2026-09-30, T4 committed and pushed), in sync with `serfira/main`. The
+current working tree contains the uncommitted T5 and T6 implementations and their documentation updates; no
+commit was created for T5 or T6 yet.
 
-**Verified on 2026-09-30 (through T4):**
+**Verified on 2026-09-30 (through T6):**
 - `./gradlew compileJava compileTestJava`: pass.
-- `./gradlew test --tests com.serfira.payment.PaymentApiIT`: 17 tests pass.
-- Full `./gradlew test --rerun`: 413 tests pass.
+- `./gradlew test --tests "com.serfira.penalty.*" --tests "com.serfira.contract.*"` (`--rerun`): pass.
+- Full `./gradlew test --rerun`: 63 suites / 460 tests pass.
 - `./gradlew check`: pass.
 
 **Implemented (verified in source):**
@@ -34,29 +35,31 @@ contains the uncommitted T4 implementation and this documentation update; no com
   snapshot/allocation/resolution inside the idempotency supplier, using one captured business date. Replay
   skips the supplier and a failed attempt rolls back accrual, journals, payment writes, resolution, and the
   claim together (ADR-014).
+- Payment conflict retry T5 is live: `PaymentController` calls `PaymentRetryingService`, which retries
+  `PaymentApplicationService.create` up to 3 times (50/150/400 ms backoff) on optimistic-lock or
+  `uk_penalty_accrual` conflicts, each attempt in a fresh transaction with a fresh idempotency claim.
+  Exhausted retries return 409 `CONCURRENT_MODIFICATION` (ADR-014 decision 7).
+- Aging step T6 is live: after each contract's billing → penalty transaction, the daily job runs a separate
+  aging transaction through `contract.application.InstallmentAgingPort` that marks `PENDING`/`PARTIALLY_PAID`
+  installments `OVERDUE` from `due_date + grace + 1` while `outstanding > 0`, with its own five-attempt retry
+  and its own `aging` `job_run` row (ADR-013 implementation note T6).
 - Endpoints: `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`, and `POST /api/v1/payments`.
 - Security: JWT HS256 resource server with default-deny **authentication**. There is **no role-based
   authorization** and no login/refresh/logout (ADR-005).
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
-T1–T4 are DONE. C5/D3 and T5–T11 remain. The remaining work is planned below as **Sprint 4b** and
-**Sprint 4c**.
+T1–T6 are DONE, so Sprint 4b is complete. C5/D3 and T7–T11 remain, planned below as **Sprint 4c**.
 
 **Blockers and critical gaps:**
-1. **The payment write path does not retry job-versus-payment conflicts yet.** T4 now performs lazy accrual,
-   but a concurrent job and payment can race on unique `(installment_id, accrual_date)`. The job retries;
-   payment still needs the whole-transaction fresh-claim retry specified by **T5**.
-2. **Aging state is not maintained yet.** T3 implements billing → penalty only; the third daily step that
-   marks eligible installments OVERDUE is **T6**.
-3. **The Addendum §3.4 role matrix is not enforced.** Any valid token can create contracts and post
+1. **The Addendum §3.4 role matrix is not enforced.** Any valid token can create contracts and post
    payments. PRD §2 already requires "1 role admin + read-only" for Phase 1 → **T7**.
 
 **Specification/implementation discrepancies found:**
 
 | # | Documented | Implemented | Resolution |
 |---|---|---|---|
-| X-1 | Addendum §5: payment write path retries optimistic-lock failures 3× (50/150/400 ms), then 409 `CONCURRENT_MODIFICATION` | No retry. First conflict → 409. No `spring-retry` dependency or loop | T5 |
+| X-1 | Addendum §5: payment write path retries optimistic-lock failures 3× (50/150/400 ms), then 409 `CONCURRENT_MODIFICATION` | Resolved by T5: `PaymentRetryingService` retries optimistic-lock and SQLSTATE `23505` conflicts 3× with the documented backoff via an injectable `Sleeper`, no `spring-retry` dependency added | DONE |
 | X-2 | TS §2.3 / Addendum §5: daily jobs use ShedLock and retry per record up to 5× | Resolved by T2/T3: V9 lock table; DB-time renewable lock; per-contract atomic billing→penalty with five total attempts | DONE |
 | X-3 | Addendum §10: `X-Request-Id`, JSON logs, `request_id` stored on `idempotency_keys` | None. `idempotency_keys.request_id` is not mapped by `IdempotencyKey`. No story in `05_SPRINT_PLAN.md` owns this | T20 (Sprint 6) |
 | X-4 | DM §1.4 state machine has no `OVERDUE → PARTIALLY_PAID` edge | `Installment.applyPayment` moves OVERDUE + partial → `PARTIALLY_PAID` | Ambiguity A-5 → T1 |
@@ -89,6 +92,8 @@ ADRs listed.
 | D1 | Penalty calculator + per-date idempotent accrual. **The payment-before-job risk is closed by T4; component-exact precision remains deferred in T10** | DONE | ADR-012, ADR-014 |
 | T1–T3 | Phase-1 decisions, V9 integrity/ShedLock schema, daily billing→penalty job + V10 audit date | DONE | ADR-013, V9/V10 |
 | T4 | Lazy penalty accrual in the idempotent payment transaction | DONE | ADR-014 |
+| T5 | Payment write-path conflict retry | DONE | ADR-014 decision 7 |
+| T6 | Aging status step in the daily job | DONE | ADR-013 implementation note T6 |
 | — | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover, open-in-view off | DONE | `cdce254` |
 
 ---
@@ -334,8 +339,32 @@ required before this runs under load.
 
 ### T5 — Payment write-path conflict retry (Addendum §5)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-09-30): Added `PaymentRetryingService` (`payment.application`), a
+non-transactional bean that wraps `PaymentApplicationService.create` from outside its `@Transactional`
+boundary; `PaymentController` now depends on it instead of the application service directly. Each attempt
+calls `create` fresh, so it opens its own transaction and takes a new idempotency claim
+(`IdempotencyService` stays `Propagation.MANDATORY`) — a failed attempt never consumes the key. Retryable
+failures are classified by a payment-owned `PaymentConflictClassifier` (package-private, mirrors
+`penalty.application.DailyServicingConflictClassifier`'s optimistic-lock/SQLSTATE `23505` rule; kept
+separate rather than shared because `penalty`'s classifier is package-private and the two call sites don't
+justify a `shared` abstraction for ~15 lines). Policy: 3 attempts total, backoff 50/150/400 ms via an
+injectable `Sleeper` (`shared.concurrency`, mirrors `ClockConfiguration`'s `@ConditionalOnMissingBean`
+pattern) — no `spring-retry` dependency added. Exhausted retries throw
+`PaymentConflictRetriesExhaustedException` (extends `SerfiraException`, 409 `CONCURRENT_MODIFICATION`);
+`GlobalExceptionHandler` needed no change since `handleSerfira` already reads `ex.status()`/`ex.code()`
+dynamically. Verification: `PaymentRetryingServiceTest` (5 unit tests, injected fake `Sleeper`) covers the
+attempt count, the documented backoff sequence, and that validation/business-state errors pass through
+unretried. `PaymentConflictRetryIT` forces both races deterministically against Testcontainers PostgreSQL:
+one test parks the payment's own accrual save right after it reads "nothing accrued yet" via a JDK dynamic
+proxy over `PenaltyAccrualRepository`, lets a concurrent "job" transaction commit its own
+`(installment_id, accrual_date)` row, then releases — producing a real SQLSTATE `23505` collision that the
+retry recovers from with exactly one accrual row and one payment; the other forces a persistent conflict
+through 3 exhausted attempts, asserts 409 `CONCURRENT_MODIFICATION`, confirms the key stayed unclaimed, and
+then succeeds on a plain retry. Full `./gradlew test --rerun` = 420 tests (413 + 7); `./gradlew check`
+passed. No schema or API/OpenAPI change was required.
 
 Goal: Concurrent payment and job activity on one contract resolves correctly without surfacing avoidable
 409s, as documented.
@@ -374,8 +403,30 @@ calls.
 
 ### T6 — Aging status step (D2, part 3)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-09-30): Recorded as ADR-013 "Implementation Note — T6"; TS §1/§2.3, DM §1.4 and
+Addendum §5/§7.3/§10 synchronized. The transition lives in `contract`: `Installment.markOverdue(D, grace)`
+moves only `PENDING`/`PARTIALLY_PAID` with `outstanding > 0` to `OVERDUE` from
+`InstallmentAging.firstOverdueDate` (= `due_date + grace + 1`) onwards; every other case touches no field, so
+an already-`OVERDUE` installment is never rewritten and `PAID`/`SETTLED`/`WRITTEN_OFF` never change.
+`InstallmentAgingPort`/`InstallmentAgingService` apply it per contract with `Propagation.MANDATORY` (a call
+without a transaction fails instead of silently losing the change). The job calls it through a new
+`@Transactional DailyServicingContractProcessor.age`, a separate transaction after billing → penalty that
+still runs when billing → penalty failed; a contract already observed non-ACTIVE is skipped.
+`DailyServicingOrchestrator` now runs both steps through one step-generic retry (five attempts, same
+conflict classifier) and writes a third `job_run` row, `aging`, with its own counters. The formula is kept in
+`contract.domain` (no `contract → penalty` edge) and pinned to `PenaltyTerms` by `AgingPenaltyParityTest`. No
+migration, API or dependency change. Verification: unit `InstallmentAgingTest` (11), `InstallmentMarkOverdueTest`
+(11, every source status incl. the boundary day), `AgingPenaltyParityTest` (2), orchestrator/processor tests
+(+6); Testcontainers `InstallmentAgingServiceIT` (4: boundary, rerun keeps `version`, resolved states untouched,
+guards) and `DailyAgingJobIT` (6: boundary via the locked job, rerun no version change, partial payment on
+`OVERDUE` → `PARTIALLY_PAID` → next run `OVERDUE`, full payoff 1,574,906.66 → `PAID` stays `PAID`,
+`SETTLED`/`WRITTEN_OFF` untouched, only ACTIVE aged). `DailyServicingJobIT`/`LockIT`/`TransactionIT` updated for
+three `job_run` rows per invocation (structural, not a financial value); `TransactionIT` also proves a
+contract whose billing → penalty exhausted its retries is still aged. Full `./gradlew test --rerun` = 460
+tests (420 + 40); `./gradlew check` pass.
 
 Goal: Keep installment aging states current as the third step of the daily job.
 
@@ -675,7 +726,7 @@ Also already documented, not new findings:
 | A-8 | Statement columns: what debit/credit mean for a balanced entry, which accounts appear, running balance? | FE §2.7 | T1.c, T9, T22 |
 | A-9 | `job_run`: one row per step or per run? Units of `records_processed`/`records_failed`? Status after a partial failure? | Addendum §10, V1 comment, `PenaltyAccrualPort` Javadoc | T1.d, T3, T6, T17, T18 |
 | A-10 | Confirm that no penalty accrues after maturity close (accrual requires ACTIVE) | DM invariant 17 (silent on penalty) | T1.a, T4 |
-| A-11 | Confirm the payment retry of Addendum §5 is still wanted (planned as written in T5) | Addendum §5 vs current 409-immediately behavior | T5 |
+| A-11 | Confirm the payment retry of Addendum §5 is still wanted (planned as written in T5) | Resolved: implemented as written in T5 (`PaymentRetryingService`) | DONE |
 | A-12 | JWT roles claim name (`roles` is used only by tests) | ADR-005, Addendum §3 (silent) | T7, T21 |
 
 ### Assumptions preserved by this plan

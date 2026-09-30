@@ -42,7 +42,8 @@ Aturan dependency:
 - `penalty` menyentuh `installment` hanya lewat **application interface** milik `contract`
   (`InstallmentPenaltyPort`, ADR-012): step harian membaca due date, penalty base dan status, lalu menaikkan
   `penalty_amount` lewat seam itu, sementara tabel `penalty_accrual` tetap milik `penalty`. Job T3 juga
-  memperoleh daftar/status kontrak ACTIVE hanya lewat `ActiveContractListingPort`; repository/entity
+  memperoleh daftar/status kontrak ACTIVE hanya lewat `ActiveContractListingPort`, dan step aging T6
+  menandai `OVERDUE` hanya lewat `InstallmentAgingPort` (transisi tetap diputuskan `contract`); repository/entity
   `contract` tidak pernah keluar dari modul pemiliknya. Arahnya satu arah (`penalty` → port `contract`);
   `contract` tidak tahu modul `penalty`, dan `penalty` dilarang menyentuh tabel/entity
   `contract`/`installment` langsung. `penalty_accrual` (D1) dan `penalty_adjustment` (E5) adalah
@@ -100,8 +101,12 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   bergabung lewat propagasi `REQUIRED`; claim idempotensi, jurnal `BILLING`/`PENALTY_ACCRUAL`/`PAYMENT`,
   accrual, payment, allocation, serta perubahan installment commit atau rollback bersama. Replay key yang
   sudah `COMPLETED` mengembalikan respons tersimpan tanpa mengeksekusi supplier atau menangkap tanggal baru.
-  Retry fresh-transaction untuk race unique `(installment_id, accrual_date)` job-versus-payment belum
-  diimplementasikan dan tetap scope T5.
+  Sejak T5, race unique `(installment_id, accrual_date)` job-versus-payment dan konflik optimistic-lock
+  di-retry oleh `PaymentRetryingService` di luar batas `@Transactional` milik
+  `PaymentApplicationService.create`: setiap percobaan membuka transaksi baru dan mengambil claim
+  idempotensi baru (maksimum 3 percobaan, backoff 50/150/400 ms, Addendum §5), sehingga percobaan yang gagal
+  tidak pernah mengonsumsi key. Percobaan yang habis mengembalikan 409 `CONCURRENT_MODIFICATION`; kegagalan
+  validasi/state bisnis tidak di-retry.
 - Daily servicing T3 memakai ShedLock JDBC dengan DB time dan keep-alive lease; cron dan explicit backfill
   masuk lewat locked public facade yang sama, sehingga invocation kedua dengan nama lock yang sama dilewati.
   Cron property berjalan di Asia/Jakarta dan bernilai `-` di test agar tidak menyentuh fixture secara
@@ -111,6 +116,12 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   contract lain tetap independen. Optimistic-lock dan unique-key conflict (SQLSTATE `23505`) di-retry paling
   banyak 5 total attempts; error deterministik tidak di-retry. Contract yang menjadi non-ACTIVE saat menunggu
   gilirannya dilewati.
+- Sejak T6, langkah ketiga **aging** berjalan untuk setiap contract di loop yang sama, **setelah** transaksi
+  billing → penalty, dalam transaksinya sendiri (`DailyServicingContractProcessor.age` →
+  `contract.application.InstallmentAgingPort`, `Propagation.MANDATORY`). Aging tetap dijalankan walau
+  billing → penalty contract itu gagal (kondisi `OVERDUE` tidak bergantung pada denda), punya retry 5
+  attempts sendiri dengan classifier yang sama, dan tidak pernah menulis uang. Transisi dan formulanya milik
+  modul `contract` (ADR-013 A-4/A-5 dan implementation note T6).
 - Lifecycle `job_run` ditulis `REQUIRES_NEW`, terpisah dari transaksi finansial per contract, dengan actor
   `SYSTEM`. V10 menyimpan `business_date` eksplisit agar backfill dapat dibedakan dari waktu eksekusinya.
 

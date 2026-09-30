@@ -150,10 +150,10 @@ Story baru "done" kalau **semua** terpenuhi:
   - ⚠️ Sisa untuk story lanjutan: `PaymentStatus.VOIDED`/`voided_at`/`void_reason` belum pernah ditulis (E4); perhitungan Σ alokasi aktif memakai baris `POSTED` saja sementara trigger V3 masih menghitung semua baris — ditinjau ulang saat E4 memperkenalkan baris `VOIDED`.
 
 ### Sprint 4 — Penalty, Aging & Phase-1 Close
-> **Re-planned in `docs/tasks.md`.** C4/D1 dan task re-plan T1–T4 sudah selesai; T3 menyediakan scheduler
-> billing → penalty dan T4 menambahkan lazy penalty accrual di jalur pembayaran (ADR-014). C5/D3 dan
-> T5–T11 masih mengikuti **Sprint 4b** (penalty correctness & daily job) / **Sprint 4c** (access control &
-> Phase-1 reads) di `docs/tasks.md`. `tasks.md` adalah sumber kebenaran untuk status/scope; rincian C4/D1 di
+> **Re-planned in `docs/tasks.md`.** C4/D1 dan task re-plan T1–T6 sudah selesai (**Sprint 4b** selesai);
+> T3 menyediakan scheduler billing → penalty, T4 menambahkan lazy penalty accrual di jalur pembayaran
+> (ADR-014), T5 retry konflik pembayaran, dan T6 langkah aging harian. C5/D3 dan T7–T11 masih mengikuti
+> **Sprint 4c** (access control & Phase-1 reads) di `docs/tasks.md`. `tasks.md` adalah sumber kebenaran untuk status/scope; rincian C4/D1 di
 > bawah mempertahankan konteks keputusan aslinya.
 
 **Goal:** Sistem hidup dengan denda dan aging harian yang bisa diaudit.
@@ -240,9 +240,38 @@ Story baru "done" kalau **semua** terpenuhi:
     rollback, authenticated audit actor, dan maturity close tanpa manual accrual.
   - Verifikasi T4: `compileJava compileTestJava` pass; `PaymentApiIT` 17 pass; full test 413 pass;
     `check` pass.
-  - **Sisa:** race unique `(installment_id, accrual_date)` job-versus-payment dan retry seluruh transaksi
-    tetap T5; aging tetap T6; settlement tetap wajib melakukan accrual sendiri pada T12/T13. Tidak ada
-    perubahan skema atau API/OpenAPI pada T4.
+  - **Sisa (di T4):** race unique `(installment_id, accrual_date)` job-versus-payment dan retry seluruh
+    transaksi tetap T5; aging tetap T6; settlement tetap wajib melakukan accrual sendiri pada T12/T13. Tidak
+    ada perubahan skema atau API/OpenAPI pada T4.
+
+- **Status T5 — payment write-path conflict retry selesai (Addendum §5):**
+  - `PaymentRetryingService` membungkus `PaymentApplicationService.create` dari luar batas
+    `@Transactional`-nya: setiap percobaan membuka transaksi baru dan mengambil claim idempotensi baru,
+    sehingga percobaan yang gagal tidak pernah mengonsumsi key. `PaymentController` memanggil service ini,
+    bukan `PaymentApplicationService` langsung.
+  - `PaymentConflictClassifier` (dimiliki `payment`, package-private) menandai optimistic-lock dan SQLSTATE
+    `23505` sebagai retryable; kegagalan validasi/state bisnis diteruskan tanpa retry. Kebijakan: maksimum 3
+    percobaan, backoff 50/150/400 ms lewat `Sleeper` yang dapat diinjeksi — tidak menambah dependensi
+    `spring-retry`. Percobaan yang habis melempar `PaymentConflictRetriesExhaustedException` → 409
+    `CONCURRENT_MODIFICATION`.
+  - `PaymentConflictRetryIT` memaksa race yang deterministik: satu percobaan payment diblokir tepat setelah
+    membaca "belum ada accrual" dan sebelum insert-nya sendiri, sebuah "job" berkomit di transaksi lain pada
+    `(installment_id, accrual_date)` yang sama, lalu payment dilepas — menghasilkan SQLSTATE `23505` yang
+    nyata dari PostgreSQL (Testcontainers), yang berhasil di-retry. Kasus kedua memaksa konflik persisten
+    hingga 3 percobaan habis, memverifikasi 409 dan key yang tetap dapat dipakai ulang.
+  - Verifikasi T5: `compileJava compileTestJava` pass; `PaymentRetryingServiceTest` (5 unit) pass;
+    `PaymentConflictRetryIT` (2 IT) pass; full test 420 pass (413 + 7); `check` pass. Tidak ada perubahan
+    skema atau API/OpenAPI.
+
+- **Status T6 — aging status step selesai (bagian ketiga D2):**
+  - Setelah transaksi billing → penalty setiap kontrak, job menjalankan transaksi aging tersendiri lewat
+    `contract.application.InstallmentAgingPort`: `PENDING`/`PARTIALLY_PAID` dengan `outstanding > 0` menjadi
+    `OVERDUE` mulai `due_date + grace + 1` (ADR-013 A-4/A-5). Installment yang sudah `OVERDUE` tidak ditulis
+    ulang; `PAID`/`SETTLED`/`WRITTEN_OFF` tidak pernah diubah. Aging tetap berjalan walau billing → penalty
+    kontrak itu gagal, dengan retry 5 attempts dan row `job_run` `aging` sendiri (ADR-013 implementation
+    note T6).
+  - Verifikasi T6: full test 460 pass (420 + 40); `check` pass. Tidak ada perubahan skema, API/OpenAPI,
+    atau dependency. Dengan T3–T6, exit D2 ("billing + penalty + aging + `job_run` berjalan") terpenuhi.
 
 ### Sprint 5 — Settlement, Credit & Waive
 **Goal:** Settlement semantics dan excess credit benar sebelum void/auth.

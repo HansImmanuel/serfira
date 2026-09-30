@@ -48,11 +48,16 @@ untuk `POST /api/v1/payments` tanpa memindahkan kepemilikan data antar-modul.
    dievaluasi pada resolution setelah denda melalui `D` masuk snapshot dan dibayar.
 6. **Tidak ada perubahan skema atau API/OpenAPI.** T4 memakai tabel, constraint, endpoint, envelope, dan
    kontrak request/response yang sudah ada. Tidak ada endpoint job baru dan tidak ada migrasi Flyway.
-7. **Race job-versus-payment diterima sementara dan tetap menjadi T5.** Job dan payment dapat bersamaan
-   mencoba unique `(installment_id, accrual_date)`. Flush di accrual membuat loser gagal di dalam use case,
-   tetapi payment belum mempunyai retry seluruh transaksi dengan fresh claim. T5 tetap TODO untuk retry
-   optimistic-lock dan SQLSTATE `23505` dengan transaksi baru; ADR ini tidak mengklaim race tersebut sudah
-   selesai atau aman untuk beban konkuren.
+7. **Race job-versus-payment ditutup oleh T5 (2026-09-30).** `PaymentRetryingService` membungkus
+   `PaymentApplicationService.create` dari luar batas `@Transactional`-nya: setiap percobaan membuka
+   transaksi baru dan mengambil claim idempotensi baru (`IdempotencyService` tetap `MANDATORY`), sehingga
+   percobaan yang gagal tidak pernah mengonsumsi key. `PaymentConflictClassifier` (dimiliki `payment`,
+   duplikat kecil dari `penalty.application.DailyServicingConflictClassifier` agar tidak menambah dependensi
+   antar-modul untuk ~15 baris logika) menandai optimistic-lock dan SQLSTATE `23505` sebagai retryable;
+   kegagalan validasi/state bisnis diteruskan tanpa retry. Kebijakan mengikuti Addendum §5: maksimum 3
+   percobaan, backoff 50/150/400 ms via `Sleeper` yang dapat diinjeksi (bukan dependensi `spring-retry`
+   baru). Percobaan yang habis melempar `PaymentConflictRetriesExhaustedException` → 409
+   `CONCURRENT_MODIFICATION`. Lihat `docs/tasks.md` T5 untuk detail dan bukti pengujian.
 
 ---
 
@@ -94,8 +99,8 @@ untuk `POST /api/v1/payments` tanpa memindahkan kepemilikan data antar-modul.
   latency mengikuti panjang backlog.
 - Edge `payment → penalty` menambah coupling sinkron antar-modul, tetapi hanya pada application interface dan
   tetap satu arah.
-- Race uniqueness job-versus-payment belum mempunyai retry di sisi payment. Risiko ini diterima hanya sampai
-  T5 dan tidak boleh dihapus dari backlog.
+- Race uniqueness job-versus-payment ditutup oleh T5: `PaymentRetryingService` me-retry seluruh transaksi
+  pembayaran (lihat keputusan 7).
 - Risiko residual ADR-012 (ii) tetap terbuka: settlement quote/execution wajib melakukan accrual melalui
   tanggalnya sendiri pada T12/T13.
 
@@ -107,14 +112,25 @@ untuk `POST /api/v1/payments` tanpa memindahkan kepemilikan data antar-modul.
 - Tidak ada data sensitif baru yang dicatat atau endpoint/otorisasi baru yang dibuka. Logging tetap hanya
   memakai identifier dan metadata aman, bukan payload atau PII.
 - Unique `(installment_id, accrual_date)`, replay stored response, dan satu supplier idempotensi mencegah
-  double accrual/double payment pada retry serial. Jaminan retry saat konflik konkuren tetap scope T5.
+  double accrual/double payment pada retry serial. Retry pada konflik konkuren kini juga dijamin oleh T5
+  (`PaymentRetryingService`): setiap percobaan mengambil claim baru, sehingga percobaan yang gagal tidak
+  pernah mengonsumsi key.
 
-### Verification
+### Verification (T4, 2026-09-30)
 
 - `./gradlew compileJava compileTestJava`: pass.
 - `./gradlew test --tests com.serfira.payment.PaymentApiIT`: 17 tests pass.
 - `./gradlew test --rerun`: 413 tests pass.
 - `./gradlew check`: pass.
 
+### Verification (T5 follow-up, 2026-09-30)
+
+- `./gradlew compileJava compileTestJava`: pass.
+- `./gradlew test --tests "com.serfira.payment.*"` (`--rerun`): pass.
+- `./gradlew test --rerun`: 420 tests pass (413 + 5 unit `PaymentRetryingServiceTest` + 2 IT
+  `PaymentConflictRetryIT`, the latter forcing a real SQLSTATE `23505` collision against Testcontainers
+  PostgreSQL and a persistent-conflict exhaustion case).
+- `./gradlew check`: pass.
+
 **Referensi:** ADR-010/ADR-011/ADR-012/ADR-013; TS §1/§2.3/§2.5/§4.3; `docs/tasks.md` T4/T5;
-`PaymentApplicationService`; `PaymentApiIT`.
+`PaymentApplicationService`; `PaymentRetryingService`; `PaymentApiIT`; `PaymentConflictRetryIT`.

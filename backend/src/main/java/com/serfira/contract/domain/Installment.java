@@ -27,7 +27,8 @@ import java.util.UUID;
  *
  * <p>{@code principalAmount} + {@code interestAmount} come from the generated schedule; the resolution
  * fields ({@code recognizedInterestAmount}/{@code penaltyAmount} + paid/settled/written-off amounts) are
- * mutated by billing/penalty/payment/settlement only (stories C/D/E). One schedule per contract is
+ * mutated by billing/penalty/payment/settlement only (stories C/D/E); the daily aging step (T6) changes the
+ * status only, never an amount ({@link #markOverdue}). One schedule per contract is
  * enforced by the unique {@code (contract_id, period_no)} constraint.
  */
 @Entity
@@ -225,6 +226,40 @@ public class Installment extends Auditable {
 					"installment " + periodNo + " is " + status + " and can no longer accrue a penalty");
 		}
 		this.penaltyAmount = this.penaltyAmount.add(accrued);
+	}
+
+	/**
+	 * Applies the aging transition of the daily job (DM §1.4, ADR-013 A-4/A-5): a {@code PENDING} or
+	 * {@code PARTIALLY_PAID} installment with {@code outstanding > 0} becomes {@code OVERDUE} from
+	 * {@link InstallmentAging#firstOverdueDate} onwards.
+	 *
+	 * <p>Every other case is a no-op that touches no field, so the row is not dirty and its version does not
+	 * move: an installment that is already {@code OVERDUE} is never rewritten, and {@code PAID},
+	 * {@code SETTLED} and {@code WRITTEN_OFF} are never changed by aging. Aging only ever moves an installment
+	 * <b>into</b> {@code OVERDUE}; leaving it is the payment path's decision ({@link #applyPayment}).
+	 *
+	 * <p><b>Extension point for E5:</b> like {@link #applyPayment}, the outstanding check ignores penalty
+	 * adjustments ({@link InstallmentBalance#of(Installment)}). When the waiver flow exists it must pass the
+	 * adjustment sum, so an installment whose only remainder is a waived penalty is not aged.
+	 *
+	 * @param businessDate    business date the aging step runs for
+	 * @param gracePeriodDays the contract's activation-snapshot grace period, {@code >= 0}
+	 * @return {@code true} when the status changed to {@code OVERDUE}, {@code false} when nothing changed
+	 */
+	public boolean markOverdue(LocalDate businessDate, int gracePeriodDays) {
+		Objects.requireNonNull(businessDate, "businessDate");
+		LocalDate firstOverdueDate = InstallmentAging.firstOverdueDate(dueDate, gracePeriodDays);
+		if (status != InstallmentStatus.PENDING && status != InstallmentStatus.PARTIALLY_PAID) {
+			return false;
+		}
+		if (businessDate.isBefore(firstOverdueDate)) {
+			return false;
+		}
+		if (InstallmentBalance.of(this).outstanding().signum() <= 0) {
+			return false;
+		}
+		this.status = InstallmentStatus.OVERDUE;
+		return true;
 	}
 
 	public Contract getContract() {

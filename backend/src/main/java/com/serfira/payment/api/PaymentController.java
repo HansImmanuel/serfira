@@ -1,6 +1,6 @@
 package com.serfira.payment.api;
 
-import com.serfira.payment.application.PaymentApplicationService;
+import com.serfira.payment.application.PaymentRetryingService;
 import com.serfira.shared.api.ApiResponse;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -37,9 +37,9 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Payments", description = "Payment receipt, allocation and ledger posting")
 public class PaymentController {
 
-	private final PaymentApplicationService payments;
+	private final PaymentRetryingService payments;
 
-	public PaymentController(PaymentApplicationService payments) {
+	public PaymentController(PaymentRetryingService payments) {
 		this.payments = payments;
 	}
 
@@ -69,7 +69,9 @@ public class PaymentController {
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
 					description = "CONTRACT_STATE_INVALID - the contract is not ACTIVE (draft, closed or "
 							+ "terminated) or has no schedule; CONFLICT - the Idempotency-Key was already "
-							+ "used for a different request")
+							+ "used for a different request; CONCURRENT_MODIFICATION - a concurrent daily "
+							+ "servicing run kept colliding with this payment after 3 attempts (Addendum "
+							+ "\u00a75); refresh and retry")
 	})
 	public ResponseEntity<ApiResponse<PaymentResponse>> create(
 			@Parameter(description = "Endpoint-scoped retry key (TS §2.2/§2.5)", required = true)

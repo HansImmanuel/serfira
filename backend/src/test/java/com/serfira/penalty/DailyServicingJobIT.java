@@ -30,7 +30,10 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** T3 daily servicing behavior against PostgreSQL, Flyway V1–V10, and the real financial ports. */
+/**
+ * T3 daily servicing behavior against PostgreSQL, Flyway V1–V10, and the real financial ports. The aging
+ * step's own behavior (T6) is covered by {@code DailyAgingJobIT}; here it only adds its {@code job_run} row.
+ */
 @Import({TestcontainersConfiguration.class, DailyServicingJobIT.FixedClockConfig.class})
 @SpringBootTest
 class DailyServicingJobIT {
@@ -83,7 +86,8 @@ class DailyServicingJobIT {
 		assertThat(financialJobWriteCount(closed)).isZero();
 		assertThat(financialJobWriteCount(terminated)).isZero();
 
-		assertJobRuns(BUSINESS_DATE, 2, 0, "COMPLETED", 2L);
+		// One invocation = one row per step: billing, penalty-accrual and aging (A-9; aging added by T6).
+		assertJobRuns(BUSINESS_DATE, 2, 0, "COMPLETED", 3L);
 		assertThat(nonSystemFinancialAuditRows()).isZero();
 		assertThat(jdbc.queryForObject("select count(*) from job_run where created_by is distinct from ?",
 				Long.class, AuditContext.SYSTEM_USER_ID)).isZero();
@@ -102,7 +106,8 @@ class DailyServicingJobIT {
 		assertThat(journalCount(overdue, "BILLING")).isEqualTo(billingBefore);
 		assertThat(journalCount(overdue, "PENALTY_ACCRUAL")).isEqualTo(penaltyBefore);
 		assertThat(accrualCount(overdue)).isEqualTo(accrualBefore);
-		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 4L);
+		// Two invocations × three step rows (billing, penalty-accrual, aging).
+		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 6L);
 	}
 
 	@Test
@@ -118,8 +123,8 @@ class DailyServicingJobIT {
 				LocalDate.of(2026, 3, 7), LocalDate.of(2026, 3, 8));
 		assertThat(journalCount(overdue, "BILLING")).isEqualTo(1L);
 		assertThat(journalCount(overdue, "PENALTY_ACCRUAL")).isEqualTo(5L);
-		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 2L);
-		assertJobRuns(BUSINESS_DATE.plusDays(3), 1, 0, "COMPLETED", 2L);
+		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 3L);
+		assertJobRuns(BUSINESS_DATE.plusDays(3), 1, 0, "COMPLETED", 3L);
 	}
 
 	@Test
@@ -136,7 +141,8 @@ class DailyServicingJobIT {
 		assertThat(accrualCount(healthy)).isEqualTo(2L);
 		assertThat(journalCount(broken, "BILLING")).isZero();
 		assertThat(accrualCount(broken)).isZero();
-		assertJobRuns(BUSINESS_DATE, 1, 1, "FAILED", 2L);
+		// The corrupt contract also fails the aging step (no schedule to age), so all three rows agree.
+		assertJobRuns(BUSINESS_DATE, 1, 1, "FAILED", 3L);
 	}
 
 	private UUID createContract(int sequence, LocalDate plannedStartDate, boolean activate) {

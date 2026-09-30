@@ -234,5 +234,33 @@ baru diterima/diimplementasikan melalui ADR-014. Risiko race job-versus-payment 
 `(installment_id, accrual_date)` tetap diterima sementara dan menjadi T5; tidak ada klaim bahwa retry
 fresh-transaction sudah tersedia.
 
+### Implementation Note — T6 (2026-09-30)
+
+T6 mengimplementasikan keputusan 4 (A-4/A-5) sebagai langkah ketiga job harian, dan memperluas keputusan 8
+(A-9) dengan satu step baru:
+
+- **Unit transaksi.** Aging berjalan per contract di loop yang sama, **setelah** transaksi billing → penalty,
+  dalam transaksi **tersendiri** (`DailyServicingContractProcessor.age`). Alasannya: aging tidak menulis uang
+  dan kondisinya (`D >= due_date + grace + 1`, `outstanding > 0`) tidak bergantung pada denda, sehingga
+  kegagalan billing → penalty tidak boleh menghentikan aging, dan kegagalan aging tidak boleh me-rollback
+  uang yang sudah diakui. Aging tetap dijalankan walau billing → penalty contract itu `FAILED`; contract yang
+  teramati non-ACTIVE (`SKIPPED`) tidak di-aging karena status ACTIVE tidak pernah dimasuki kembali.
+- **Retry dan `job_run`.** Aging memakai batas 5 attempts dan classifier konflik yang sama
+  (optimistic-lock, SQLSTATE `23505`) secara terpisah dari billing → penalty. Setiap invocation kini menulis
+  tiga row: `billing`, `penalty-accrual`, dan `aging`. Dua row pertama tetap berbagi counter (satu transaksi);
+  row `aging` punya `records_processed`/`records_failed` sendiri dengan satuan kontrak dan aturan status
+  `COMPLETED`/`FAILED` yang sama.
+- **Kepemilikan dan idempotensi.** Transisi ada di `contract` (`Installment.markOverdue`, dipanggil lewat
+  `InstallmentAgingPort`, `Propagation.MANDATORY` agar pemanggilan tanpa transaksi gagal alih-alih kehilangan
+  perubahan). Aging hanya bergerak masuk ke `OVERDUE`: installment yang sudah `OVERDUE` tidak ditulis ulang
+  (tanpa version bump), backfill untuk tanggal lebih awal tidak "meng-un-age", dan `PAID`/`SETTLED`/
+  `WRITTEN_OFF` tidak pernah diubah.
+- **Formula ganda yang dijaga test.** `contract.domain.InstallmentAging` memegang formula hari-mulai dan DPD
+  karena `contract` tidak boleh bergantung pada `penalty`; `PenaltyTerms` tidak diubah. `AgingPenaltyParityTest`
+  mengunci keduanya agar identik — ini tetap satu definisi bisnis sebagaimana keputusan 4, dengan dua
+  representasi kode.
+
+Tidak ada migrasi, perubahan API, atau dependency baru.
+
 **Referensi:** `tasks.md` T1/T3/T4/T6/T8/T9/T10/T16 dan §Planning Notes; ADR-010/ADR-011/ADR-012; DM
 §1.4/§1.9, §3 invariant 17; TS §2.0/§4.3; Addendum §6/§7.3/§10/§10A/§14; `06_FRONTEND_SPEC.md` §2.7/§2.9.

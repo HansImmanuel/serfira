@@ -228,7 +228,9 @@ sama nyaris bersamaan.
   client. Kalau tetap gagal setelah 3x, return `409 CONFLICT` dengan kode
   `CONCURRENT_MODIFICATION` — user diminta refresh & retry manual.
 - Job harian T3 memproses unit atomik **per contract** (billing → penalty) sampai maksimum 5 percobaan
-dalam window job. Step aging T6 mengikuti unit transisinya sendiri. Setelah retry habis, record ditandai
+dalam window job. Step aging T6 mengikuti unit transisinya sendiri: satu transaksi aging per contract
+setelah billing → penalty, dengan maksimum 5 percobaan tersendiri, dan tetap dijalankan walau billing →
+penalty contract itu gagal (ADR-013 implementation note T6). Setelah retry habis, record ditandai
 gagal, di-log, dan batch lanjut; kegagalan satu contract tidak menghentikan contract lain.
 - Job memakai shedlock (sudah disebut di tech spec) untuk memastikan hanya satu
   instance yang jalan — ini mencegah job-vs-job race, tapi retry di atas tetap perlu
@@ -303,7 +305,7 @@ Excess tidak masuk `installment.paid_amount`, tetapi tetap harus muncul sebagai 
 
 ### 7.3 Frekuensi & respons
 - Job jalan harian. Urutan lengkap: **billing → penalty → aging → consistency check** (T3 membangun dua
-  langkah pertama; T6 dan F1 menambahkan langkah berikutnya tanpa mengubah urutan ini).
+  langkah pertama, T6 menambahkan aging; F1 menambahkan consistency check tanpa mengubah urutan ini).
 - **Tidak auto-correct.** Sistem finansial tidak boleh mengubah angka sendiri tanpa
   jejak manusia. Job hanya mencatat exception dan mengirim alert (log level ERROR
   minimal; notifikasi eksternal di luar scope Fase 1).
@@ -374,8 +376,9 @@ dengan angka bunga berjalan yang dihitung manual memakai konvensi ini.
   berjalan reliably dan bisa diaudit tanpa perlu infra monitoring eksternal (Prometheus/Grafana opsional Fase 4).
 - **Granularitas `job_run` (ADR-013, diklarifikasi T3):** satu baris per **step per invocation**, dengan
   `business_date` sebagai tanggal target eksplisit (V10). Satu invocation untuk `D` menulis satu row
-  `job_name = "billing"` dan satu row `job_name = "penalty-accrual"`; rerun untuk `D` yang sama menulis
-  pasangan invocation baru agar percobaan lama/stale `RUNNING` tidak ditimpa, tetapi financial rows tetap
+  `job_name = "billing"`, satu row `job_name = "penalty-accrual"`, dan (sejak T6) satu row
+  `job_name = "aging"`. `billing` dan `penalty-accrual` berbagi satu transaksi per kontrak sehingga
+  counternya sama; `aging` punya counter sendiri. Rerun untuk `D` yang sama menulis set row invocation baru agar percobaan lama/stale `RUNNING` tidak ditimpa, tetapi financial rows tetap
   idempotent. `records_processed` = jumlah kontrak yang berhasil diproses langkah itu;
   `records_failed` = jumlah kontrak yang gagal setelah retry habis. `status` akhir = `COMPLETED` bila
   `records_failed = 0`, selain itu `FAILED` — tidak ada status partial-success tersendiri; kedua counter

@@ -76,6 +76,7 @@ class DailyServicingTransactionIT {
 		assertThat(journalCount(contractId, "PENALTY_ACCRUAL")).isEqualTo(2L);
 		assertThat(accrualCount(contractId)).isEqualTo(2L);
 		assertRunCounters(1, 0, "COMPLETED");
+		assertAgingRun(1, 0, "COMPLETED");
 	}
 
 	@Test
@@ -94,6 +95,11 @@ class DailyServicingTransactionIT {
 		assertThat(journalCount(healthy, "PENALTY_ACCRUAL")).isEqualTo(2L);
 		assertThat(accrualCount(healthy)).isEqualTo(2L);
 		assertRunCounters(1, 1, "FAILED");
+		// Aging does not depend on the penalty, so the contract whose billing + penalty rolled back is still
+		// aged in its own transaction (ADR-013 implementation note T6).
+		assertThat(statusOfFirstPeriod(failing)).isEqualTo("OVERDUE");
+		assertThat(statusOfFirstPeriod(healthy)).isEqualTo("OVERDUE");
+		assertAgingRun(2, 0, "COMPLETED");
 	}
 
 	private UUID createActiveContract(int sequence) {
@@ -126,11 +132,27 @@ class DailyServicingTransactionIT {
 				""", Long.class, contractId);
 	}
 
+	/** Billing and penalty share one transaction per contract, so their two job_run rows share counters. */
 	private void assertRunCounters(int processed, int failed, String status) {
 		assertThat(jdbc.queryForObject("""
 				select count(*) from job_run
-				where business_date = ? and records_processed = ? and records_failed = ? and status = ?
+				where business_date = ? and job_name in ('billing', 'penalty-accrual')
+				  and records_processed = ? and records_failed = ? and status = ?
 				""", Long.class, BUSINESS_DATE, processed, failed, status)).isEqualTo(2L);
+	}
+
+	/** Aging is its own per-contract transaction (T6) and has its own job_run row and counters. */
+	private void assertAgingRun(int processed, int failed, String status) {
+		assertThat(jdbc.queryForObject("""
+				select count(*) from job_run
+				where business_date = ? and job_name = 'aging'
+				  and records_processed = ? and records_failed = ? and status = ?
+				""", Long.class, BUSINESS_DATE, processed, failed, status)).isEqualTo(1L);
+	}
+
+	private String statusOfFirstPeriod(UUID contractId) {
+		return jdbc.queryForObject("select status from installment where contract_id = ? and period_no = 1",
+				String.class, contractId);
 	}
 
 	private void truncateDomainTables() {

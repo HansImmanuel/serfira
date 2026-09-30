@@ -1,5 +1,6 @@
 package com.serfira.penalty.application;
 
+import com.serfira.contract.application.InstallmentAgingPort;
 import com.serfira.contract.application.InstallmentBillingPort;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
@@ -8,10 +9,12 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class DailyServicingContractProcessorTest {
@@ -20,7 +23,9 @@ class DailyServicingContractProcessorTest {
 
 	private final InstallmentBillingPort billing = mock(InstallmentBillingPort.class);
 	private final PenaltyAccrualPort penalty = mock(PenaltyAccrualPort.class);
-	private final DailyServicingContractProcessor processor = new DailyServicingContractProcessor(billing, penalty);
+	private final InstallmentAgingPort aging = mock(InstallmentAgingPort.class);
+	private final DailyServicingContractProcessor processor =
+			new DailyServicingContractProcessor(billing, penalty, aging);
 
 	@Test
 	void billsBeforeAccruingPenalty() {
@@ -32,6 +37,8 @@ class DailyServicingContractProcessorTest {
 		InOrder order = inOrder(billing, penalty);
 		order.verify(billing).billDueInterest(contractId, BUSINESS_DATE);
 		order.verify(penalty).accrueDuePenalty(contractId, BUSINESS_DATE);
+		// Aging is a separate transaction, driven by the orchestrator, never part of this one.
+		verifyNoInteractions(aging);
 	}
 
 	@Test
@@ -43,5 +50,17 @@ class DailyServicingContractProcessorTest {
 		assertThatThrownBy(() -> processor.process(contractId, BUSINESS_DATE)).isSameAs(billingFailure);
 
 		verify(penalty, never()).accrueDuePenalty(contractId, BUSINESS_DATE);
+	}
+
+	@Test
+	void agingDelegatesToTheContractPortOnly() {
+		UUID contractId = UUID.randomUUID();
+		when(aging.markOverdueInstallments(contractId, BUSINESS_DATE)).thenReturn(1);
+
+		processor.age(contractId, BUSINESS_DATE);
+
+		verify(aging).markOverdueInstallments(contractId, BUSINESS_DATE);
+		verify(billing, never()).billDueInterest(any(), any());
+		verify(penalty, never()).accrueDuePenalty(any(), any());
 	}
 }
