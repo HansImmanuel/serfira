@@ -1,151 +1,209 @@
 # Serfira — Multifinance Loan Servicing Core
 
-Sistem loan servicing multifinance (pembiayaan kendaraan) berbasis **modular monolith**
-Spring Boot + PostgreSQL. Proyek portofolio: menekankan correctness aturan finansial,
-audit trail penuh, dan arsitektur modular yang disiplin.
+[![CI](https://github.com/HansImmanuel/serfira/actions/workflows/ci.yml/badge.svg)](https://github.com/HansImmanuel/serfira/actions/workflows/ci.yml)
 
-> Dokumen spesifikasi adalah sumber kebenaran: lihat [`docs/`](docs/).
+Serfira is the **servicing core of a loan management system** for a multifinance company
+(vehicle and consumer-goods financing, Indonesian market). It covers everything that happens
+after a loan is approved: installment schedules, payments, allocation, late penalties, aging,
+and a double-entry ledger that records every money movement.
 
-## Status
+It is a portfolio project built around one idea: **money must always balance**. Financial rules
+are enforced twice, in pure Java engines and again as PostgreSQL constraints, so a bug in one
+layer cannot silently corrupt the books.
 
-Sprint 0 (fondasi) — **selesai**:
+**Stack:** Java 21 · Spring Boot 4 · PostgreSQL 16 · Flyway · Testcontainers · ShedLock · Docker
 
-- [x] A1 — Repository setup, CI, Docker Compose, README
-- [x] A2 — Injectable Clock, audit foundation, exception envelope
-- [x] A3 — Flyway baseline schema, system parameters, COA seed
-- [x] A4 — Contract number generator
+---
 
-Sprint 1 (schedule engine core) — **selesai** (golden FLAT/EFFECTIVE test hijau, `gradlew test` hijau):
+## Highlights
 
-- [x] B1 — JPA entity Contract/Customer/Asset/Installment + repositories
-- [x] B2 — Schedule engine FLAT (pure Java) + golden test
-- [x] B3 — Schedule engine EFFECTIVE/anuitas + edge guards (i=0, n=1)
-- [x] B4 — Due date calc (31→Feb 28/29, leap year) + test matrix tanggal
+- **Double-entry ledger.** Every financial event (disbursement, interest billing, penalty
+  accrual, payment) posts a balanced journal entry. Journal rows are immutable; corrections are
+  reversal entries, never updates. → [ADR-002](docs/adr/ADR-002-double-entry-ledger.md),
+  [ADR-008](docs/adr/ADR-008-ledger-posting-semantics.md)
+- **Invariants enforced in the database.** Deferred constraint triggers reject unbalanced
+  journals, allocations that don't sum to the payment, and installment over-payment.
+  `BEFORE UPDATE OR DELETE` triggers make posted records append-only.
+- **Idempotent writes.** `POST /contracts` and `POST /payments` require an `Idempotency-Key`.
+  A retry replays the original response; the same key with a different payload returns `409`.
+  → [ADR-007](docs/adr/ADR-007-idempotent-contract-creation.md)
+- **Concurrency under contention.** The daily job and live payments can touch the same
+  installments. Optimistic locking plus bounded retry (3 attempts, 50 and 150 ms pauses) handles
+  lock conflicts and unique-violation races; an integration test forces a real race against
+  PostgreSQL.
+- **Correct even when the batch job is late.** Payments bill due interest and accrue penalties
+  lazily in the same transaction, so a payment is allocated correctly whether or not the nightly
+  job has run. → [ADR-011](docs/adr/ADR-011-billing-recognition-and-maturity-close.md),
+  [ADR-014](docs/adr/ADR-014-lazy-penalty-accrual-in-payment-path.md)
+- **Deterministic time.** An injectable clock and a fixed business zone (`Asia/Jakarta`) make
+  date-sensitive logic (due dates, grace periods, month-end clamping, leap years) fully testable.
+  → [ADR-003](docs/adr/ADR-003-injectable-clock.md)
+- **PII protected at rest.** National ID (NIK) and phone numbers are AES-256-GCM encrypted;
+  uniqueness and search use HMAC lookup columns. → [ADR-004](docs/adr/ADR-004-at-rest-pii-protection.md)
+- **Decisions on record.** 14 [Architecture Decision Records](docs/adr/) with alternatives
+  considered and rejected.
 
-Sprint 2 (contract API & activation) — **selesai** (B5; lihat [ADR-006](docs/adr/ADR-006-contract-creation-and-activation.md) & [ADR-007](docs/adr/ADR-007-idempotent-contract-creation.md)):
+## Domain in 60 seconds
 
-- [x] B5 — `POST /api/v1/contracts` (create DRAFT, `Idempotency-Key` wajib, customer/asset reuse by identity, duplicate-live-contract guard), `POST /api/v1/contracts/{id}/activate` (generate + persist jadwal tepat sekali, idempotent), `GET /api/v1/contracts` (paged, filter status, search `contract_no`/nama), `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`
-- [x] V6 — `contract.planned_start_date` (tanggal mulai yang diotor saat drafting; `start_date` effective dipin saat aktivasi, default = `planned_start_date`)
-- [x] V7 — `contract.idempotency_key` backstop + partial unique index `(customer_id, asset_id) WHERE status IN ('DRAFT','ACTIVE')` (invariant #18)
-- [ ] C-5 — update contract saat DRAFT: **deferred**
+| Term             | Meaning                                                                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contract         | A financing agreement for one asset and one customer: principal, down payment, tenor, rate                                                          |
+| Schedule         | Monthly installments generated at activation. **FLAT** (interest on original principal) or **EFFECTIVE** (annuity, interest on outstanding balance) |
+| Allocation       | How a payment is split: **penalty → interest → principal**, oldest due installment first. Overpayment is held as customer credit                    |
+| Penalty          | Daily late fee on overdue amounts, after a grace period                                                                                             |
+| Aging            | Delinquency buckets: Current, 1–30, 31–60, 61–90, >90 days                                                                                          |
+| Early settlement | Paying off the full outstanding early, with a rebate on interest and an admin fee                                                                   |
 
-Sprint 3 (payment & ledger) — **selesai** (lihat [ADR-008](docs/adr/ADR-008-ledger-posting-semantics.md), [ADR-009](docs/adr/ADR-009-allocation-engine-semantics.md), [ADR-010](docs/adr/ADR-010-payment-contract-seam.md)):
+Example posting rules:
 
-- [x] C1 — Modul `ledger`: entity immutable `journal_entry`/`journal_line` (`ImmutableAuditable`), `LedgerPostingService` (`MANDATORY`, guard satu entry non-reversal per `(ref_type, ref_id)`), vocabulary `LedgerRefType`, akun type-safe `LedgerAccount`, dan jurnal disbursement (`PIUTANG_POKOK`/`KAS`) yang diposting di transaksi aktivasi kontrak
-- [x] C2 — Allocation engine murni di modul `payment`: denda → bunga → pokok, angsuran jatuh tempo tertua dahulu (hanya `due_date <= business date`), cap identik trigger V3, satu baris `EXCESS` untuk kelebihan; test 20+ skenario + guard value object (lihat [ADR-009](docs/adr/ADR-009-allocation-engine-semantics.md))
-- [x] C3 — `POST /api/v1/payments` (`Idempotency-Key` wajib): alokasi lewat engine C2, resolusi `InstallmentStatus`/`paid_at` di modul `contract` lewat port `InstallmentReceivablePort`, satu jurnal double-entry per pembayaran (`KAS` vs `PIUTANG_DENDA`/`PIUTANG_BUNGA`/`PIUTANG_POKOK`/`TITIPAN_NASABAH`), replay idempotent tanpa double-post; excess hanya dicatat sebagai baris `EXCESS` (credit row milik E3)
-- [ ] E3 — credit application (`contract_credit`), E4 — payment void: **deferred** ke Sprint 5
+| Event                              | Debit                | Credit                                                     |
+| ---------------------------------- | -------------------- | ---------------------------------------------------------- |
+| Contract activation (disbursement) | Principal receivable | Cash                                                       |
+| Interest billed on due date        | Interest receivable  | Interest income                                            |
+| Daily penalty accrual              | Penalty receivable   | Penalty income                                             |
+| Payment received                   | Cash                 | Penalty / interest / principal receivable, customer credit |
 
-Sprint 4 (penalty, aging & phase-1 close) — **berjalan** (lihat [ADR-011](docs/adr/ADR-011-billing-recognition-and-maturity-close.md), [ADR-012](docs/adr/ADR-012-penalty-accrual-semantics.md), [ADR-013](docs/adr/ADR-013-phase1-close-semantics.md), dan [ADR-014](docs/adr/ADR-014-lazy-penalty-accrual-in-payment-path.md)):
+Full rules: [Tech Spec §3](docs/02_TECH_SPEC.md).
 
-- [x] C4 — Billing/recognition: port `InstallmentBillingPort` (`billDueInterest(contractId, businessDate)`) dengan **lazy billing** di transaksi `POST /payments` (bunga receivable pada due date — PRD skenario 1 tanpa seeding), satu jurnal `BILLING` per installment (`PIUTANG_BUNGA` debit / `PENDAPATAN_BUNGA` kredit, `entry_date = due_date`, `ref_id = installment.id`), dan **maturity auto-close** (`closed_reason=MATURITY`) ketika final regular payment melunasi seluruh installment (invariant 17)
-- [x] D1 — Denda harian: modul `penalty` (`PenaltyCalculator` murni + `PenaltyAccrual` di tabel `penalty_accrual`), step `PenaltyAccrualPort.accrueDuePenalty(contractId, businessDate)` yang berdiri sendiri dan transactional, seam `InstallmentPenaltyPort` agar `penalty_amount` tetap milik aggregate `contract`, serta satu baris accrual + satu jurnal `PENALTY_ACCRUAL` per hari terlambat di luar grace
-- [x] T3 — Scheduler harian billing → penalty: cron Jakarta dan explicit backfill memakai ShedLock renewable yang sama; setiap kontrak ACTIVE diproses atomik dengan retry/failure isolation dan step-level `job_run`
-- [x] T4 — Lazy penalty accrual di `POST /payments`: edge satu arah `payment → PenaltyAccrualPort`; di dalam supplier idempotensi dan satu transaksi berjalan billing → accrual → snapshot → allocation → resolution → jurnal payment dengan satu business date. Replay tidak menambah accrual; kegagalan me-rollback seluruh write. Nilai teruji: 28 × `1.573,33` = `44.053,24`, total payment `1.617.386,57`; `compileJava compileTestJava` pass, `PaymentApiIT` 17 pass, full test 413 pass, dan `check` pass
-- [x] T5 — Retry race job-versus-payment: `PaymentRetryingService` membungkus `PaymentApplicationService.create` di luar batas transaksinya, membuka transaksi + claim idempotensi baru per percobaan (maksimum 3, backoff 50/150/400 ms). Optimistic-lock dan SQLSTATE `23505` di-retry; error validasi/state bisnis tidak. Percobaan habis → 409 `CONCURRENT_MODIFICATION`. IT memaksa race SQLSTATE `23505` nyata terhadap PostgreSQL (Testcontainers); `compileJava compileTestJava` pass, full test 420 pass, `check` pass
-- [x] T6 — Langkah aging harian: setelah transaksi billing → penalty, transaksi aging per kontrak lewat `InstallmentAgingPort` menandai `PENDING`/`PARTIALLY_PAID` dengan outstanding > 0 menjadi `OVERDUE` mulai `due_date + grace + 1`; tanpa rewrite untuk yang sudah `OVERDUE`, `PAID`/`SETTLED`/`WRITTEN_OFF` tidak disentuh, row `job_run` `aging` sendiri. Full test 460 pass, `check` pass
-- [ ] T7+ — RBAC, aging report, statement, serta Phase-1 exit verification masih tersisa
+## Architecture
 
-Sprint 5+ (settlement, credit application, void, consistency check, write-off, frontend) belum dimulai.
+A **modular monolith**: one Spring Boot deployable, one PostgreSQL database, with bounded
+contexts separated by package and communicating only through application-layer ports.
+No module reads another module's tables. → [ADR-001](docs/adr/ADR-001-modular-monolith.md)
 
-## Arsitektur
+```mermaid
+flowchart LR
+    subgraph API["REST API (JWT)"]
+        CAPI["Contracts API"]
+        PAPI["Payments API"]
+    end
 
-Modular monolith, satu deployment unit Spring Boot, satu database PostgreSQL 16
-(lihat [ADR-001](docs/adr/ADR-001-modular-monolith.md)):
+    JOB["Daily servicing job<br/>01:00 Asia/Jakarta · ShedLock"]
 
-| Modul        | Tanggung jawab                                  |
-| ------------ | ----------------------------------------------- |
-| `contract`   | Kontrak, nasabah, aset, aktivasi, jadwal        |
-| `payment`    | Pembayaran, alokasi, idempotency                |
-| `penalty`    | Denda, accrual job, penyesuaian                 |
-| `settlement` | Quote & eksekusi pelunasan                      |
-| `ledger`     | Double-entry journal, chart of accounts         |
-| `reporting`  | Read-only query service                         |
-| `shared`     | Clock, audit, envelope error, nomor dokumen, PII security  |
+    CAPI --> contract
+    PAPI --> payment
+    JOB --> penalty
 
-Paket mengikuti `com.serfira.<module>.{api, application, domain, infrastructure}`.
+    payment -- "InstallmentReceivablePort<br/>InstallmentBillingPort" --> contract
+    payment -- PenaltyAccrualPort --> penalty
+    penalty -- "InstallmentPenaltyPort<br/>InstallmentAgingPort" --> contract
 
-## Teknologi
+    contract --> ledger
+    payment --> ledger
+    penalty --> ledger
 
-- Java 21, Spring Boot 4 (Web, Data JPA, Security, Validation, Actuator)
-- PostgreSQL 16, Flyway (schema sepenuhnya milik migrasi, `ddl-auto=validate`)
-- Testcontainers untuk integration test
-- Gradle 9.7.1, OpenAPI (springdoc), ShedLock untuk job multi-instance
-
-## Memulai
-
-Prasyarat: JDK 21, Docker, Gradle 9.7.1 (atau wrapper).
-
-```bash
-# Jalankan seluruh test suite (unit + integration via Testcontainers)
-cd backend
-gradle test
-
-# Naikkan stack lokal (PostgreSQL + aplikasi)
-docker compose up --build
-
-# Aplikasi: http://localhost:8080  (OpenAPI UI: /swagger-ui.html)
+    contract & payment & penalty & ledger --> DB[(PostgreSQL 16<br/>constraints + immutability triggers)]
 ```
 
-`docker-compose.yml` memuat default **lokal-dev saja** (`POSTGRES_PASSWORD`, kunci PII, kunci JWT)
-dan membacanya lewat `${VAR:-default}`, jadi override cukup lewat environment atau file `.env`
-(dibaca otomatis oleh `docker compose`). Port PostgreSQL hanya dipublikasikan ke `127.0.0.1`.
+| Module       | Responsibility                                                        | Status  |
+| ------------ | --------------------------------------------------------------------- | ------- |
+| `contract`   | Contracts, customers, assets, activation, schedule engine             | Built   |
+| `payment`    | Payments, allocation engine, retry on contention                      | Built   |
+| `penalty`    | Penalty accrual, daily job (billing → penalty → aging)                | Built   |
+| `ledger`     | Double-entry journal, chart of accounts, posting                      | Built   |
+| `settlement` | Early settlement quote and execution                                  | Planned |
+| `reporting`  | Read-only reports (aging, statements)                                 | Planned |
+| `shared`     | Clock, audit, error envelope, idempotency, document numbers, security | Built   |
 
-## Keamanan PII (ADR-004)
+Every module follows `com.serfira.<module>.{api, application, domain, infrastructure}`.
+Dependencies point one way: `ledger` depends on nothing, and `contract` does not know about
+`payment` or `penalty`.
 
-`Customer.nik` dan `Customer.phone` **tidak pernah tersimpan plaintext** di database:
+## Getting started
 
-- AES-256-GCM ciphertext (envelope `v1:<base64(IV‖ciphertext|tag)>`) ditulis oleh JPA
-  `AttributeConverter` di lapisan aplikasi.
-- Uniqueness & pencarian memakai kolom HMAC lookup: `nik_hash` dan `phone_lookup`
-  (HMAC-SHA-256 dari nilai ternormalisasi; NIK digits-only, phone trunk `0…`→`62`).
-  Pencarian by raw NIK/phone hanya lewat `CustomerSearchService` — raw value di-HMAC di
-  memory, tidak pernah menyentuh SQL/log/URL. Endpoint REST-nya belum diekspos (menunggu RBAC).
-- Kunci wajib disediakan via environment; tanpa kunci aplikasi **tidak mau start**:
+Prerequisites: JDK 21 and Docker.
+
+```bash
+# Run PostgreSQL and the app
+docker compose up --build
+```
+
+- API: http://localhost:8080
+- OpenAPI UI: http://localhost:8080/swagger-ui.html
+- Health: http://localhost:8080/actuator/health
+
+Flyway applies all migrations on a clean database. `docker-compose.yml` ships
+**local-development-only** defaults for the database password, PII keys, and JWT secret; override
+them through environment variables or a `.env` file. PostgreSQL is published on `127.0.0.1` only.
+
+### Running tests
+
+```bash
+cd backend
+./gradlew test        # Windows: gradlew.bat test
+```
+
+One command runs both unit tests and `*IT` integration tests (Testcontainers starts a real
+PostgreSQL 16, so Docker must be running). CI runs the same task on every push and pull request.
+
+### Calling the API
+
+Every endpoint except health and OpenAPI requires a bearer JWT (HS256). The login endpoint is not
+built yet (planned for Sprint 6b), so for now tokens must be signed with the configured dev secret.
+Use the UUID of an existing `app_user` as the `sub` claim; it is recorded as `created_by` on writes.
+Known gap (CR-01, fixed in T7): a signed token with a non-UUID `sub` is not rejected yet and writes as
+`SYSTEM`, and a `sub` that is not an existing `app_user` is not checked before the write.
+
+| Method | Endpoint                              | Purpose                                                            |
+| ------ | ------------------------------------- | ------------------------------------------------------------------ |
+| `POST` | `/api/v1/contracts`                   | Create a DRAFT contract (`Idempotency-Key` required)               |
+| `POST` | `/api/v1/contracts/{id}/activate`     | Activate and generate the schedule (idempotent)                    |
+| `GET`  | `/api/v1/contracts`                   | List contracts (paged, filter by status, search)                   |
+| `GET`  | `/api/v1/contracts/{id}`              | Contract detail with outstanding balance                           |
+| `GET`  | `/api/v1/contracts/{id}/installments` | Installment schedule                                               |
+| `POST` | `/api/v1/payments`                    | Receive, allocate, and post a payment (`Idempotency-Key` required) |
+
+## Security
+
+- **Default-deny.** Only health, info, and OpenAPI paths are public.
+  → [ADR-005](docs/adr/ADR-005-resource-server-before-auth-stories.md)
+- **Attributable writes.** A UUID JWT subject is bound to the audit context and recorded as
+  `created_by`/`updated_by`. Rejecting tokens whose subject is not a valid `app_user` is planned
+  for T7 (CR-01). Scheduled jobs run as a seeded `SYSTEM` principal that can never log in
+  (inactive, unusable password hash, enforced by a check constraint).
+- **Fail-fast secrets.** The app refuses to start without its PII encryption key, HMAC key, and
+  JWT secret:
+
   ```
   SERFIRA_SECURITY_PII_ENCRYPTION_KEY=<base64 32-byte key>
   SERFIRA_SECURITY_PII_HMAC_KEY=<base64 >=32-byte key>
-
-Kunci signing JWT resource-server wajib juga via environment (HS256, default-deny,
-lihat ADR-005):
+  SERFIRA_SECURITY_JWT_SECRET_BASE64=<base64 >=32-byte key>
   ```
-  SERFIRA_SECURITY_JWT_SECRET_BASE64=<base64 >=32-byte HS256 signing key>
-  ```
-  ```
-  Nilai dev/portofolio ada di `docker-compose.yml` (dan `src/test/resources/application.properties`
-  untuk test) — **bukan production value**.
 
-## Autentikasi & Akun SYSTEM (V8)
+- **No plaintext PII in SQL, logs, or URLs.** API responses return customer data masked.
 
-Akun `SYSTEM` (principal non-interaktif untuk job, Addendum §3.3) di-seed `is_active = FALSE`
-dengan `password_hash = '{disabled}'`: id encoder itu tidak terdaftar, sehingga verifikasi password
-selalu gagal. `{noop}` **tidak boleh** dipakai untuk principal mana pun (nilai lama `{noop}!`
-membuat password literal `!` valid), dan constraint `ck_app_user_system_inactive` menjaganya:
-`role = 'SYSTEM'` selalu non-aktif, jadi mengaktifkannya kembali butuh migrasi forward-only.
+## Status and roadmap
 
-Story F2 wajib menolak user non-aktif sebelum verifikasi password. Job tetap memakai `AuditContext`
-(bukan login), sehingga `created_by`/`updated_by` akun SYSTEM tetap atributabel.
+| Phase        | Scope                                                                                                         | Status                                                   |
+| ------------ | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 1 — MVP      | Contracts, FLAT/EFFECTIVE schedules, payments and allocation, ledger, penalty and aging job                   | In progress: RBAC, aging report, and statement remaining |
+| 2            | Early settlement, customer credit, payment void/reversal, penalty waiver, consistency check, write-off, login | Planned                                                  |
+| 3            | Next.js dashboard, reporting, outbox event publisher, export                                                  | Planned                                                  |
+| 4 (optional) | Restructuring, payment gateway stub, maker-checker, microservice split demo                                   | Optional                                                 |
 
-## Struktur Repositori
+Out of scope by design: loan origination (credit scoring, credit bureau checks, e-KYC), funding and
+treasury, field collection, real payment gateway integration, and multi-currency.
+
+The sprint-by-sprint log is in [docs/PROGRESS.md](docs/PROGRESS.md).
+
+## Documentation
+
+The specifications are the source of truth and are written in Bahasa Indonesia.
+
+| Document                                                       | Contents                                                     |
+| -------------------------------------------------------------- | ------------------------------------------------------------ |
+| [PRD](docs/01_PRD.md)                                          | Business rules, requirements, acceptance scenarios           |
+| [Tech Spec](docs/02_TECH_SPEC.md)                              | Architecture, dependency rules, ledger design, posting rules |
+| [Domain Model](docs/03_DOMAIN_MODEL.md)                        | Entities, states, invariants                                 |
+| [Gaps Addendum](docs/04_GAPS_ADDENDUM.md)                      | Resolved gaps: auth, audit, configuration                    |
+| [Sprint Plan](docs/05_SPRINT_PLAN.md) · [Tasks](docs/tasks.md) | Delivery plan and backlog                                    |
+| [Frontend Spec](docs/06_FRONTEND_SPEC.md)                      | Planned dashboard                                            |
+| [ADRs](docs/adr/)                                              | Architecture decisions                                       |
+
+## Repository layout
 
 ```
-backend/   aplikasi Spring Boot (modul di atas)
-docs/      PRD, tech spec, domain model, addendum, sprint plan, ADR
-frontend/  (fase berikutnya — client Spring Boot API)
+backend/    Spring Boot application (modules above), Flyway migrations, tests
+docs/       Specifications, ADRs, progress log
+frontend/   (planned) Next.js dashboard
 ```
-
-## Verification
-
-- `cd backend && gradle test` — semua unit + integration test wajib hijau.
-  Kelas integrasi `*IT` berjalan di task `test` yang sama (tidak ada source set / failsafe
-  terpisah), jadi satu perintah mencakup keduanya.
-- `docker compose up --build` — Flyway menerapkan baseline pada database bersih.
-
-## Dokumentasi
-
-1. [PRD](docs/01_PRD.md)
-2. [Tech Spec](docs/02_TECH_SPEC.md)
-3. [Domain Model](docs/03_DOMAIN_MODEL.md)
-4. [Gaps Addendum](docs/04_GAPS_ADDENDUM.md)
-5. [Sprint Plan](docs/05_SPRINT_PLAN.md)
-6. [ADR](docs/adr/)

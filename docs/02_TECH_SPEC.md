@@ -23,6 +23,7 @@ com.serfira
 ```
 
 Aturan dependency:
+
 - `payment`, `penalty`, `settlement` boleh bergantung ke `ledger` (posting jurnal).
 - `payment` juga boleh bergantung ke `contract` melalui **application interface**-nya (ADR-010, ADR-011):
   `InstallmentReceivablePort` (`contract.application`) adalah satu-satunya jalur bagi write path pembayaran
@@ -55,12 +56,14 @@ Aturan dependency:
 Jika suatu saat di-split microservice, seam sudah siap di interface antar-module.
 
 ## 1.1 Business-facing number generation
+
 - `contract_no`, `payment_no`, `quote_no`, dan `settlement_no` memakai format readable dan unique; generator harus transactional dan concurrency-safe.
 - MVP memakai tabel `document_number_counter(counter_key, last_value)` dengan row lock/atomic increment, bukan counter di memory.
 - Format: `MF-YYYYMM-XXXX` (contract), `PAY-YYYYMM-XXXX` (payment), `Q-YYYYMMDD-XXXX` (quote), `SET-YYYYMM-XXXX` (settlement).
 - Number generation boleh consume angka saat transaksi rollback; uniqueness lebih penting daripada gapless numbering.
 
 ## 2.0 Business Date / Server Time
+
 - `paid_at`, `quoted_at`, `executed_at`, dan timestamp audit berasal dari server/application clock.
 - Payment `paid_at` tidak boleh future. Backdated payment tidak didukung pada MVP; request yang mencoba backdate di luar business date policy ditolak.
 - Semua business date menggunakan injected `Clock` Asia/Jakarta agar deterministic di test.
@@ -71,6 +74,7 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 ## 2. Konvensi Teknis
 
 ### 2.1 Uang
+
 - Gunakan `BigDecimal` dengan skala eksplisit 2. **Dilarang float/double.**
 - DB: `NUMERIC(19,2)` untuk amount; rate: `NUMERIC(7,4)`. Semua rate memakai fraction desimal: 1.5% disimpan sebagai `0.0150`.
 - Semua perhitungan rounding kecuali final: gunakan `RoundingMode.HALF_EVEN` (banker's rounding) dan dokumentasikan.
@@ -78,6 +82,7 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 - **EFFECTIVE:** hitung payment/bunga dengan precision tinggi; round interest & principal tiap periode 1..n-1, lalu periode terakhir menyerap residual principal. Last installment amount dapat berbeda sedikit dari payment nominal agar Σ principal = plafon dan semua rounded components balance.
 
 ### 2.2 API
+
 - REST, base `/api/v1/...`.
 - Semua endpoint mutasi yang dapat di-retry menerima header `Idempotency-Key`; minimal wajib pada POST payment, settlement, dan credit application. Key bersifat endpoint-scoped. **B5 (ADR-007): POST `/contracts` juga mewajibkan header ini** — create kontrak tidak boleh menghasilkan kontrak kedua pada retry. Aktivasi tidak memakai key karena idempotent secara state machine (ADR-006).
 - Request/response envelope konsisten:
@@ -90,6 +95,7 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 - Error codes enum per-module.
 
 ### 2.3 Konkurensi & Transaksi
+
 - Optimistic locking: kolom `version` (@Version) pada semua entity yang bisa dikonfirmasi bersamaan
   (Contract, Installment, Payment).
 - Transaksi boundary di application service (`@Transactional`), bukan di controller.
@@ -104,7 +110,7 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   Sejak T5, race unique `(installment_id, accrual_date)` job-versus-payment dan konflik optimistic-lock
   di-retry oleh `PaymentRetryingService` di luar batas `@Transactional` milik
   `PaymentApplicationService.create`: setiap percobaan membuka transaksi baru dan mengambil claim
-  idempotensi baru (maksimum 3 percobaan, backoff 50/150/400 ms, Addendum §5), sehingga percobaan yang gagal
+  idempotensi baru (maksimum 3 percobaan dengan jeda 50 lalu 150 ms, Addendum §5), sehingga percobaan yang gagal
   tidak pernah mengonsumsi key. Percobaan yang habis mengembalikan 409 `CONCURRENT_MODIFICATION`; kegagalan
   validasi/state bisnis tidak di-retry.
 - Daily servicing T3 memakai ShedLock JDBC dengan DB time dan keep-alive lease; cron dan explicit backfill
@@ -126,23 +132,25 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   `SYSTEM`. V10 menyimpan `business_date` eksplisit agar backfill dapat dibedakan dari waktu eksekusinya.
 
 ### 2.4 Audit
+
 - Semua tabel punya `created_at`, `created_by`, `updated_at`, `updated_by` (envers dibolehkan, tapi
   ledger cukup dengan jurnal pembalik — jangan pernah UPDATE/DELETE journal_lines).
 
 ### 2.5 Idempotency
+
 - Tabel `idempotency_keys(key, endpoint, request_hash, response_json, status, created_at, expires_at, request_id)`.
 - `request_hash` = digest keyed (HMAC-SHA-256 atas canonical JSON request + endpoint scope). Dokumen ini semula menyebut "SHA-256"; karena payload dapat memuat PII, implementasi B5 memakai HMAC keyed dari ADR-004 (ADR-007) — semantik kesamaan identik dan nilainya tidak reversible.
 - Request sama + key sama → return response tersimpan tanpa eksekusi ulang.
 - **Implementasi B5 (ADR-007):** claim dilakukan dengan `INSERT … ON CONFLICT (endpoint, key)
 DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernilai `COMPLETED` setelah respons
-tersimpan, `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS` (config), dan mekanisme hidup di
-`com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup baris
-kedaluwarsa belum diimplementasikan — **dijadwalkan di F4**, bukan C3 (ADR-010).
+  tersimpan, `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS` (config), dan mekanisme hidup di
+  `com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup baris
+  kedaluwarsa belum diimplementasikan — **dijadwalkan di F4**, bukan C3 (ADR-010).
 - **Implementasi C3 (ADR-010):** `POST /api/v1/payments` memakai endpoint scope `POST /api/v1/payments` dengan
-canonical JSON dari field request (amount dinormalkan ke skala 2). Claim berjalan di dalam `@Transactional`
-application service, jadi kegagalan operasi me-rollback claim dan retry dengan key yang sama tetap sah
-memperbaiki body; retry identik mengembalikan `response_json` tersimpan tanpa eksekusi ulang (tanpa baris
-`payment`/jurnal kedua).
+  canonical JSON dari field request (amount dinormalkan ke skala 2). Claim berjalan di dalam `@Transactional`
+  application service, jadi kegagalan operasi me-rollback claim dan retry dengan key yang sama tetap sah
+  memperbaiki body; retry identik mengembalikan `response_json` tersimpan tanpa eksekusi ulang (tanpa baris
+  `payment`/jurnal kedua).
 - Password hash: Argon2id. Jangan simpan password plaintext.
 - Access token JWT short-lived (15 menit).
 - Refresh token random, disimpan hashed di DB, **rotated on use**; token lama langsung `revoked_at` diisi.
@@ -153,6 +161,7 @@ memperbaiki body; retry identik mengembalikan `response_json` tersimpan tanpa ek
 - `created_by`/`updated_by` untuk user request berasal dari JWT principal; job memakai seeded non-interactive user `SYSTEM`. Semua audit actor menggunakan UUID `app_user.id`.
 
 ### 2.7 Outbox Pattern
+
 - Event domain (`PaymentReceived`, `ContractClosed`, dll) ditulis ke tabel `outbox_events`
   dalam transaksi yang sama dengan bisnis.
 - Publisher terpisah mengirim ke Kafka lalu mark SENT.
@@ -169,6 +178,7 @@ journal_lines   (id, journal_entry_id, account_code, debit, credit, contract_id 
 ```
 
 Invariant (dienforce DB + test):
+
 1. Σ debit = Σ kredit per journal_entry (check constraint via trigger atau validated di service layer + test).
 2. Setiap journal_lines.account_code merujuk accounts yang ada (FK).
 3. Tidak ada UPDATE/DELETE pada journal_entries & journal_lines — koreksi = journal baru
@@ -229,6 +239,7 @@ Karena ini servicing-saja (bukan full finance), revenue recognition disederhanak
 ## 4. Perhitungan Inti
 
 ### 4.1 Flat
+
 ```
 bungaTotal    = plafon × ratePerBulan × tenor
 pokokPerBln   = plafon / tenor
@@ -236,21 +247,25 @@ angsuranPerBln= pokokPerBulan + bungaTotal/tenor
 ```
 
 ### 4.2 Efektif (anuitas)
+
 ```
 i = ratePerBulan
 A = plafon × i × (1+i)^n / ((1+i)^n − 1)
 bungaBulanKeK = outstanding_{k−1} × i
 pokokBulanKeK = A − bungaBulanKeK
 ```
+
 Guard: i = 0 → A = plafon/n. Guard: (1+i)^n overflow → gunakan `BigDecimal#pow` aman atau loop.
 
 ### 4.3 Denda
+
 ```
 hariTelat = max(0, today − dueDate − gracePeriod)
 denda_harian = rateHarian × saldo tagihan pokok+bunga yang belum dibayar
 recognized_penalty = Σ denda_harian yang sudah diakui
 penalty_amount pada Installment = recognized_penalty (gross, sebelum payment/adjustment). `effective_penalty = penalty_amount − active penalty allocations − penalty adjustments`.
 ```
+
 Denda dihitung job harian dan **diakui incremental** sebagai `PenaltyAccrual.amount` per tanggal. Sejak T4,
 jalur pembayaran juga menjalankan lazy accrual melalui tanggal bisnis yang sama sebelum mengambil snapshot dan
 menerapkan resolusi (ADR-014); ini bukan implementasi formula kedua. `PenaltyAccrual.amount` adalah delta hari
@@ -266,7 +281,9 @@ adalah satu-satunya alur yang menaikkan base retroaktif, dan tidak memicu re-pri
 ter-accrual (Addendum §6, ADR-012 keputusan 7, dipertegas ADR-013).
 
 ### 4.4 Settlement quote
+
 Quote harus menghindari future scheduled interest yang belum menjadi tagihan. Snapshot minimal:
+
 ```
 outstandingPokok      = Σ pokok residual semua installment aktif
 unpaidBilledInterest  = Σ bunga yang sudah billed tetapi belum terbayar
@@ -279,14 +296,17 @@ availableCredit       = saldo AVAILABLE contract credit
 grossSettlement       = outstandingPokok + unpaidBilledInterest + bungaBerjalan + penaltyOutstanding − rebate + adminFee
 cashDue               = grossSettlement − availableCreditUsed
 ```
+
 `bungaBerjalan` tidak boleh menghitung ulang bunga yang sudah recognized/billed. `availableCredit` tidak otomatis diaplikasikan ke installment regular, tetapi **boleh dipakai eksplisit dalam settlement** dan dicatat sebagai consume-credit journal. Quote mempunyai `quote_id`, `quoted_at`, `valid_until`, semua component snapshot, dan snapshot contract version. `credit_used` default 0 dan hanya boleh <= available credit; settlement dapat memakai credit secara eksplisit, sedangkan regular credit application hanya boleh mengurangi recognized receivable. Execution wajib recalculate current components; mismatch atau expired quote → `STALE_SETTLEMENT_QUOTE`; jika contract tidak lagi ACTIVE, gunakan error state contract yang sesuai.
 
 ## 5. Database & Migration
+
 - PostgreSQL 16, Flyway migration per rilis, **tidak ada** perubahan skema manual.
 - Index: installments(contract_id, due_date), payments(contract_id), journal_lines(account_code, entry_date), penalty_accrual(installment_id, accrual_date), settlement(contract_id, executed_at), idempotency_keys(endpoint, key).
 - Constraint penting: amount >= 0, `paid_amount + settled_amount + written_off_amount <= recognized_total`, unique(contract_id, period_no), unique(installment_id, accrual_date), contract-credit application + settlement-credit consume <= source credit available, dan allocation total untuk setiap POSTED payment harus sama dengan payment amount. Excess wajib masuk `TITIPAN_NASABAH`.
 
 ## 6. Testing Strategy
+
 1. **Unit test engine** (prioritas tertinggi, target >90% coverage): pure Java tanpa Spring.
    - Tabel angsuran flat & efektif dibandingkan expected values (hitung pakai spreadsheet, hardcode expected).
    - Edge: i=0, n=1, due date 31→28/29 Feb, leap year, rounding, last-installment adjustment.
@@ -302,6 +322,7 @@ cashDue               = grossSettlement − availableCreditUsed
 5. **PII test**: NIK ciphertext tidak menentukan uniqueness; `nik_hash` unik dan NIK tidak muncul di structured log.
 
 ## 7. Struktur Repo
+
 ```
 serfira-core/
 ├── docs/               ← PRD, tech spec, domain model (file ini)
@@ -313,6 +334,7 @@ serfira-core/
 ```
 
 ## 8. Keputusan yang Sengaja Dibuat (untuk ditanyakan saat interview)
+
 1. Modular monolith dulu, seam siap microservices.
 2. Double-entry ledger sejak hari 1 — mahal dikit, tapi menyelamatkan dari bug finansial tersembunyi.
 3. Denda disimpan, bukan dihitung on-the-fly — keputusan konsistensi ledger vs simplicity.

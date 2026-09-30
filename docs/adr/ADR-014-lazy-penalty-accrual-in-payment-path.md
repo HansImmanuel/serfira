@@ -55,8 +55,10 @@ untuk `POST /api/v1/payments` tanpa memindahkan kepemilikan data antar-modul.
    duplikat kecil dari `penalty.application.DailyServicingConflictClassifier` agar tidak menambah dependensi
    antar-modul untuk ~15 baris logika) menandai optimistic-lock dan SQLSTATE `23505` sebagai retryable;
    kegagalan validasi/state bisnis diteruskan tanpa retry. Kebijakan mengikuti Addendum §5: maksimum 3
-   percobaan, backoff 50/150/400 ms via `Sleeper` yang dapat diinjeksi (bukan dependensi `spring-retry`
-   baru). Percobaan yang habis melempar `PaymentConflictRetriesExhaustedException` → 409
+   percobaan, jeda 50 lalu 150 ms antar-percobaan via `Sleeper` yang dapat diinjeksi (bukan dependensi
+   `spring-retry` baru). _Koreksi 2026-09-30 (review CR-13): teks awal menulis "50/150/400 ms". Dengan 3
+   percobaan hanya ada dua jeda, sehingga nilai 400 ms tidak pernah dipakai. Perilaku tidak berubah; konstanta
+   dirapikan di T24._ Percobaan yang habis melempar `PaymentConflictRetriesExhaustedException` → 409
    `CONCURRENT_MODIFICATION`. Lihat `docs/tasks.md` T5 untuk detail dan bukti pengujian.
 
 ---

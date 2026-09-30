@@ -44,11 +44,13 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-flyway")
 
 	// --- Scheduling: ShedLock (multi-instance safe job lock) ---
-	implementation("net.javacrumbs.shedlock:shedlock-spring:6.9.0")
-	implementation("net.javacrumbs.shedlock:shedlock-provider-jdbc-template:6.9.0")
+	// 7.x is the line tested with Spring Boot 4 (T23, review CR-02). The PostgreSQL table schema is unchanged from 6.x.
+	implementation("net.javacrumbs.shedlock:shedlock-spring:7.10.1")
+	implementation("net.javacrumbs.shedlock:shedlock-provider-jdbc-template:7.10.1")
 
 	// --- API Docs ---
-	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.9")
+	// springdoc majors move in lockstep with Boot; 3.1.x is built against Boot 4.1 (T23, review CR-03).
+	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1")
 
 	// --- Boilerplate reduction ---
 	compileOnly("org.projectlombok:lombok")
