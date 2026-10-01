@@ -34,14 +34,19 @@ import java.util.UUID;
  * application/domain layers, and every response travels in the standard {@code {data, error}}
  * envelope (TS §2.2).
  *
- * <p>Authorization today is "authenticated" (default-deny in
- * {@code ResourceServerSecurityConfiguration}); the endpoint-to-role matrix arrives with story F3
- * (Sprint 6b).
+ * <p>Authorization follows the Addendum §3.4 matrix, enforced in one matcher table in
+ * {@code ResourceServerSecurityConfiguration} (ADR-015): writes need ADMIN_OPERASIONAL, reads need
+ * ADMIN_OPERASIONAL, FINANCE or MANAJEMEN. The constants below only document that table for OpenAPI.
  */
 @RestController
 @RequestMapping("/api/v1/contracts")
 @Tag(name = "Contracts", description = "Contract drafting, activation and servicing reads")
 public class ContractController {
+
+	private static final String UNAUTHORIZED_DESCRIPTION = "UNAUTHORIZED - missing or invalid bearer token "
+			+ "(bad signature, expired, no exp, or a sub that is not a user id)";
+	private static final String FORBIDDEN_ADMIN_ONLY = "FORBIDDEN - allowed role: ADMIN_OPERASIONAL";
+	private static final String FORBIDDEN_READ_ROLES = "FORBIDDEN - allowed roles: ADMIN_OPERASIONAL, FINANCE, MANAJEMEN";
 
 	private final ContractCommandService commands;
 	private final ContractQueryService queries;
@@ -68,7 +73,9 @@ public class ContractController {
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400",
 					description = "VALIDATION_ERROR - invalid payload, missing Idempotency-Key"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
-					description = "UNAUTHORIZED — missing or invalid bearer token"),
+					description = UNAUTHORIZED_DESCRIPTION),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = FORBIDDEN_ADMIN_ONLY),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
 					description = "DUPLICATE_CONTRACT / CONFLICT — live contract for the same asset, "
 							+ "customer identity conflict, or a reused Idempotency-Key with a different payload")
@@ -99,7 +106,9 @@ public class ContractController {
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
 					description = "Contract activated, or already active (idempotent repeat)"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
-					description = "UNAUTHORIZED - missing or invalid bearer token"),
+					description = UNAUTHORIZED_DESCRIPTION),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = FORBIDDEN_ADMIN_ONLY),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404",
 					description = "CONTRACT_NOT_FOUND - no such contract"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
@@ -124,7 +133,9 @@ public class ContractController {
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400",
 					description = "VALIDATION_ERROR - unknown sort property, bad direction, or paging out of range"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
-					description = "UNAUTHORIZED - missing or invalid bearer token")
+					description = UNAUTHORIZED_DESCRIPTION),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = FORBIDDEN_READ_ROLES)
 	})
 	public ApiResponse<PageResponse<ContractListItem>> list(
 			@Parameter(description = "Filter by contract status")
@@ -148,7 +159,9 @@ public class ContractController {
 	@ApiResponses({
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "The contract"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
-					description = "UNAUTHORIZED - missing or invalid bearer token"),
+					description = UNAUTHORIZED_DESCRIPTION),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = FORBIDDEN_READ_ROLES),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404",
 					description = "CONTRACT_NOT_FOUND - no such contract")
 	})
@@ -164,7 +177,9 @@ public class ContractController {
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
 					description = "The schedule, oldest period first"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
-					description = "UNAUTHORIZED - missing or invalid bearer token"),
+					description = UNAUTHORIZED_DESCRIPTION),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = FORBIDDEN_READ_ROLES),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404",
 					description = "CONTRACT_NOT_FOUND - no such contract")
 	})

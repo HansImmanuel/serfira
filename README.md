@@ -40,7 +40,7 @@ layer cannot silently corrupt the books.
   → [ADR-003](docs/adr/ADR-003-injectable-clock.md)
 - **PII protected at rest.** National ID (NIK) and phone numbers are AES-256-GCM encrypted;
   uniqueness and search use HMAC lookup columns. → [ADR-004](docs/adr/ADR-004-at-rest-pii-protection.md)
-- **Decisions on record.** 14 [Architecture Decision Records](docs/adr/) with alternatives
+- **Decisions on record.** 15 [Architecture Decision Records](docs/adr/) with alternatives
   considered and rejected.
 
 ## Domain in 60 seconds
@@ -155,11 +155,13 @@ Known gap (CR-01, fixed in T7): a signed token with a non-UUID `sub` is not reje
 
 ## Security
 
-- **Default-deny.** Only health, info, and OpenAPI paths are public.
-  → [ADR-005](docs/adr/ADR-005-resource-server-before-auth-stories.md)
+- **Default-deny with a role matrix.** Only health, info, and OpenAPI paths are public. Every endpoint
+  enforces the role matrix from one matcher table ending in `denyAll`; roles come from the JWT `roles`
+  claim. → [ADR-005](docs/adr/ADR-005-resource-server-before-auth-stories.md),
+  [ADR-015](docs/adr/ADR-015-jwt-roles-claim-and-endpoint-authorization.md)
 - **Attributable writes.** A UUID JWT subject is bound to the audit context and recorded as
-  `created_by`/`updated_by`. Rejecting tokens whose subject is not a valid `app_user` is planned
-  for T7 (CR-01). Scheduled jobs run as a seeded `SYSTEM` principal that can never log in
+  `created_by`/`updated_by`. A token whose subject is not a UUID, or that carries no `exp`, is rejected
+  with 401 (ADR-015). Scheduled jobs run as a seeded `SYSTEM` principal that can never log in
   (inactive, unusable password hash, enforced by a check constraint).
 - **Fail-fast secrets.** The app refuses to start without its PII encryption key, HMAC key, and
   JWT secret:

@@ -1,17 +1,13 @@
 package com.serfira.contract;
 
-import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.JWSSigner;
-import com.nimbusds.jose.crypto.MACSigner;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import com.serfira.TestcontainersConfiguration;
 import com.serfira.contract.api.CreateAssetRequest;
 import com.serfira.contract.api.CreateContractRequest;
 import com.serfira.contract.api.CreateCustomerRequest;
 import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
+import com.serfira.shared.security.AppRole;
+import com.serfira.support.TestJwts;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,13 +23,8 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.util.Base64;
-import java.util.Date;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,9 +43,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 class ContractApiIT {
-
-	private static final byte[] TEST_SECRET = Base64.getDecoder()
-			.decode("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=");
 
 	private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
@@ -82,7 +70,7 @@ class ContractApiIT {
 					values (?, 'test-hash', 'IT Actor', 'ADMIN_OPERASIONAL', TRUE, clock_timestamp(), clock_timestamp())
 					returning id
 				""", UUID.class, "it-actor-" + UUID.randomUUID());
-		token = jwtFor(actorId);
+		token = TestJwts.forRoles(actorId, AppRole.ADMIN_OPERASIONAL.name());
 	}
 
 	@AfterEach
@@ -552,25 +540,6 @@ class ContractApiIT {
 
 	private static BigDecimal decimal(JsonNode node, String field) {
 		return node.get(field).decimalValue();
-	}
-
-	/** Mirrors serfira.security.jwt.secret-base64 in src/test/resources/application.properties. */
-	private String jwtFor(UUID subject) {
-		try {
-			JWTClaimsSet claims = new JWTClaimsSet.Builder()
-					.subject(subject.toString())
-					.claim("roles", java.util.List.of("ADMIN_OPERASIONAL"))
-					.issueTime(Date.from(Instant.now()))
-					.expirationTime(Date.from(Instant.now().plusSeconds(600)))
-					.build();
-			SignedJWT signedJwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
-			SecretKey key = new SecretKeySpec(TEST_SECRET, "HmacSHA256");
-			JWSSigner signer = new MACSigner(key);
-			signedJwt.sign(signer);
-			return signedJwt.serialize();
-		} catch (Exception ex) {
-			throw new IllegalStateException("failed to mint the IT bearer token", ex);
-		}
 	}
 
 	private void truncateDomainTables() {

@@ -8,6 +8,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.web.context.RequestAttributeSecurityContextRepository;
+import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import com.serfira.shared.audit.AuditContext;
@@ -27,14 +29,18 @@ import jakarta.servlet.http.HttpServletResponse;
  * (public paths only) keep the SYSTEM actor — no business mutation is reachable for them.
  *
  * <p>An authenticated principal whose {@code sub} claim is not a UUID is treated as an invalid
- * actor (fail-closed): the request proceeds unauthenticated so authorization rejects it, and the
- * actor stays SYSTEM instead of being fabricated.
+ * actor (fail-closed, ADR-015 D5): the filter discards the authentication, so the request continues
+ * anonymous, authorization answers 401, and the actor stays SYSTEM instead of being fabricated. The
+ * decoder's validator already rejects such tokens, so this branch is a defensive backstop. It clears
+ * the request-attribute copy of the context too, because {@code BearerTokenAuthenticationFilter}
+ * saves it there and a later ERROR dispatch would otherwise restore it.
  */
 public class AuditActorBindingFilter extends OncePerRequestFilter {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(AuditActorBindingFilter.class);
 
 	private final AuditContext auditContext;
+	private final SecurityContextRepository dispatchContextRepository = new RequestAttributeSecurityContextRepository();
 
 	public AuditActorBindingFilter(AuditContext auditContext) {
 		this.auditContext = auditContext;
@@ -44,14 +50,16 @@ public class AuditActorBindingFilter extends OncePerRequestFilter {
 	protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
 			throws ServletException, IOException {
 		Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-		UUID actorId = null;
-		if (authentication instanceof JwtAuthenticationToken jwtAuthentication) {
-			actorId = parseUuid(jwtAuthentication.getToken().getSubject());
-			if (actorId == null) {
-				LOGGER.debug("JWT subject is not a UUID; audit actor remains SYSTEM for this request");
-			}
+		if (!(authentication instanceof JwtAuthenticationToken jwtAuthentication)) {
+			filterChain.doFilter(request, response);
+			return;
 		}
+		UUID actorId = parseUuid(jwtAuthentication.getToken().getSubject());
 		if (actorId == null) {
+			LOGGER.warn("Authenticated JWT has a non-UUID subject; authentication discarded for {}",
+					request.getRequestURI());
+			SecurityContextHolder.clearContext();
+			dispatchContextRepository.saveContext(SecurityContextHolder.createEmptyContext(), request, response);
 			filterChain.doFilter(request, response);
 			return;
 		}

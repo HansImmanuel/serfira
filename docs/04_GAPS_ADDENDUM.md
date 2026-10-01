@@ -180,6 +180,8 @@ Legenda: ✅ = diizinkan | ❌ = dilarang | — = tidak relevan
 | `POST /reports/reconciliation-exceptions/{id}/resolve` | ❌ | ✅ | ❌ | — |
 
 > **Catatan implementasi:** Gunakan Spring Security `@PreAuthorize` atau `SecurityFilterChain` dengan role-based matchers. Default-deny berarti setiap endpoint baru harus secara eksplisit mendaftarkan role yang diizinkan; endpoint tanpa deklarasi otomatis `403`. Response 403 menggunakan error envelope standar dengan `code: FORBIDDEN`.
+>
+> **Status (T7, ADR-015):** Matrix ini ditegakkan sejak T7 untuk keenam endpoint yang sudah ada, lewat **satu tabel matcher** di `ResourceServerSecurityConfiguration` yang diakhiri `denyAll()`. Role dibaca dari claim `roles` (array string); `SYSTEM` pada token menolak seluruh token (403). Token tanpa `exp` atau dengan `sub` non-UUID → 401 (ADR-015 D5). Setiap endpoint baru menambah barisnya di tabel ini beserta tes 403-nya.
 
 ---
 

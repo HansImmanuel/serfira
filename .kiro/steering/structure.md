@@ -6,7 +6,7 @@ serfira/
 ├── docker-compose.yml           # postgres:16 + app (dev-only secrets, DB bound to 127.0.0.1)
 ├── docs/                        # Specs (Bahasa Indonesia), ADRs, progress log. Source of truth.
 │   ├── 01_PRD.md … 06_FRONTEND_SPEC.md
-│   ├── adr/ADR-0NN-*.md         # Architecture decisions (currently 001–014)
+│   ├── adr/ADR-0NN-*.md         # Architecture decisions (currently 001–015)
 │   ├── PROGRESS.md, tasks.md    # Sprint log and backlog
 └── backend/                     # Spring Boot app (Gradle, Kotlin DSL)
     ├── build.gradle.kts, Dockerfile
