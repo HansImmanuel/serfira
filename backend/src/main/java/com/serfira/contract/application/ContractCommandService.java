@@ -33,6 +33,7 @@ import com.serfira.shared.error.ConflictException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
+import com.serfira.shared.money.DecimalBounds;
 import com.serfira.shared.security.PiiHasher;
 import com.serfira.shared.security.PiiValidator;
 
@@ -69,6 +70,15 @@ public class ContractCommandService {
 	private static final int MONEY_SCALE = 2;
 	private static final int RATE_SCALE = 4;
 	private static final int MAX_TENOR_MONTHS = 120;
+
+	/**
+	 * How far before today an activation may be backdated (ADR-016, CWE-400). Activation with an older
+	 * effective start date means the schedule's due dates are already deep in the past, and the first payment
+	 * (or the daily job) would materialize one penalty accrual and one journal line per overdue day — a few
+	 * small requests turning into millions of writes. One year covers the legitimate "signed last period,
+	 * entered now" backfill; anything older belongs to a dedicated, bounded backfill process (not in MVP).
+	 */
+	private static final int MAX_BACKDATED_ACTIVATION_YEARS = 1;
 
 	/** Statuses that make a contract "live": it holds its asset (invariant 18). */
 	private static final List<ContractStatus> LIVE_STATUSES = List.of(ContractStatus.DRAFT, ContractStatus.ACTIVE);
@@ -119,6 +129,12 @@ public class ContractCommandService {
 		if (request == null || request.customer() == null || request.asset() == null) {
 			throw new BadRequestException("customer and asset are required");
 		}
+		// Bound the magnitude of request money/rate before canonicalize() rescales them: a compact
+		// scientific-notation value would otherwise expand into a huge BigDecimal here, ahead of productTerms
+		// validation (ADR-016, CWE-400). Cheap precision()/scale() checks, so a bad value is 400, not a stall.
+		DecimalBounds.requireMoneyDomain(request.assetPrice(), "asset_price");
+		DecimalBounds.requireMoneyDomain(request.downPayment(), "down_payment");
+		DecimalBounds.requireRateDomain(request.interestRate(), "interest_rate");
 		String key = idempotencyKey == null ? null : idempotencyKey.trim();
 		IdempotentResult<ContractResponse> result = idempotency.execute(
 				CREATE_ENDPOINT, key, canonicalize(request), ContractResponse.class,
@@ -156,6 +172,7 @@ public class ContractCommandService {
 		}
 
 		LocalDate effectiveStartDate = requestedStartDate != null ? requestedStartDate : contract.getPlannedStartDate();
+		requireActivatableStartDate(effectiveStartDate);
 		// Re-snapshot the configuration here: what matters is the configuration in force when the
 		// contract went live (DM §1.3), not when the draft was authored.
 		int gracePeriodDays = systemParameters.requireInt(SystemParameterKeys.DEFAULT_GRACE_PERIOD_DAYS);
@@ -196,6 +213,25 @@ public class ContractCommandService {
 	 */
 	private OffsetDateTime activationEntryDate(LocalDate startDate) {
 		return startDate.atStartOfDay(clock.zone()).toOffsetDateTime();
+	}
+
+	/**
+	 * Rejects an effective start date so far in the past that activating would backfill an unbounded penalty
+	 * backlog (ADR-016, finding #4, CWE-400). The bound is relative to the business clock, so it cannot be a
+	 * DB CHECK; it lives here, before the schedule is generated and before any contract state changes. Future
+	 * dates are allowed: a planned start that has not arrived has no overdue days and so no backlog.
+	 */
+	private void requireActivatableStartDate(LocalDate effectiveStartDate) {
+		if (effectiveStartDate == null) {
+			// A missing effective date is reported by Contract.activate with its own message; don't mask it.
+			return;
+		}
+		LocalDate earliest = clock.today().minusYears(MAX_BACKDATED_ACTIVATION_YEARS);
+		if (effectiveStartDate.isBefore(earliest)) {
+			throw new BadRequestException("start_date is more than " + MAX_BACKDATED_ACTIVATION_YEARS
+					+ " year(s) in the past (earliest allowed is " + earliest + "); a larger backfill is not "
+					+ "supported");
+		}
 	}
 
 	private ContractResponse persistDraftContract(String idempotencyKey, CreateContractRequest request) {

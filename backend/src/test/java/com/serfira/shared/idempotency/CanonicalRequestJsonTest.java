@@ -6,7 +6,10 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Map;
 
+import com.serfira.shared.error.BadRequestException;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for the idempotency canonicalization (TS §2.5 refinement, ADR-007): a retry that is
@@ -29,6 +32,20 @@ class CanonicalRequestJsonTest {
 				.isEqualTo(CanonicalRequestJson.rate(new BigDecimal("0.0150")))
 				.isEqualTo("0.0150");
 		assertThat(CanonicalRequestJson.rate(null)).isNull();
+	}
+
+	@Test
+	void moneyFormatterRejectsCompactHugeMagnitudeBeforeExpanding() {
+		// Backstop for ADR-016 / CWE-400: the formatter bounds magnitude before setScale, so a hostile value
+		// is a fast 400 here rather than a ~100M-digit expansion.
+		assertThatThrownBy(() -> CanonicalRequestJson.money(new BigDecimal("1e100000000")))
+				.isInstanceOf(BadRequestException.class);
+	}
+
+	@Test
+	void rateFormatterRejectsCompactTinyScaleBeforeExpanding() {
+		assertThatThrownBy(() -> CanonicalRequestJson.rate(new BigDecimal("1e-100000000")))
+				.isInstanceOf(BadRequestException.class);
 	}
 
 	@Test

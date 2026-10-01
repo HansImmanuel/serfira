@@ -32,6 +32,7 @@ import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
+import com.serfira.shared.money.DecimalBounds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -293,6 +294,11 @@ public class PaymentApplicationService {
 			throw new BadRequestException("contract_id, amount and channel are required");
 		}
 		BigDecimal amount = request.amount();
+		// Bound magnitude and scale before setScale (ADR-016, CWE-400): the scale() check below only catches
+		// too-fine values, not a compact scientific-notation magnitude like 1e100000000, whose negative scale
+		// passes scale() <= 2 and then expands into a ~100M-digit integer in setScale. This cheap check rejects
+		// it as 400 first.
+		DecimalBounds.requireMoneyDomain(amount, "amount");
 		if (amount.scale() > MONEY_SCALE) {
 			throw new BadRequestException("amount must be money with at most " + MONEY_SCALE
 					+ " decimal places");

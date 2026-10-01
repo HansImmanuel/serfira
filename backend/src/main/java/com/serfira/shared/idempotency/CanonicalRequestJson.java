@@ -1,5 +1,7 @@
 package com.serfira.shared.idempotency;
 
+import com.serfira.shared.money.DecimalBounds;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
@@ -41,14 +43,30 @@ public final class CanonicalRequestJson {
 		return trimmed.isEmpty() ? null : trimmed;
 	}
 
-	/** Money as a scale-2 plain string ({@code null}-safe). */
+	/**
+	 * Money as a scale-2 plain string ({@code null}-safe). Bounds magnitude before {@code setScale} so no
+	 * caller can expand a compact scientific-notation value through this formatter (ADR-016, CWE-400); every
+	 * service boundary already checks this, and this is the backstop.
+	 */
 	public static String money(BigDecimal value) {
-		return value == null ? null : value.setScale(2, RoundingMode.HALF_EVEN).toPlainString();
+		if (value == null) {
+			return null;
+		}
+		DecimalBounds.requireMoneyDomain(value, "money");
+		return value.setScale(2, RoundingMode.HALF_EVEN).toPlainString();
 	}
 
-	/** Rate as a scale-4 plain string ({@code null}-safe). */
+	/**
+	 * Rate as a scale-4 plain string ({@code null}-safe). Bounds magnitude before {@code setScale} for the
+	 * same reason as {@link #money(BigDecimal)}: a tiny value such as {@code 1e-100000000} is in {@code [0,1]}
+	 * but would make rounding construct an enormous power-of-ten divisor (ADR-016, CWE-400).
+	 */
 	public static String rate(BigDecimal value) {
-		return value == null ? null : value.setScale(4, RoundingMode.HALF_EVEN).toPlainString();
+		if (value == null) {
+			return null;
+		}
+		DecimalBounds.requireRateDomain(value, "rate");
+		return value.setScale(4, RoundingMode.HALF_EVEN).toPlainString();
 	}
 
 	/** ISO-8601 date ({@code null}-safe). */

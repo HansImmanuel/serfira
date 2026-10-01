@@ -6,7 +6,7 @@ serfira/
 ├── docker-compose.yml           # postgres:16 + app (dev-only secrets, DB bound to 127.0.0.1)
 ├── docs/                        # Specs (Bahasa Indonesia), ADRs, progress log. Source of truth.
 │   ├── 01_PRD.md … 06_FRONTEND_SPEC.md
-│   ├── adr/ADR-0NN-*.md         # Architecture decisions (currently 001–015)
+│   ├── adr/ADR-0NN-*.md         # Architecture decisions (currently 001–016)
 │   ├── PROGRESS.md, tasks.md    # Sprint log and backlog
 └── backend/                     # Spring Boot app (Gradle, Kotlin DSL)
     ├── build.gradle.kts, Dockerfile
@@ -49,6 +49,7 @@ Every business module uses the same four layers: `com.serfira.<module>.{api, app
 - New cross-module needs mean a new port interface in the **owning** module's `application` package. Document it in the Tech Spec §1 dependency rules and in an ADR if it is a new edge.
 
 ## Code style
+
 - Tabs for indentation. Import groups: project/third-party, then `java.*`, then static imports.
 - Constructor injection with `private final` fields. No field `@Autowired` in main code, and no Lombok.
 - Entities have a `protected` no-arg JPA constructor plus a validating public constructor (`Objects.requireNonNull`, guards that mirror DB CHECK constraints). State changes go through intention-revealing methods, not setters.

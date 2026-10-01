@@ -77,6 +77,7 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 
 - Gunakan `BigDecimal` dengan skala eksplisit 2. **Dilarang float/double.**
 - DB: `NUMERIC(19,2)` untuk amount; rate: `NUMERIC(7,4)`. Semua rate memakai fraction desimal: 1.5% disimpan sebagai `0.0150`.
+- Magnitude money/rate dari request divalidasi terhadap domain kolom (`NUMERIC(19,2)` / `NUMERIC(7,4)`) **sebelum** rescale apa pun, memakai `precision()`/`scale()` saja (tanpa meng-expand nilai), via `shared.money.DecimalBounds`. Nilai di luar domain → 400 `VALIDATION_ERROR`. Mencegah amplifikasi scientific notation seperti `1e100000000` (ADR-016, CWE-400).
 - Semua perhitungan rounding kecuali final: gunakan `RoundingMode.HALF_EVEN` (banker's rounding) dan dokumentasikan.
 - **FLAT:** round periodic principal/interest ke 2 desimal untuk periode 1..n-1; periode terakhir menyerap residual agar Σ principal = plafon dan Σ interest = bungaTotal.
 - **EFFECTIVE:** hitung payment/bunga dengan precision tinggi; round interest & principal tiap periode 1..n-1, lalu periode terakhir menyerap residual principal. Last installment amount dapat berbeda sedikit dari payment nominal agar Σ principal = plafon dan semua rounded components balance.
