@@ -5,7 +5,7 @@
 - **Database**: PostgreSQL 16, schema owned by Flyway (`spring.jpa.hibernate.ddl-auto=validate`)
 - **Scheduling**: Spring scheduling + ShedLock 7.10 (JDBC provider) for the daily servicing job
 - **API docs**: springdoc-openapi 3.1 (`/swagger-ui.html`)
-- **Auth**: bearer JWT, HS256, via Spring OAuth2 resource server. Default-deny. No login endpoint yet.
+- **Auth**: bearer JWT, HS256, via Spring OAuth2 resource server. Default-deny role matrix (ADR-015). No login endpoint yet.
 - **JSON**: Jackson 3 (`tools.jackson.*` packages; annotations still `com.fasterxml.jackson.annotation`)
 - **Testing**: JUnit 5, AssertJ, Spring Boot Test, MockMvc, spring-security-test, Testcontainers 2.0 (PostgreSQL 16)
 - **Build**: Gradle 9.7.1 wrapper, Kotlin DSL (`backend/build.gradle.kts`)
@@ -26,6 +26,8 @@ Run from `backend/` (Windows: `gradlew.bat` or `.\gradlew`):
 .\gradlew build                                   # compile + test + bootJar
 .\gradlew bootJar                                 # build jar only
 ```
+
+Without Docker, `*IT` tests cannot run. Verify with `.\gradlew compileJava compileTestJava` and `.\gradlew test --tests "*Test"`, and state in the result that the `*IT` tests were not run.
 
 From repo root:
 
@@ -73,11 +75,12 @@ Health: `/actuator/health`. The app fails fast without `SERFIRA_SECURITY_PII_ENC
 **Security**
 
 - PII fields use `AesGcmStringAttributeConverter`; lookups and uniqueness use HMAC columns (`PiiHasher`). Mask PII in responses (`PiiMasker`).
-- New endpoints are authenticated by default. Only health, info, and OpenAPI paths are public.
+- Only health, info, and OpenAPI paths are public. Authorization is one matcher table in `ResourceServerSecurityConfiguration` ending in `denyAll()`: a new endpoint is denied until it gets a row there, plus allowed-role and 403 tests in `EndpointRoleMatrixIT` (ADR-015 D3).
+- A valid token has an `exp`, a `sub` that is the canonical UUID of an `app_user` (never `SYSTEM`), and a `roles` string array. A bad `sub` or missing `exp` → 401; no allowed role → 403. `SYSTEM` never acts over HTTP (ADR-015 D4/D5).
 
 ## Testing conventions
 
 - Unit tests: `*Test.java`, pure Java without Spring, especially for engines (`ScheduleEngine`, `PaymentAllocationEngine`, `PenaltyCalculator`). Golden tests use hardcoded expected values.
 - Integration tests: `*IT.java`, `@SpringBootTest` + `@Import(TestcontainersConfiguration.class)` against real PostgreSQL. Tests commit for real (no test transaction) so deferred triggers fire.
 - `src/test/resources/application.properties` shadows the main one. Keep the two in sync. Test cron is `-` (disabled). Jobs are invoked explicitly.
-- Tests mint their own HS256 JWTs with the test secret. Use `FixedClock` for deterministic dates.
+- Mint test JWTs with `com.serfira.support.TestJwts` (e.g. `TestJwts.forRoles(actorId, "ADMIN_OPERASIONAL")`), not per-suite helpers. Use `FixedClock` for deterministic dates.
