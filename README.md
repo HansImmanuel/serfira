@@ -140,9 +140,10 @@ PostgreSQL 16, so Docker must be running). CI runs the same task on every push a
 
 Every endpoint except health and OpenAPI requires a bearer JWT (HS256). The login endpoint is not
 built yet (planned for Sprint 6b), so for now tokens must be signed with the configured dev secret.
-Use the UUID of an existing `app_user` as the `sub` claim; it is recorded as `created_by` on writes.
-Known gap (CR-01, fixed in T7): a signed token with a non-UUID `sub` is not rejected yet and writes as
-`SYSTEM`, and a `sub` that is not an existing `app_user` is not checked before the write.
+The token must carry a canonical UUID `sub` (the id of an existing `app_user`, recorded as `created_by`
+on writes), an `exp`, and a `roles` string array (for example `["ADMIN_OPERASIONAL"]`). A non-UUID or
+`SYSTEM` subject, or a missing `exp`, is rejected with 401; a token without an allowed role is 403. A
+`sub` that is not an existing `app_user` is rejected by the `created_by` foreign key at write time.
 
 | Method | Endpoint                              | Purpose                                                            |
 | ------ | ------------------------------------- | ------------------------------------------------------------------ |

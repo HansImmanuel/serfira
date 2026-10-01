@@ -3,6 +3,7 @@ package com.serfira.shared.security;
 import java.io.IOException;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 import javax.crypto.spec.SecretKeySpec;
@@ -168,16 +169,27 @@ public class ResourceServerSecurityConfiguration {
 		return http.build();
 	}
 
+	/**
+	 * A {@code sub} is a usable actor id only if it is a canonical lowercase 8-4-4-4-12 UUID that is not the
+	 * seeded SYSTEM user (ADR-015 D4/D5, review CR-01). {@link UUID#fromString} alone is too lenient: it
+	 * accepts loose forms such as {@code 0-0-0-0-1}, which parse to the SYSTEM id, so an HTTP token could be
+	 * bound as the audit actor and write rows attributed to SYSTEM. Requiring the parsed value to re-serialize
+	 * to the input rejects every non-canonical form, and the explicit SYSTEM check rejects its canonical form.
+	 */
 	private static boolean isUuid(Object subject) {
 		if (!(subject instanceof String value)) {
 			return false;
 		}
+		UUID parsed;
 		try {
-			UUID.fromString(value);
-			return true;
+			parsed = UUID.fromString(value);
 		} catch (IllegalArgumentException ex) {
 			return false;
 		}
+		if (!parsed.toString().equals(value.toLowerCase(Locale.ROOT))) {
+			return false;
+		}
+		return !parsed.equals(AuditContext.SYSTEM_USER_ID);
 	}
 
 	private static void writeEnvelopeError(

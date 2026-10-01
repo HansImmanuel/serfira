@@ -100,7 +100,12 @@ class JwtAuthenticationIT {
 				tokenCase("expired", subject -> TestJwts.expired(subject, ADMIN)),
 				tokenCase("no exp", subject -> TestJwts.withoutExpiry(subject, ADMIN)),
 				tokenCase("missing sub", subject -> TestJwts.withRawSubject(null, ADMIN)),
-				tokenCase("non-UUID sub (CR-01)", subject -> TestJwts.withRawSubject("not-a-uuid", ADMIN)));
+				tokenCase("non-UUID sub (CR-01)", subject -> TestJwts.withRawSubject("not-a-uuid", ADMIN)),
+				// A canonical SYSTEM id and the loose form that parses to it must both be rejected: SYSTEM
+				// must never act over HTTP (ADR-015 D4, CR-01).
+				tokenCase("SYSTEM sub (CR-01)",
+						subject -> TestJwts.withRawSubject(SYSTEM_USER_ID.toString(), ADMIN)),
+				tokenCase("loose SYSTEM sub (CR-01)", subject -> TestJwts.withRawSubject("0-0-0-0-1", ADMIN)));
 	}
 
 	@ParameterizedTest(name = "{0} -> 401")
