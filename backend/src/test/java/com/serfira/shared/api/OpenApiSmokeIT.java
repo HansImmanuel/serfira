@@ -42,6 +42,11 @@ class OpenApiSmokeIT {
 		assertThat(paths).as("OpenAPI document has a paths object").isNotNull();
 		assertThat(paths.has("/api/v1/payments")).isTrue();
 		assertThat(paths.has("/api/v1/contracts")).isTrue();
+		// T7: every operation documents its 403 and the roles allowed (convention: list every error code).
+		assertThat(paths.at("/~1api~1v1~1payments/post/responses/403/description").asText())
+				.contains("ADMIN_OPERASIONAL");
+		assertThat(paths.at("/~1api~1v1~1contracts/get/responses/403/description").asText())
+				.contains("FINANCE").contains("MANAJEMEN");
 	}
 
 	@Test

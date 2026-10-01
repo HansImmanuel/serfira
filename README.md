@@ -40,7 +40,7 @@ layer cannot silently corrupt the books.
   → [ADR-003](docs/adr/ADR-003-injectable-clock.md)
 - **PII protected at rest.** National ID (NIK) and phone numbers are AES-256-GCM encrypted;
   uniqueness and search use HMAC lookup columns. → [ADR-004](docs/adr/ADR-004-at-rest-pii-protection.md)
-- **Decisions on record.** 14 [Architecture Decision Records](docs/adr/) with alternatives
+- **Decisions on record.** 15 [Architecture Decision Records](docs/adr/) with alternatives
   considered and rejected.
 
 ## Domain in 60 seconds
@@ -140,9 +140,10 @@ PostgreSQL 16, so Docker must be running). CI runs the same task on every push a
 
 Every endpoint except health and OpenAPI requires a bearer JWT (HS256). The login endpoint is not
 built yet (planned for Sprint 6b), so for now tokens must be signed with the configured dev secret.
-Use the UUID of an existing `app_user` as the `sub` claim; it is recorded as `created_by` on writes.
-Known gap (CR-01, fixed in T7): a signed token with a non-UUID `sub` is not rejected yet and writes as
-`SYSTEM`, and a `sub` that is not an existing `app_user` is not checked before the write.
+The token must carry a canonical UUID `sub` (the id of an existing `app_user`, recorded as `created_by`
+on writes), an `exp`, and a `roles` string array (for example `["ADMIN_OPERASIONAL"]`). A non-UUID or
+`SYSTEM` subject, or a missing `exp`, is rejected with 401; a token without an allowed role is 403. A
+`sub` that is not an existing `app_user` is rejected by the `created_by` foreign key at write time.
 
 | Method | Endpoint                              | Purpose                                                            |
 | ------ | ------------------------------------- | ------------------------------------------------------------------ |
@@ -155,11 +156,13 @@ Known gap (CR-01, fixed in T7): a signed token with a non-UUID `sub` is not reje
 
 ## Security
 
-- **Default-deny.** Only health, info, and OpenAPI paths are public.
-  → [ADR-005](docs/adr/ADR-005-resource-server-before-auth-stories.md)
+- **Default-deny with a role matrix.** Only health, info, and OpenAPI paths are public. Every endpoint
+  enforces the role matrix from one matcher table ending in `denyAll`; roles come from the JWT `roles`
+  claim. → [ADR-005](docs/adr/ADR-005-resource-server-before-auth-stories.md),
+  [ADR-015](docs/adr/ADR-015-jwt-roles-claim-and-endpoint-authorization.md)
 - **Attributable writes.** A UUID JWT subject is bound to the audit context and recorded as
-  `created_by`/`updated_by`. Rejecting tokens whose subject is not a valid `app_user` is planned
-  for T7 (CR-01). Scheduled jobs run as a seeded `SYSTEM` principal that can never log in
+  `created_by`/`updated_by`. A token whose subject is not a UUID, or that carries no `exp`, is rejected
+  with 401 (ADR-015). Scheduled jobs run as a seeded `SYSTEM` principal that can never log in
   (inactive, unusable password hash, enforced by a check constraint).
 - **Fail-fast secrets.** The app refuses to start without its PII encryption key, HMAC key, and
   JWT secret:

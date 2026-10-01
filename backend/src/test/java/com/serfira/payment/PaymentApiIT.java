@@ -1,11 +1,5 @@
 package com.serfira.payment;
 
-import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.JWSSigner;
-import com.nimbusds.jose.crypto.MACSigner;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import com.serfira.TestcontainersConfiguration;
 import com.serfira.contract.api.ContractResponse;
 import com.serfira.contract.api.CreateAssetRequest;
@@ -16,6 +10,8 @@ import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
+import com.serfira.shared.security.AppRole;
+import com.serfira.support.TestJwts;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,15 +27,10 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
-import java.util.Base64;
-import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -66,9 +57,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 class PaymentApiIT {
-
-	private static final byte[] TEST_SECRET = Base64.getDecoder()
-			.decode("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=");
 
 	private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
@@ -125,7 +113,7 @@ class PaymentApiIT {
 						clock_timestamp(), clock_timestamp())
 					returning id
 				""", UUID.class, "payment-it-actor-" + UUID.randomUUID());
-		token = jwtFor(actorId);
+		token = TestJwts.forRoles(actorId, AppRole.ADMIN_OPERASIONAL.name());
 		fixedClock().setDate(BUSINESS_DATE);
 
 		ContractResponse draft = contracts.create("payment-it-contract-" + UUID.randomUUID(),
@@ -835,25 +823,6 @@ class PaymentApiIT {
 
 	private FixedClock fixedClock() {
 		return (FixedClock) clock;
-	}
-
-	/** Mirrors serfira.security.jwt.secret-base64 in src/test/resources/application.properties. */
-	private String jwtFor(UUID subject) {
-		try {
-			JWTClaimsSet claims = new JWTClaimsSet.Builder()
-					.subject(subject.toString())
-					.claim("roles", List.of("ADMIN_OPERASIONAL"))
-					.issueTime(Date.from(Instant.now()))
-					.expirationTime(Date.from(Instant.now().plusSeconds(600)))
-					.build();
-			SignedJWT signedJwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
-			SecretKey key = new SecretKeySpec(TEST_SECRET, "HmacSHA256");
-			JWSSigner signer = new MACSigner(key);
-			signedJwt.sign(signer);
-			return signedJwt.serialize();
-		} catch (Exception ex) {
-			throw new IllegalStateException("failed to mint the IT bearer token", ex);
-		}
 	}
 
 	private void truncateDomainTables() {

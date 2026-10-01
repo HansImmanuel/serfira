@@ -23,10 +23,9 @@ import org.springframework.web.bind.annotation.RestController;
  * and posting live in the application/domain layers, and every response travels in the standard
  * {@code {data, error}} envelope (TS §2.2).
  *
- * <p>Authorization today is &quot;authenticated&quot; (default-deny in
- * {@code ResourceServerSecurityConfiguration}); the endpoint-to-role matrix arrives with story F3
- * (Sprint 6b). Until then the paying operator is whoever the JWT authenticates, and that principal is
- * what the audit columns record.
+ * <p>Only ADMIN_OPERASIONAL may post a payment (Addendum §3.4), enforced in the matcher table of
+ * {@code ResourceServerSecurityConfiguration} (ADR-015). The paying operator is the JWT subject, and that
+ * principal is what the audit columns record.
  *
  * <p>No {@code Location} header is returned with the 201: the payment representation is the response
  * body, and there is no {@code GET /payments/{id}} yet (the statement/read surface is C5). Pointing a
@@ -63,7 +62,10 @@ public class PaymentController {
 					description = "VALIDATION_ERROR - missing/invalid payload, missing Idempotency-Key, "
 							+ "amount not positive scale-2 money"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
-					description = "UNAUTHORIZED - missing or invalid bearer token"),
+					description = "UNAUTHORIZED - missing or invalid bearer token (bad signature, expired, "
+							+ "no exp, or a sub that is not a user id)"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = "FORBIDDEN - allowed role: ADMIN_OPERASIONAL"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404",
 					description = "CONTRACT_NOT_FOUND - no such contract"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",

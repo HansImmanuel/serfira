@@ -151,6 +151,13 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   application service, jadi kegagalan operasi me-rollback claim dan retry dengan key yang sama tetap sah
   memperbaiki body; retry identik mengembalikan `response_json` tersimpan tanpa eksekusi ulang (tanpa baris
   `payment`/jurnal kedua).
+- **Roles & authorization (T7, ADR-015).** Authority berasal dari claim `roles` berupa array string
+  (case-sensitive, sesuai `ck_app_user_role`); claim non-array dianggap tanpa role. Token yang memuat
+  `SYSTEM` ditolak seluruhnya (403) — `SYSTEM` hanya untuk job in-process. Matrix Addendum §3.4 ditegakkan di
+  satu tabel matcher pada `SecurityFilterChain` yang diakhiri `denyAll()`; endpoint yang tidak terdaftar
+  otomatis 403. Presedens status: token tidak ada / tidak valid (signature salah, `alg: none`, kedaluwarsa,
+  tanpa `exp`, `sub` hilang atau bukan UUID) → 401 `UNAUTHORIZED`; token valid tanpa role yang diizinkan →
+  403 `FORBIDDEN`; request anonim ke path tak terdaftar → 401. Request yang ditolak tidak menulis apa pun.
 - Password hash: Argon2id. Jangan simpan password plaintext.
 - Access token JWT short-lived (15 menit).
 - Refresh token random, disimpan hashed di DB, **rotated on use**; token lama langsung `revoked_at` diisi.

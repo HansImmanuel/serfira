@@ -12,15 +12,14 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 
 ## Current Project State
 
-**Snapshot:** `main` @ `848e8a3` (2026-09-30, T5 and T6 committed and pushed), in sync with `origin/main`.
-Uncommitted in the working tree: the progress log moved from `README.md` to `docs/PROGRESS.md`, plus this
-re-plan after the 2026-09-30 external review (see Planning Notes → "External review 2026-09-30").
+**Snapshot:** `main` @ `0b282c0` plus uncommitted T23 verification and the T7 implementation (ADR-015: RBAC
+matrix, roles-claim converter, fail-closed JWT identity, `support/TestJwts`, and the retired audit probe).
 
-**Verified on 2026-09-30 (through T6):**
+**Verified on 2026-10-01 (through T7):**
 
 - `./gradlew compileJava compileTestJava`: pass.
-- `./gradlew test --tests "com.serfira.penalty.*" --tests "com.serfira.contract.*"` (`--rerun`): pass.
-- Full `./gradlew test --rerun`: 63 suites / 460 tests pass.
+- `./gradlew test --rerun --tests "com.serfira.shared.security.*" --tests "*OpenApiSmokeIT"`: 100 tests pass.
+- Full `./gradlew test --rerun`: 67 suites / 529 tests pass.
 - `./gradlew check`: pass.
 
 **Implemented (verified in source):**
@@ -47,22 +46,17 @@ re-plan after the 2026-09-30 external review (see Planning Notes → "External r
   and its own `aging` `job_run` row (ADR-013 implementation note T6).
 - Endpoints: `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`, and `POST /api/v1/payments`.
-- Security: JWT HS256 resource server with default-deny **authentication**. There is **no role-based
-  authorization** and no login/refresh/logout (ADR-005).
+- Security: JWT HS256 resource server, default-deny, with the Addendum §3.4 **role matrix enforced** on the
+  six existing endpoints (T7, ADR-015). A token's `sub` must be a UUID and it must carry `exp`. There is still
+  no login/refresh/logout and no `iss`/`aud` validation (ADR-005; T21).
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
 T1–T6 are DONE, so Sprint 4b is complete. The rest is split into **Sprint 4c** (T23 dependency alignment,
-T7 RBAC + JWT identity, T8 aging report, T9 statement) and **Sprint 4d** (T24–T26 hardening from the
+DONE; T7 RBAC + JWT identity, DONE; T8 aging report, T9 statement) and **Sprint 4d** (T24–T26 hardening from the
 2026-09-30 external review, then T11 exit verification).
 
-**Blockers and critical gaps:**
-
-1. **The Addendum §3.4 role matrix is not enforced.** Any valid token can create contracts and post
-   payments. PRD §2 already requires "1 role admin + read-only" for Phase 1 → **T7**.
-2. **A signed token whose `sub` is not a UUID is accepted and writes as `SYSTEM`** (review CR-01).
-   `AuditActorBindingFilter` claims to fail closed but leaves the authentication in place → **T7**.
-3. **ShedLock 6.9.0 and springdoc 2.8.9 are outside their Spring Boot 4 compatibility lines** (CR-02,
-   CR-03). The suite is green, but no test exercises `/v3/api-docs` → **T23**, before T7.
+**Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
+matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
 
 **Specification/implementation discrepancies found:**
 
@@ -77,7 +71,7 @@ T7 RBAC + JWT identity, T8 aging report, T9 statement) and **Sprint 4d** (T24–
 | X-7  | DM §1.9 / ADR-012: `penalty_accrual` is append-only                                                                                | Unlike its sibling append-only tables, it has no immutability trigger. `ck_penalty_accrual_days` allows `0` while the application requires ≥ 1                                                                                                                          | T2                             |
 | X-8  | `06_FRONTEND_SPEC.md §2.7`: statement columns "Debit / Kredit sum per entry"                                                       | Every journal entry balances, so both sums are always equal. The column meaning is undefined                                                                                                                                                                            | Ambiguity A-8 → T1             |
 | X-9  | TS §7: repo `serfira-core/`, package `com.multifinance`                                                                            | Repo `serfira/backend`, package `com.serfira`                                                                                                                                                                                                                           | Doc-only fix, deferred         |
-| X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | The filter only skips actor binding. The request stays authenticated and writes as `SYSTEM` (CR-01)                                                                                                                                                                     | T7                             |
+| X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | Closed by T7 (ADR-015 D5): the decoder rejects such a token (401), and the filter now discards the authentication defensively                                                                                                                                                                     | T7                             |
 | X-11 | `IdempotencyService` Javadoc: after retention "the key may be claimed again" (cites ADR-007 decision 9)                            | ADR-007 decision 9 says nothing about a takeover. The takeover re-runs the operation, which then always hits the permanent `uq_contract_idempotency` / `uq_payment_idempotency` backstop (CR-04)                                                                        | A-13 resolved (option A) → T24 |
 | X-12 | V1 comment / Addendum §1.2: `system_parameter` is append-only                                                                      | No trigger blocks UPDATE/DELETE (CR-12)                                                                                                                                                                                                                                 | T25                            |
 
@@ -106,6 +100,8 @@ ADRs listed.
 | T4    | Lazy penalty accrual in the idempotent payment transaction                                                                                           | DONE   | ADR-014                        |
 | T5    | Payment write-path conflict retry                                                                                                                    | DONE   | ADR-014 decision 7             |
 | T6    | Aging status step in the daily job                                                                                                                   | DONE   | ADR-013 implementation note T6 |
+| T23   | Spring Boot 4 dependency alignment (ShedLock 7.10.1, springdoc 3.1.1)                                                                                | DONE   | PR #1, `OpenApiSmokeIT`        |
+| T7    | RBAC enforcement + JWT identity hardening (roles claim, matcher table, fail-closed `sub`/`exp`)                                                      | DONE   | ADR-015 (CR-01, CR-10, X-10)   |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -502,14 +498,27 @@ Risks: More installment version bumps increase payment contention. Covered by T5
 
 **Goal:** The runtime stack is on the Boot 4 compatibility lines, every endpoint enforces the role matrix
 with a fail-closed JWT identity, and aging plus the statement are available.
-**Scope:** T23 (1 pt), T7 (3 pts), T8 (2 pts), T9 (2 pts) = 8 pts. Order: T23 → T7 → T8/T9 (T8 and T9 are
-born with their role rules and 403 tests). **Exit:** the Addendum §3.4 rows for existing endpoints hold, and
-`/v3/api-docs` is covered by a test.
+**Scope:** T23 (1 pt, DONE), T7 (3 pts, DONE), T8 (2 pts), T9 (2 pts) = 8 pts. Order: T23 → T7 → T8/T9
+(T8 and T9 are born with their role rules and 403 tests). **Exit:** the Addendum §3.4 rows for existing
+endpoints hold (met by T7), and `/v3/api-docs` is covered by a test (met by T23).
 
 ### T23 — Spring Boot 4 dependency alignment (review CR-02, CR-03)
 
-Status: TODO
+Status: DONE
 Estimate: 1 pt
+
+Implementation note (2026-10-01): Implemented in PR #1 (`d5de2ea`, merged as `0b282c0`), verified here
+because that commit ran no Testcontainers ITs. `shedlock-spring` and `shedlock-provider-jdbc-template` are
+pinned to `7.10.1`, and `springdoc-openapi-starter-webmvc-ui` to `3.1.1`. `JobSchedulingConfiguration`
+compiles unchanged against the 7.x API (`JdbcTemplateLockProvider` with `usingDbTime()`,
+`KeepAliveLockProvider`, `@EnableSchedulerLock`). The 7.10.1 README documents the same PostgreSQL DDL as V9
+(`name` VARCHAR(64) PK, `lock_until`/`locked_at` TIMESTAMP NOT NULL, `locked_by` VARCHAR(255) NOT NULL), so no
+migration was added. The V9 header still cites `6.9.0` and is left as is, because applied migrations are
+never edited. The springdoc 3.x default paths are unchanged, so ADR-005's `PUBLIC_PATHS` still cover them.
+New `OpenApiSmokeIT` (3 tests): `/v3/api-docs` answers 200 without a token and lists `/api/v1/payments` and
+`/api/v1/contracts`; `/swagger-ui.html` resolves and `/swagger-ui/index.html` answers 200 without a token.
+Verification: `compileJava compileTestJava` pass; `OpenApiSmokeIT` + `DailyServicing*IT` 10 pass; full
+`test --rerun` = 64 suites / 463 tests (460 + 3); `check` pass. No behavior change.
 
 Goal: Run the scheduler lock and the OpenAPI surface on library lines that are tested with Spring Boot 4,
 before T7 adds security tests against the public OpenAPI paths.
@@ -552,8 +561,28 @@ Risks: A ShedLock major upgrade can change lock-table expectations. The V9 schem
 
 ### T7 — RBAC enforcement and JWT identity hardening (F3 pulled forward from Sprint 6b; review CR-01, CR-10)
 
-Status: TODO (plan ready 2026-09-30)
+Status: DONE
 Estimate: 3 pts (was 2; the CR-01 fix and token-claim validation were added)
+
+Implementation note (2026-10-01): Accepted as ADR-015 (amends ADR-005 d3/d5). Authorities come from
+`RolesClaimAuthoritiesConverter` reading the `roles` array (`AppRole` mirrors `ck_app_user_role`); a `SYSTEM`
+element withholds every authority (D4). The decoder validator is `JwtValidators.createDefault()` plus a
+`JwtTimestampValidator` with `allowEmptyExpiryClaim=false` (Spring Security 7 still defaults it to true, so a
+no-`exp` token would otherwise pass) plus a `sub`-is-UUID `JwtClaimValidator`, so a token that names no actor
+is 401 before it authenticates (D5, CR-01). The Addendum §3.4 matrix is one matcher table in
+`ResourceServerSecurityConfiguration` ending in `denyAll()`, with `dispatcherTypeMatchers(ERROR).permitAll()`
+so a container error dispatch keeps its status (verified: both that rule and the `exp` requirement were
+mutation-tested — removing either turns a 400/401 case red). `AuditActorBindingFilter` now discards a
+non-UUID-`sub` authentication (holder + request-attribute copy). Retired the `AuditedAssetTestController`
+probe; its attribution assertion moved onto `POST /api/v1/contracts` in `JwtAuthenticationIT`. Test token
+shapes consolidated into `support/TestJwts`; `ContractApiIT`/`PaymentApiIT` use it unchanged otherwise. OpenAPI:
+every operation now documents its 403 and allowed roles. New tests: `RolesClaimAuthoritiesConverterTest` (12),
+`EndpointRoleMatrixIT` (38 cells + deny-by-default + denied-writes-store-nothing), `JwtAuthenticationIT` (16:
+8 × 401, 5 × 403, FINANCE read, attribution, public health), `ErrorDispatchSecurityIT` (4, real
+`RANDOM_PORT` server via JDK `HttpClient`), updated `AuditActorBindingFilterTest`. Known limitation, deferred:
+container-level errors (firewall rejections, direct `/error`) render Boot's default JSON, not the `{data,
+error}` envelope — no internals leak. Verification: `shared.security.*` + `OpenApiSmokeIT` 100 pass; full
+`test --rerun` = 67 suites / 529 tests; `check` pass. No schema or dependency change.
 
 Goal: Enforce the Addendum §3.4 endpoint-to-role matrix now, and make an authenticated request always carry
 a real actor. From here on, every new endpoint ships with its role rule and its 403 tests.
@@ -1044,6 +1073,7 @@ Risks: None.
 | Require auth for OpenAPI/Swagger outside dev                                                | DEFERRED | ADR-005 made it public by design. Revisit with T21.                              |
 | Rate limiting, security headers, CORS policy                                                | DEFERRED | No browser client or public deployment yet. Revisit with G2.                     |
 | Remove the unused Lombok dependency. Move the Sonar host out of `gradle-wrapper.properties` | DEFERRED | Hygiene only. The Sonar change is uncommitted local work owned by the developer. |
+| Envelope-rendering `ErrorController` for container-level errors (firewall, direct `/error`)  | DEFERRED | T7 note: Boot's default JSON is returned, leaking no internals. Low value until a browser client exists. |
 | Fix TS §7 repo structure (X-9)                                                              | DEFERRED | Documentation only.                                                              |
 | Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | DEFERRED | Deployment concern. No deployment exists yet.                                    |
 
@@ -1090,16 +1120,16 @@ for this check; the last green run is the T6 run (460 tests).
 
 | ID    | Finding                                                   | Verdict (what was checked)                                                                                                                                                                                                                                                                                                    | Severity after check         | Task                |
 | ----- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ------------------- |
-| CR-01 | Non-UUID `sub` stays authenticated and writes as `SYSTEM` | **Confirmed.** `AuditActorBindingFilter` skips binding and calls the chain with the authentication intact. `AuditActorBindingFilterTest.nonUuidSubjectIsNotFabricatedIntoAnActor` codifies the actor staying `SYSTEM`. The Javadoc and ADR-005 d3 claim otherwise (X-10)                                                      | HIGH                         | T7                  |
-| CR-02 | ShedLock 6.9.0 on Boot 4.1.1                              | **Confirmed.** The ShedLock README matrix lists 7.x as tested with Boot 4.x and 6.x with Boot 3.3–3.5. No defect is observed: the lock ITs are green                                                                                                                                                                          | MEDIUM (unsupported pairing) | T23                 |
-| CR-03 | springdoc 2.8.9 on Boot 4                                 | **Confirmed.** The springdoc README says Boot 4 needs springdoc v3. No test requests `/v3/api-docs`, so runtime compatibility is unverified                                                                                                                                                                                   | MEDIUM                       | T23                 |
+| CR-01 | Non-UUID `sub` stays authenticated and writes as `SYSTEM` | **Fixed (T7, ADR-015 D5).** The decoder's `sub`-is-UUID validator rejects the token (401) before it authenticates; `AuditActorBindingFilter` also discards such an authentication defensively. `JwtAuthenticationIT` covers it                                           | HIGH (resolved)              | T7 (DONE)           |
+| CR-02 | ShedLock 6.9.0 on Boot 4.1.1                              | **Confirmed.** The ShedLock README matrix lists 7.x as tested with Boot 4.x and 6.x with Boot 3.3–3.5. No defect is observed: the lock ITs are green                                                                                                                                                                          | MEDIUM (unsupported pairing) | T23 (DONE)          |
+| CR-03 | springdoc 2.8.9 on Boot 4                                 | **Confirmed.** The springdoc README says Boot 4 needs springdoc v3. No test requests `/v3/api-docs`, so runtime compatibility is unverified                                                                                                                                                                                   | MEDIUM                       | T23 (DONE)          |
 | CR-04 | Retention takeover vs permanent business-row keys         | **Confirmed, severity lowered.** No double execution. After 7 days: contracts → 409 `DUPLICATE_CONTRACT`/`CONFLICT`. Payments → 3 attempts that redo billing and accrual, then 409 `CONCURRENT_MODIFICATION`, because `PaymentConflictClassifier` retries every `23505`. `uq_settlement_idempotency` will behave the same way | MEDIUM                       | A-13 (A) → T24      |
 | CR-05 | Ledger one-entry-per-event only in Java                   | **Partially true.** It is a documented decision (ADR-008 d5), and every current event has its own DB guard, so the race described does not occur today. Adopted as defense in depth, scoped to current ref types                                                                                                              | LOW                          | T25                 |
 | CR-06 | Zero-line entry / zero-allocation payment bypass V3       | **Confirmed.** The V3 triggers are on child tables only. This was already a T16 carry-forward; moved earlier                                                                                                                                                                                                                  | MEDIUM                       | T25                 |
 | CR-07 | `job_run` stuck in `RUNNING`                              | **Confirmed.** It also happens when any exception escapes `runAsSystem`, not only on JVM death. It affects the audit trail, not money                                                                                                                                                                                         | MEDIUM                       | T26                 |
 | CR-08 | All ACTIVE ids loaded at once                             | **Confirmed** (`findIdsByStatusOrderById` returns a `List`). It is ids only, so it is not a Phase-1 concern                                                                                                                                                                                                                   | LOW                          | T26                 |
 | CR-09 | Daily retry without backoff                               | **Confirmed** (`continue`, 5 attempts, no pause)                                                                                                                                                                                                                                                                              | LOW–MEDIUM                   | T26                 |
-| CR-10 | No `iss`/`aud`/active-user/role checks                    | **Confirmed and documented** (ADR-005 d5). Roles and `exp` are covered by T7. `iss`/`aud`/active user need a real issuer                                                                                                                                                                                                      | MEDIUM                       | T7, T21             |
+| CR-10 | No `iss`/`aud`/active-user/role checks                    | **Roles + `exp` fixed (T7, ADR-015).** Role matrix enforced and `exp` now required. `iss`/`aud`/active-user still need a real issuer                                                                                                                                                                                          | MEDIUM                       | T7 (DONE), T21      |
 | CR-11 | No key rotation                                           | **Confirmed and documented** (ADR-007 consequences). The `v1:` envelope carries no key id                                                                                                                                                                                                                                     | MEDIUM (pre-production)      | T28                 |
 | CR-12 | `system_parameter` append-only only by convention         | **Confirmed.** No trigger exists. Two ITs delete rows during cleanup                                                                                                                                                                                                                                                          | MEDIUM                       | T25                 |
 | CR-13 | 50/150/400 ms documented, 50/150 ms real                  | **Confirmed.** `BACKOFF_MILLIS[2]` is unreachable. The docs are corrected in this re-plan; the code constant is tidied in T24. Addendum §5 only gave the values as an example ("mis.") and is unchanged                                                                                                                       | LOW                          | docs now, T24       |
@@ -1130,7 +1160,7 @@ Corrections to the review itself:
 | A-10 | Confirm that no penalty accrues after maturity close (accrual requires ACTIVE)                                                                                                                                                                                                                                                                                                                                                                                                        | DM invariant 17 (silent on penalty)                                                                                                           | T1.a, T4                         |
 | A-11 | Confirm the payment retry of Addendum §5 is still wanted (planned as written in T5)                                                                                                                                                                                                                                                                                                                                                                                                   | Resolved: implemented as written in T5 (`PaymentRetryingService`)                                                                             | DONE                             |
 | A-13 | Resolved 2026-09-30 by the owner: **option A**. A key is single-use per endpoint forever, and retention only bounds replay. Reuse after expiry → 409 `IDEMPOTENCY_KEY_EXPIRED`, recorded in ADR-016 (written in T24). Rejected: B (reusable, relax the business-row backstops, weakens ADR-007 d8) and C (reusable, internal claim id on business rows, needs a migration). Question was: after retention, is an `Idempotency-Key` reusable (reclaim + re-run) or single-use forever? | `IdempotencyService`/`reclaimExpired` vs V7 `uq_contract_idempotency`, V1 `uq_payment_idempotency`/`uq_settlement_idempotency`; ADR-007 d8/d9 | T24, T13, T16, T18               |
-| A-12 | Resolved 2026-09-30 by the owner: `roles` claim, JSON string array (T7 D1, ADR-015 written in T7). Previously: JWT roles claim name (`roles` is used only by tests)                                                                                                                                                                                                                                                                                                                   | ADR-005, Addendum §3 (silent)                                                                                                                 | T7, T21                          |
+| A-12 | Resolved: `roles` claim, JSON string array, implemented in T7 (ADR-015 D1). Previously: JWT roles claim name                                                                                                                                                                                                                                                                                                                   | ADR-005, Addendum §3 (silent)                                                                                                                 | T7, T21                          |
 
 ### Assumptions preserved by this plan
 
@@ -1155,7 +1185,7 @@ T1 (decisions) ─┬─► T6 aging step ─► T8 aging report
                 └─► T10 (conditional)
 T2 (V9) ─► T3 job ─┬─► T5
                    └─► T6
-T23 deps ─► T7 RBAC + JWT identity ─► T8, T9
+T23 (DONE) ─► T7 RBAC + JWT identity (DONE) ─► T8, T9
 A-13 (option A, decided) ─► T24 idempotency lifecycle
 T25 DB backstops ─► T12–T15 (new posting types)
 T26 job robustness ─► T17, T18

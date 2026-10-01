@@ -23,7 +23,7 @@ Thumbs.db
 *.log
 
 review-pr.ps1
-review-pr-1.md
+review-pr-*
 
 # Kiro local backups
 .kiro/*.zip
