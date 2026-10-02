@@ -3,6 +3,7 @@ package com.serfira.contract.api;
 import com.serfira.contract.application.ContractCommandService;
 import com.serfira.contract.application.ContractQueryService;
 import com.serfira.contract.domain.ContractStatus;
+import com.serfira.ledger.domain.LedgerRefType;
 import com.serfira.shared.api.ApiResponse;
 import com.serfira.shared.api.PageResponse;
 
@@ -13,6 +14,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 
 import jakarta.validation.Valid;
 
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -47,6 +50,7 @@ public class ContractController {
 			+ "(bad signature, expired, no exp, or a sub that is not a user id)";
 	private static final String FORBIDDEN_ADMIN_ONLY = "FORBIDDEN - allowed role: ADMIN_OPERASIONAL";
 	private static final String FORBIDDEN_READ_ROLES = "FORBIDDEN - allowed roles: ADMIN_OPERASIONAL, FINANCE, MANAJEMEN";
+	private static final String FORBIDDEN_STATEMENT_ROLES = "FORBIDDEN - allowed roles: ADMIN_OPERASIONAL, FINANCE";
 
 	private final ContractCommandService commands;
 	private final ContractQueryService queries;
@@ -185,5 +189,46 @@ public class ContractController {
 	})
 	public ApiResponse<List<InstallmentResponse>> installments(@PathVariable UUID id) {
 		return ApiResponse.ok(queries.installments(id));
+	}
+
+	@GetMapping("/{id}/statement")
+	@Operation(summary = "Contract statement (rekening koran)",
+			description = """
+					A chronological list of the contract's posted ledger movements (PRD C-5, FE §2.7). The
+					statement is ledger-literal (ADR-013 A-8): each row is one `journal_line` touching the
+					contract, with `debit`/`credit` the posted line amounts — not a running balance and not
+					re-interpreted into a customer view. A reversal entry appears as its own row flagged
+					`is_reversal`; posted history is never hidden.
+					Optional filters: `ref_type` (one event type) and a `from`/`to` business-date range
+					(Asia/Jakarta, both inclusive). A DRAFT contract has posted nothing, so its statement is an
+					empty page. Allowed roles: ADMIN_OPERASIONAL, FINANCE (Addendum §3.4).""")
+	@ApiResponses({
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+					description = "One page of statement rows, oldest entry_date first"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400",
+					description = "VALIDATION_ERROR - from after to, an unparseable date, an unknown ref_type, "
+							+ "or paging out of range"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
+					description = UNAUTHORIZED_DESCRIPTION),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = FORBIDDEN_STATEMENT_ROLES),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404",
+					description = "CONTRACT_NOT_FOUND - no such contract")
+	})
+	public ApiResponse<PageResponse<ContractStatementRow>> statement(
+			@PathVariable UUID id,
+			@Parameter(description = "Filter to one event type (PAYMENT, BILLING, PENALTY_ACCRUAL, …)")
+			@RequestParam(name = "ref_type", required = false) LedgerRefType refType,
+			@Parameter(description = "Inclusive start date (Asia/Jakarta); omit for no lower bound")
+			@RequestParam(name = "from", required = false)
+			@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+			@Parameter(description = "Inclusive end date (Asia/Jakarta); omit for no upper bound")
+			@RequestParam(name = "to", required = false)
+			@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+			@Parameter(description = "0-based page index")
+			@RequestParam(defaultValue = "0") int page,
+			@Parameter(description = "Page size (1..100)")
+			@RequestParam(defaultValue = "20") int size) {
+		return ApiResponse.ok(queries.statement(id, refType, from, to, page, size));
 	}
 }

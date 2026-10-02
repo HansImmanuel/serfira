@@ -88,7 +88,7 @@ input desainnya, bukan lagi "tergantung keputusan".
 - **A-5 (`OVERDUE` + pembayaran sebagian):** Kode yang sudah ada (`Installment.applyPayment`) menang atas
   diagram DM §1.4: pembayaran sebagian pada installment mana pun — termasuk yang `OVERDUE` — menghasilkan
   `PARTIALLY_PAID`, dan job aging (T6) menandainya `OVERDUE` kembali pada run berikutnya bila `outstanding >
-  0` dan `DPD >= 1`. Diagram DM §1.4 diperbarui untuk menambahkan edge `OVERDUE → PARTIALLY_PAID` (X-4 di
+0` dan `DPD >= 1`. Diagram DM §1.4 diperbarui untuk menambahkan edge `OVERDUE → PARTIALLY_PAID` (X-4 di
   tabel discrepancy `tasks.md`), bukan sebaliknya: menulis ulang `applyPayment` untuk mempertahankan
   `OVERDUE` selama pembayaran sebagian akan menyembunyikan progres pembayaran dari operator, dan tidak ada
   laporan yang membaca status mentah untuk DPD (Implementation Note T6 sudah mensyaratkan laporan aging
@@ -288,5 +288,44 @@ Tidak ada migrasi atau dependency baru. Verifikasi: unit (`AgingBucketTest`, `Ag
 `AgingReportServiceTest`) dan Testcontainers `AgingReportIT` lulus; full `./gradlew test` = 72 suites /
 570 tests / 0 gagal; `./gradlew check` lulus.
 
-**Referensi:** `tasks.md` T1/T3/T4/T6/T8/T9/T10/T16 dan §Planning Notes; ADR-010/ADR-011/ADR-012; DM
+### Implementation Note — T9 (2026-10-02)
+
+T9 mengimplementasikan keputusan 7 (A-8) sebagai statement kontrak (rekening koran) read-only, tanpa
+membuat keputusan baru:
+
+- **Endpoint di `contract`, read di `ledger`.** `GET /api/v1/contracts/{id}/statement` ada di
+  `ContractController`. `contract` memvalidasi kontrak ada (404 `CONTRACT_NOT_FOUND` lewat
+  `ContractNotFoundException`) lalu membaca baris jurnal lewat `ledger.application.ContractStatementPort` →
+  `ContractStatementService` (`@Transactional(readOnly = true)`). Ini memakai edge yang **sudah** ada
+  `contract → ledger` (aktivasi sudah posting lewat `LedgerPostingService`), bukan edge baru — `ledger`
+  tetap tidak bergantung pada modul lain, jadi port tidak melakukan existence check dan id tak dikenal
+  cukup menghasilkan page kosong (TS §1).
+- **Ledger-literal, satu baris per `journal_line`.** Setiap baris adalah satu `journal_line` yang menyentuh
+  `contract_id` tersebut; `debit`/`credit` adalah nilai baris apa adanya (bukan agregat, bukan sudut pandang
+  nasabah). Kolom: `entry_date`, `account_code` (+ `account_name` dari `LedgerAccount.displayName()`),
+  `description`/`ref_type`/`ref_id`/`reversal_of_id` dari `journal_entry` induk, dan flag `is_reversal`
+  (`reversal_of_id IS NOT NULL`). **Tidak ada running balance** (keputusan 7). Entry reversal muncul sebagai
+  barisnya sendiri — histori tidak pernah disembunyikan (ledger append-only, ADR-002).
+- **Filter dan urutan.** Opsional `ref_type` (satu `LedgerRefType`) dan rentang tanggal bisnis `from`/`to`
+  (Asia/Jakarta, keduanya inklusif) yang di-resolve ke jendela instant setengah-terbuka
+  `[from 00:00, to+1 00:00)` karena `entry_date` adalah `timestamptz`. Urutan kronologis
+  `entry_date asc, line.id asc` (tiebreak stabil untuk beberapa baris satu entry pada instant sama).
+  Pagination `page`/`size` (size ≤ 100, TS §2.2) lewat `PageResponse`. Kontrak DRAFT belum posting apa pun →
+  statement kosong yang valid.
+- **Otorisasi.** Satu baris matcher baru di `ResourceServerSecurityConfiguration`
+  (`GET /api/v1/contracts/*/statement` → ADMIN_OPERASIONAL/FINANCE; MANAJEMEN → 403, Addendum §3.4), lahir
+  dengan test matriks dan 401/403-nya (`EndpointRoleMatrixIT`, `ContractStatementIT`).
+
+- **Nama akun dari enum, dikunci ke seed.** `account_name` dibaca dari `LedgerAccount.displayName()` (label
+  konstan pada enum) alih-alih join ke tabel `accounts`, agar `ledger` tetap mandiri dan read-nya satu query.
+  `LedgerAccountNameIT` (Testcontainers) mengunci setiap `displayName()` ke `accounts.name` yang di-seed V1,
+  sehingga rename akun lewat migrasi gagal di test alih-alih membuat statement menyimpang diam-diam dari
+  chart of accounts.
+
+Migrasi `V11__journal_line_contract_statement_index.sql` menambahkan index `(contract_id, entry_date)` pada
+`journal_line` untuk melayani filter dan urutan (V1 tidak punya index pada `contract_id`). Tidak ada
+`ErrorCode` baru (date-range `from > to`/paging → 400 `VALIDATION_ERROR`, `ref_type`/tanggal tak terparse →
+400 lewat `GlobalExceptionHandler`). Tidak ada dependency baru dan tidak ada perubahan keputusan.
+
+**Referensi:** `tasks.md` T1/T3/T4/T6/T8/T9/T10/T16 dan §Planning Notes; ADR-002/ADR-010/ADR-011/ADR-012; DM
 §1.4/§1.9, §3 invariant 17; TS §2.0/§4.3; Addendum §6/§7.3/§10/§10A/§14; `06_FRONTEND_SPEC.md` §2.7/§2.9.
