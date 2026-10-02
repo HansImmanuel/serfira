@@ -92,7 +92,7 @@ public class AgingReportService {
 	private static PageResponse<ContractAgingRow> page(List<ContractAccumulator> perContract, int page, int size) {
 		int total = perContract.size();
 		int totalPages = total == 0 ? 0 : (total + size - 1) / size;
-		int from = Math.min(page * size, total);
+		int from = (int) Math.min((long) page * size, total);
 		int to = Math.min(from + size, total);
 		List<ContractAgingRow> rows = new ArrayList<>(to - from);
 		for (ContractAccumulator contract : perContract.subList(from, to)) {

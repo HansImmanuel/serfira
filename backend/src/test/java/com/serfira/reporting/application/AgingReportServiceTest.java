@@ -106,6 +106,20 @@ class AgingReportServiceTest {
 		assertThatThrownBy(() -> service.aging(null, 0, 101)).isInstanceOf(BadRequestException.class);
 	}
 
+	@Test
+	void aPageOffsetThatOverflowsIntMultiplicationStillReturnsAnEmptyPage() {
+		AgingReportService service = service(
+				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0001", 10, new BigDecimal("100.00")));
+
+		// page * size overflows a signed int (21474837 * 100 > Integer.MAX_VALUE); the offset must be computed
+		// in long arithmetic and clamped, not wrap negative into subList.
+		AgingReportResponse report = service.aging(null, 21_474_837, 100);
+
+		assertThat(report.contracts().content()).isEmpty();
+		assertThat(report.contracts().totalElements()).isEqualTo(1L);
+		assertThat(report.portfolio().totalOutstanding()).isEqualByComparingTo("100.00");
+	}
+
 	private AgingReportService service(InstallmentAgingSnapshot... snapshots) {
 		AgingReportSourcePort source = asOf -> List.of(snapshots);
 		return new AgingReportService(source, clock);

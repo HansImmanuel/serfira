@@ -4,6 +4,8 @@ import com.serfira.contract.domain.Installment;
 import com.serfira.contract.domain.InstallmentAging;
 import com.serfira.contract.domain.InstallmentBalance;
 import com.serfira.contract.infrastructure.InstallmentRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,6 +30,8 @@ import java.util.Objects;
 @Transactional(readOnly = true)
 public class AgingReportSourceService implements AgingReportSourcePort {
 
+	private static final Logger LOGGER = LoggerFactory.getLogger(AgingReportSourceService.class);
+
 	private final InstallmentRepository installments;
 
 	public AgingReportSourceService(InstallmentRepository installments) {
@@ -41,7 +45,18 @@ public class AgingReportSourceService implements AgingReportSourcePort {
 		List<InstallmentAgingSnapshot> snapshots = new ArrayList<>(active.size());
 		for (Installment installment : active) {
 			BigDecimal outstanding = InstallmentBalance.of(installment).outstanding();
-			if (outstanding.signum() <= 0) {
+			if (outstanding.signum() == 0) {
+				continue;
+			}
+			if (outstanding.signum() < 0) {
+				// A negative outstanding means an over-resolved installment, i.e. corrupted data that the
+				// DB-level invariant (V3 trg_installment_amounts_deferred) should have blocked. InstallmentBalance
+				// keeps it visible on purpose, so the aging report must not silently drop it: it cannot sit in a
+				// bucket (a bucket amount is > 0), but we log it with safe identifiers (never PII) so it is
+				// traceable, matching the consistency job's "report, do not hide" stance (story L-3).
+				LOGGER.warn("Skipping installment {} of contract {} from aging: outstanding is negative ({}), "
+						+ "which indicates corrupted data", installment.getId(), installment.getContract().getId(),
+						outstanding);
 				continue;
 			}
 			int daysPastDue = InstallmentAging.daysPastDue(installment.getDueDate(),
