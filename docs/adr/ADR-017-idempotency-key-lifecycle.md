@@ -10,7 +10,7 @@
 
 ADR-007 built the documented `idempotency_keys` mechanism (TS §2.5): a row per `(endpoint, key)`
 carrying `request_hash`, the stored response and an `expires_at = claim time +
-IDEMPOTENCY_KEY_RETENTION_DAYS` (seeded 7). Decision 9 left what happens *after* the retention window
+IDEMPOTENCY_KEY_RETENTION_DAYS` (seeded 7). Decision 9 left what happens _after_ the retention window
 unspecified. The implementation filled that gap with a **takeover**: once `expires_at` had passed, a
 reused key's row was overwritten and the operation **re-run** as if it were a brand-new request.
 
@@ -108,3 +108,15 @@ ADR-007 decision 9 and leaves decisions 1–8 unchanged.
   by design; the two-call-site rule against a premature `shared` abstraction still holds.
 - X-11 is resolved: the `IdempotencyService` and `IdempotencyKeyRepository` Javadoc now describe
   single-use-forever semantics instead of the undecided takeover.
+- **After the claim row is deleted (post-T18), the exact 409 code depends on which truthful guard the
+  re-run hits first; it is not guaranteed to be `IDEMPOTENCY_KEY_EXPIRED`.** While the row still
+  exists, the reuse is rejected with `IDEMPOTENCY_KEY_EXPIRED` before any business code. Once the row
+  is gone, the backstop is only reached if execution gets that far: a same-request contract retry
+  trips the live-contract precheck first and returns `DUPLICATE_CONTRACT`; a payment retry against a
+  contract that has since gone CLOSED/TERMINATED trips billing's `CONTRACT_STATE_INVALID` first. Both
+  are accepted: they are truthful, actionable 409s, and the defect option A targets was the
+  _misleading_ `CONCURRENT_MODIFICATION`/takeover re-run, not the choice between two honest conflict
+  codes (the spec's "verified behavior today" already lists `DUPLICATE_CONTRACT` as a legitimate
+  outcome). A pre-business-logic permanent-key probe would make the code uniform but adds a read to
+  both hot write paths for a case that cannot occur until T18 exists; it is deliberately **not** done
+  here and is left for T18 to decide if uniformity is wanted. (Flagged by the PR bot review, 2026-10-02.)
