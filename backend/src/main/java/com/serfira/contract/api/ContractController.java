@@ -82,7 +82,9 @@ public class ContractController {
 					description = FORBIDDEN_ADMIN_ONLY),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
 					description = "DUPLICATE_CONTRACT / CONFLICT — live contract for the same asset, "
-							+ "customer identity conflict, or a reused Idempotency-Key with a different payload")
+							+ "customer identity conflict, or a reused Idempotency-Key with a different payload; "
+							+ "IDEMPOTENCY_KEY_EXPIRED — the Idempotency-Key was already used past its retention "
+							+ "window, so it is spent (mint a fresh key)")
 	})
 	public ResponseEntity<ApiResponse<ContractResponse>> create(
 			@Parameter(description = "Endpoint-scoped retry key (TS §2.2/§2.5)", required = true)

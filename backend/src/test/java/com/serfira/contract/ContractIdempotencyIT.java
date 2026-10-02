@@ -10,17 +10,23 @@ import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
 import com.serfira.shared.audit.AuditContext;
 import com.serfira.shared.clock.Clock;
+import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
+import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -61,8 +67,11 @@ class ContractIdempotencyIT {
 	@Autowired
 	JdbcTemplate jdbc;
 
+	private static final LocalDate BUSINESS_DATE = LocalDate.of(2026, 1, 10);
+
 	@BeforeEach
 	void cleanDomainTables() {
+		fixedClock().setDate(BUSINESS_DATE);
 		truncateDomainTables();
 	}
 
@@ -151,6 +160,43 @@ class ContractIdempotencyIT {
 	}
 
 	@Test
+	void reusingTheKeyPastRetentionIsRejectedAsExpiredAndCreatesNoSecondContract() {
+		CreateContractRequest request = contractRequest("20000000.00", "4000000.00");
+		commands.create("expiring-key", request);
+
+		// Option A (ADR-017): past the 7-day window the key is spent, so the same body is rejected before
+		// anything is written — no takeover, no second contract.
+		fixedClock().advanceBy(Duration.ofDays(8));
+		assertThatThrownBy(() -> commands.create("expiring-key", request))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+
+		// A different body is equally spent (the key, not the payload, is the single-use unit).
+		assertThatThrownBy(() -> commands.create("expiring-key", contractRequest("21000000.00", "4000000.00")))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+		assertThat(count("contract")).isEqualTo(1L);
+	}
+
+	@Test
+	void aReusedKeyWhoseClaimRowWasAlreadyDeletedStillReportsExpiredViaTheBackstop() {
+		commands.create("cleaned-key", contractRequest("20000000.00", "4000000.00"));
+
+		// Simulate the F4/T18 cleanup job deleting the retention row; the permanent uq_contract_idempotency
+		// backstop must still keep the key spent and report the same expired-key code.
+		jdbc.update("delete from idempotency_keys where endpoint = 'POST /api/v1/contracts' and key = 'cleaned-key'");
+
+		// A genuinely different customer/asset so only the idempotency backstop (not the live-asset
+		// invariant) can fire: reusing a spent key must still be IDEMPOTENCY_KEY_EXPIRED, not DUPLICATE.
+		CreateContractRequest otherParty = new CreateContractRequest(
+				new CreateCustomerRequest("Siti Aminah", "3171012501900002", "08123456780", "Bandung"),
+				new CreateAssetRequest(AssetType.MOTORCYCLE, "Yamaha", "Mio", null, "D5678ZZ"),
+				new BigDecimal("20000000.00"), new BigDecimal("4000000.00"), 12, InterestScheme.FLAT,
+				new BigDecimal("0.0150"), LocalDate.of(2026, 1, 31));
+		assertThatThrownBy(() -> commands.create("cleaned-key", otherParty))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+		assertThat(count("contract")).isEqualTo(1L);
+	}
+
+	@Test
 	void theClaimRowCarriesTheActorAndTheConfiguredRetention() {
 		UUID actor = insertActor();
 
@@ -185,6 +231,10 @@ class ContractIdempotencyIT {
 		return jdbc.queryForObject("select count(*) from " + table, Long.class);
 	}
 
+	private FixedClock fixedClock() {
+		return (FixedClock) clock;
+	}
+
 	private void truncateDomainTables() {
 		jdbc.execute("""
 				TRUNCATE TABLE
@@ -195,5 +245,14 @@ class ContractIdempotencyIT {
 					settlement_quote, settlement, installment, journal_line, journal_entry,
 					contract, asset, customer
 				CASCADE""");
+	}
+
+	@TestConfiguration(proxyBeanMethods = false)
+	static class RetentionClockConfig {
+		@Bean
+		@Primary
+		Clock fixedClock() {
+			return new FixedClock(BUSINESS_DATE);
+		}
 	}
 }

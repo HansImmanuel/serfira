@@ -319,7 +319,9 @@ Semantik posting (implementasi C1, ADR-008):
 
 `idempotency_keys`: `key, endpoint, request_hash, response_json, status, created_at, expires_at, request_id`.
 
-Implementasi B5 (ADR-007): key bersifat endpoint-scoped (`(endpoint, key)` unique), claim dilakukan dengan `INSERT … ON CONFLICT DO NOTHING` di dalam transaksi bisnis, `request_hash` adalah digest keyed (HMAC-SHA-256) atas JSON canonical request, dan `response_json` menyimpan payload proyeksi ter-mask untuk direplay. `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS`. Cleanup baris kedaluwarsa belum diimplementasikan (menyusul story C3).
+Implementasi B5 (ADR-007): key bersifat endpoint-scoped (`(endpoint, key)` unique), claim dilakukan dengan `INSERT … ON CONFLICT DO NOTHING` di dalam transaksi bisnis, `request_hash` adalah digest keyed (HMAC-SHA-256) atas JSON canonical request, dan `response_json` menyimpan payload proyeksi ter-mask untuk direplay. `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS`. Cleanup baris kedaluwarsa belum diimplementasikan (menyusul story F4/T18).
+
+Lifecycle (T24, ADR-017, mengubah ADR-007 keputusan 9): key **sekali pakai selamanya** per endpoint; `expires_at` hanya membatasi berapa lama respons tersimpan di-replay, bukan membuat key dapat dipakai ulang. Setelah window lewat, reuse key → 409 `IDEMPOTENCY_KEY_EXPIRED` sebelum operasi dijalankan (tidak ada takeover, tidak ada eksekusi ulang). `status` tetap `IN_PROGRESS`/`COMPLETED` (tanpa status `EXPIRED`); backstop permanen `uq_contract_idempotency`/`uq_payment_idempotency` memberi kode yang sama setelah baris dihapus oleh F4/T18.
 
 `job_run`: `job_name, business_date, started_at, finished_at, records_processed, records_failed, status`.
 Satu row merekam satu step dari satu invocation (ADR-013, klarifikasi T3), bukan satu contract. Rerun pada

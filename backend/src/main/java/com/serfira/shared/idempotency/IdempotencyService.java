@@ -6,6 +6,7 @@ import com.serfira.shared.config.SystemParameterKeys;
 import com.serfira.shared.config.SystemParameterService;
 import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
+import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -34,11 +35,15 @@ import java.util.function.Supplier;
  * {@code CONFLICT}; no key → 400 {@code VALIDATION_ERROR}. Only the keyed request fingerprint and
  * the response payload are stored — never the raw request, so no plaintext PII is persisted.
  *
- * <p>Retention (TS §2.5, ADR-007 decision 9): the claim carries {@code expires_at} =
- * {@code now + IDEMPOTENCY_KEY_RETENTION_DAYS}. While that window is open the behaviours above
- * hold; once it has elapsed the key may be claimed again, because a request that old is no
- * longer a retry of this one. Deleting expired rows stays a separate job (story F4) — this only
- * stops an expired key from blocking a legitimate new request forever.
+ * <p>Retention (TS §2.5, ADR-017, amends ADR-007 decision 9): the claim carries {@code expires_at}
+ * = {@code now + IDEMPOTENCY_KEY_RETENTION_DAYS}. A key is <b>single-use forever</b> per endpoint;
+ * the window only bounds how long the stored response is replayed. Inside the window a retry
+ * replays the stored response (or conflicts on a different body); once it has elapsed, reusing the
+ * key is rejected with 409 {@code IDEMPOTENCY_KEY_EXPIRED} <b>before the supplier runs</b>, so no
+ * business work is redone — the key is never taken over and the mutation is never executed twice.
+ * The permanent business-row backstops ({@code uq_contract_idempotency},
+ * {@code uq_payment_idempotency}) return the same code once the F4 cleanup job (story T18) has
+ * deleted the row. The caller must mint a fresh key for a genuinely new request.
  */
 @Service
 public class IdempotencyService {
@@ -77,14 +82,10 @@ public class IdempotencyService {
 				expiresAt, now, actor);
 
 		if (claimed == 0) {
-			// Inside the retention window the key is a retry: replay or conflict, never a second
-			// execution. An expired key names a new request, so its row is taken over instead of
-			// replaying a stale response (ADR-007 decision 9).
-			int reclaimed = keys.reclaimExpired(key, endpoint, fingerprint, IdempotencyKey.STATUS_IN_PROGRESS,
-					expiresAt, now, actor);
-			if (reclaimed == 0) {
-				return replay(endpoint, key, fingerprint, responseType);
-			}
+			// The key already names a claim. Inside the retention window it is a retry (replay or
+			// conflict, never a second execution); past the window it is rejected before the supplier
+			// runs, because a key is single-use forever and is never re-run (ADR-017, option A).
+			return replayOrRejectExpired(endpoint, key, fingerprint, now, responseType);
 		}
 
 		T response = operation.get();
@@ -96,10 +97,19 @@ public class IdempotencyService {
 		return IdempotentResult.executed(response);
 	}
 
-	private <T> IdempotentResult<T> replay(String endpoint, String key, String fingerprint, Class<T> responseType) {
+	private <T> IdempotentResult<T> replayOrRejectExpired(String endpoint, String key, String fingerprint,
+			OffsetDateTime now, Class<T> responseType) {
 		IdempotencyKey existing = keys.findByEndpointAndKey(endpoint, key)
 				.orElseThrow(() -> new IllegalStateException(
 						"idempotency row disappeared for endpoint '" + endpoint + "'"));
+		OffsetDateTime expiresAt = existing.getExpiresAt();
+		if (expiresAt != null && !expiresAt.isAfter(now)) {
+			// Option A (ADR-017): past retention the key is spent, whatever the body. Reject before the
+			// supplier runs so no billing, accrual, contract or payment work is redone.
+			LOGGER.info("Idempotency-Key reused past retention on {}; rejected as expired", endpoint);
+			throw new IdempotencyKeyExpiredException(
+					"Idempotency-Key has expired on " + endpoint + "; use a fresh key for a new request");
+		}
 		if (!Objects.equals(existing.getRequestHash(), fingerprint)) {
 			// TS §2.5: same key with a different request is a client conflict, never a second execution.
 			throw new ConflictException("Idempotency-Key was already used for a different request on " + endpoint);

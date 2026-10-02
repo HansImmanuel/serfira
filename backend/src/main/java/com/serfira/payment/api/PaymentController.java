@@ -71,9 +71,10 @@ public class PaymentController {
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
 					description = "CONTRACT_STATE_INVALID - the contract is not ACTIVE (draft, closed or "
 							+ "terminated) or has no schedule; CONFLICT - the Idempotency-Key was already "
-							+ "used for a different request; CONCURRENT_MODIFICATION - a concurrent daily "
-							+ "servicing run kept colliding with this payment after 3 attempts (Addendum "
-							+ "\u00a75); refresh and retry")
+							+ "used for a different request; IDEMPOTENCY_KEY_EXPIRED - the Idempotency-Key "
+							+ "was already used past its retention window, so it is spent (mint a fresh key); "
+							+ "CONCURRENT_MODIFICATION - a concurrent daily servicing run kept colliding with "
+							+ "this payment after 3 attempts (Addendum \u00a75); refresh and retry")
 	})
 	public ResponseEntity<ApiResponse<PaymentResponse>> create(
 			@Parameter(description = "Endpoint-scoped retry key (TS §2.2/§2.5)", required = true)

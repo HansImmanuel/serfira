@@ -5,6 +5,7 @@ import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.config.SystemParameterKeys;
 import com.serfira.shared.config.SystemParameterService;
+import com.serfira.shared.error.IdempotencyKeyExpiredException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,11 +25,14 @@ import java.time.OffsetDateTime;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Retention semantics of the idempotency mechanism (02_TECH_SPEC.md §2.5, ADR-007 decision 9): inside
- * the retention window a retry replays the stored response, and once the window has elapsed the claim
- * is taken over so the key names a new request instead of blocking (or replaying) forever.
+ * Retention semantics of the idempotency mechanism (02_TECH_SPEC.md §2.5, ADR-017, amends ADR-007
+ * decision 9): a key is single-use forever per endpoint. Inside the retention window a retry replays the
+ * stored response; once the window has elapsed the key is spent, so reuse is rejected with 409
+ * {@code IDEMPOTENCY_KEY_EXPIRED} before the operation runs — the row is never taken over and the
+ * operation is never re-run.
  *
  * <p>The canonical payload is opaque to {@code IdempotencyService} (it is only fingerprinted), so a
  * plain string stands in for the request body and the assertions stay about the retention window.
@@ -83,20 +87,39 @@ class IdempotencyRetentionIT {
 	}
 
 	@Test
-	void aRetryAfterTheRetentionWindowTakesTheClaimOverAndRunsTheOperationAgain() {
+	void aRetryAfterTheRetentionWindowIsRejectedAsExpiredWithoutRunningTheOperationAgain() {
 		AtomicInteger invocations = new AtomicInteger();
 
 		IdempotentResult<String> first = execute("past-window", "body-one", invocations);
+		OffsetDateTime expiresAtAfterFirst = claimExpiresAt("past-window");
 		fixedClock().advanceBy(Duration.ofDays(retentionDays() + 1L));
-		IdempotentResult<String> second = execute("past-window", "body-one", invocations);
 
-		assertThat(second.replayed()).isFalse();
-		assertThat(second.response()).isNotEqualTo(first.response());
-		assertThat(invocations).hasValue(2);
-		// The row is taken over, never duplicated: uniqueness stays (endpoint, key).
+		// Option A (ADR-017): past retention the key is spent, so the same body is rejected before the
+		// supplier runs — never taken over and re-run.
+		assertThatThrownBy(() -> execute("past-window", "body-one", invocations))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+
+		assertThat(first.replayed()).isFalse();
+		assertThat(invocations).hasValue(1);
+		// The row is left untouched: not duplicated, not overwritten, status and expiry unchanged.
 		assertThat(claimCount("past-window")).isEqualTo(1L);
 		assertThat(claimStatus("past-window")).isEqualTo(IdempotencyKey.STATUS_COMPLETED);
-		assertThat(claimExpiresAt("past-window")).isAfter(clock.now());
+		assertThat(claimExpiresAt("past-window")).isEqualTo(expiresAtAfterFirst);
+	}
+
+	@Test
+	void aRetryAfterTheRetentionWindowWithADifferentBodyIsAlsoRejectedAsExpired() {
+		AtomicInteger invocations = new AtomicInteger();
+
+		execute("past-window-diff", "body-one", invocations);
+		fixedClock().advanceBy(Duration.ofDays(retentionDays() + 1L));
+
+		// A spent key is spent whatever the body: expiry is decided before the fingerprint is compared,
+		// so this is IDEMPOTENCY_KEY_EXPIRED, not the in-window different-body CONFLICT.
+		assertThatThrownBy(() -> execute("past-window-diff", "body-two", invocations))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+		assertThat(invocations).hasValue(1);
+		assertThat(claimCount("past-window-diff")).isEqualTo(1L);
 	}
 
 	private IdempotentResult<String> execute(String key, String body, AtomicInteger invocations) {
