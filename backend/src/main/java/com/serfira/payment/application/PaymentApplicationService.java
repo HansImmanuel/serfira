@@ -29,12 +29,14 @@ import com.serfira.shared.clock.Clock;
 import com.serfira.shared.document.DocumentNumberGenerator;
 import com.serfira.shared.document.DocumentType;
 import com.serfira.shared.error.BadRequestException;
+import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
 import com.serfira.shared.money.DecimalBounds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -82,6 +84,13 @@ public class PaymentApplicationService {
 
 	/** Idempotency scope of the payment endpoint (TS §2.2: keys are endpoint-scoped). */
 	static final String CREATE_ENDPOINT = "POST /api/v1/payments";
+
+	/**
+	 * Permanent backstop that enforces one POSTED payment per idempotency key even if the
+	 * {@code idempotency_keys} row is gone (V1, {@code WHERE status = 'POSTED'}). A hit means the key
+	 * was already spent, so it maps to an expired-key rejection, not a retryable conflict (ADR-017).
+	 */
+	static final String PAYMENT_IDEMPOTENCY_CONSTRAINT = "uq_payment_idempotency";
 
 	private static final int MONEY_SCALE = 2;
 	private static final BigDecimal ZERO_MONEY = BigDecimal.ZERO.setScale(MONEY_SCALE);
@@ -165,7 +174,11 @@ public class PaymentApplicationService {
 		OffsetDateTime paidAt = clock.now();
 		Payment payment = new Payment(documentNumbers.next(DocumentType.PAYMENT), snapshot.contractId(), amount,
 				request.channel(), paidAt, idempotencyKey);
-		payments.saveAndFlush(payment);
+		try {
+			payments.saveAndFlush(payment);
+		} catch (DataIntegrityViolationException ex) {
+			throw translatePaymentViolation(ex);
+		}
 		allocations.saveAll(allocation.lines().stream()
 				.map(line -> PaymentAllocation.of(payment, line))
 				.toList());
@@ -237,6 +250,24 @@ public class PaymentApplicationService {
 			}
 		}
 		return resolved;
+	}
+
+	/**
+	 * Translates the one payment-write violation a client can act on. A {@code uq_payment_idempotency}
+	 * hit means the key already produced a POSTED payment and its {@code idempotency_keys} row has since
+	 * been cleaned up (otherwise {@code IdempotencyService} would have rejected the reuse first); the key
+	 * is spent, so this is an expired-key rejection (ADR-017), never retried by
+	 * {@code PaymentConflictClassifier}. Anything else keeps its original type and is handled centrally.
+	 */
+	private static RuntimeException translatePaymentViolation(DataIntegrityViolationException ex) {
+		Throwable cause = ex.getMostSpecificCause();
+		String message = cause == null ? null : cause.getMessage();
+		if (message != null && message.contains(PAYMENT_IDEMPOTENCY_CONSTRAINT)) {
+			LOGGER.warn("payment create rejected by {}", PAYMENT_IDEMPOTENCY_CONSTRAINT);
+			return new IdempotencyKeyExpiredException(
+					"Idempotency-Key was already used for a payment create request");
+		}
+		return ex;
 	}
 
 	/**

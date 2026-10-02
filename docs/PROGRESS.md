@@ -63,7 +63,19 @@ Sprint 4 (penalty, aging & phase-1 close) — **berjalan** (lihat [ADR-011](adr/
       (ContractStatementIT, LedgerAccountNameIT, EndpointRoleMatrixIT) **belum** dijalankan karena Docker
       tidak tersedia di mesin — perlu `./gradlew test`
       dan `./gradlew check` dengan Docker aktif. **Sprint 4c selesai**
-- [ ] Sprint 4d — T24 lifecycle idempotency key (A-13 diputuskan: key sekali pakai per endpoint selamanya, retensi hanya membatasi replay), T25 backstop DB (jurnal/payment tanpa child, uniqueness event ledger, `system_parameter` append-only), T26 robustness job harian, lalu T11 Phase-1 exit verification
+- [x] T24 — Lifecycle idempotency key (ADR-017, mengubah ADR-007 d9, option A): key **sekali pakai selamanya**
+      per endpoint; retensi hanya membatasi replay. `IdempotencyService` membuang takeover; reuse key setelah
+      window → 409 `IDEMPOTENCY_KEY_EXPIRED` (ErrorCode baru) sebelum supplier dijalankan, apa pun body-nya —
+      tanpa billing/accrual/tulis bisnis. Setelah F4/T18 menghapus baris, backstop permanen
+      (`uq_contract_idempotency`, `uq_payment_idempotency`) memberi kode yang sama (`translateCreateViolation` + `translatePaymentViolation` baru). `PaymentConflictClassifier` kini sadar-constraint: hanya
+      `uk_penalty_accrual` dan optimistic-lock yang di-retry, `uq_payment_idempotency` tidak (CR-04).
+      `PaymentRetryingService.BACKOFF_MILLIS` jadi `{50, 150}` (slot 400 ms yang tak terjangkau dihapus,
+      CR-13). Tanpa migrasi. **Catatan ADR: nomornya ADR-017, bukan ADR-016 — ADR-016 sudah dipakai untuk
+      decimal-magnitude bounds.** Verifikasi: `compileJava compileTestJava` pass; unit `*Test` 43 suites / 335
+      tests pass (termasuk `PaymentConflictClassifierTest` baru). `*IT` (IdempotencyRetentionIT yang ditulis
+      ulang, kasus retensi baru di ContractIdempotencyIT/PaymentIdempotencyIT) **belum** dijalankan karena
+      Docker tidak tersedia — perlu `./gradlew test` dan `./gradlew check` dengan Docker aktif
+- [ ] Sprint 4d (lanjut) — T25 backstop DB (jurnal/payment tanpa child, uniqueness event ledger, `system_parameter` append-only), T26 robustness job harian, lalu T11 Phase-1 exit verification
 
 Review eksternal 2026-09-30 (16 temuan, CR-01…CR-16) sudah diverifikasi terhadap kode dan dipetakan ke task di [tasks.md](tasks.md) → Planning Notes.
 

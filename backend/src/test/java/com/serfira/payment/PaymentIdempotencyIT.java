@@ -16,6 +16,7 @@ import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
+import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -121,6 +123,40 @@ class PaymentIdempotencyIT {
 
 		assertThat(corrected.paymentNo()).isNotBlank();
 		assertThat(count("payment")).isEqualTo(1L);
+	}
+
+	@Test
+	void reusingTheKeyPastRetentionIsRejectedAsExpiredAndReceivesNoSecondPayment() {
+		PaymentRequest request = new PaymentRequest(contractId, new BigDecimal("100000.00"), PaymentChannel.CASH);
+		payments.create("expiring-key", request);
+
+		// Option A (ADR-017): past the 7-day window the key is spent. The reuse is rejected before billing
+		// or accrual run, so there is exactly one payment and no second money movement.
+		fixedClock().advanceBy(Duration.ofDays(8));
+		assertThatThrownBy(() -> payments.create("expiring-key", request))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+
+		// A different body under the spent key is equally expired, not an in-window CONFLICT.
+		assertThatThrownBy(() -> payments.create("expiring-key",
+				new PaymentRequest(contractId, new BigDecimal("200000.00"), PaymentChannel.CASH)))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+		assertThat(count("payment")).isEqualTo(1L);
+		assertThat(paidAmountOf(1)).isEqualByComparingTo("100000.00");
+	}
+
+	@Test
+	void aReusedKeyWhoseClaimRowWasAlreadyDeletedStillReportsExpiredViaTheBackstop() {
+		PaymentRequest request = new PaymentRequest(contractId, new BigDecimal("100000.00"), PaymentChannel.CASH);
+		payments.create("cleaned-key", request);
+
+		// Simulate the F4/T18 cleanup job deleting the retention row; the partial uq_payment_idempotency
+		// index (POSTED only, V1) must still keep the key spent and surface the same expired-key code.
+		jdbc.update("delete from idempotency_keys where endpoint = 'POST /api/v1/payments' and key = 'cleaned-key'");
+
+		assertThatThrownBy(() -> payments.create("cleaned-key", request))
+				.isInstanceOf(IdempotencyKeyExpiredException.class);
+		assertThat(count("payment")).isEqualTo(1L);
+		assertThat(paidAmountOf(1)).isEqualByComparingTo("100000.00");
 	}
 
 	@Test

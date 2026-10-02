@@ -152,6 +152,14 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   tersimpan, `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS` (config), dan mekanisme hidup di
   `com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup baris
   kedaluwarsa belum diimplementasikan — **dijadwalkan di F4**, bukan C3 (ADR-010).
+- **Lifecycle key (T24, ADR-017, mengubah ADR-007 keputusan 9).** Key bersifat **sekali pakai selamanya**
+  per endpoint; retention hanya membatasi berapa lama respons tersimpan di-replay. Di dalam window: retry
+  identik → replay respons tersimpan; body berbeda dengan key sama → 409 `CONFLICT`. Setelah window lewat:
+  reuse key ditolak **409 `IDEMPOTENCY_KEY_EXPIRED` sebelum supplier dijalankan**, tanpa billing/accrual/tulis
+  bisnis apa pun — tidak ada takeover dan operasi tidak pernah dieksekusi ulang. Setelah cleanup F4 (T18)
+  menghapus baris `idempotency_keys`, backstop permanen (`uq_contract_idempotency`, `uq_payment_idempotency`)
+  mengembalikan kode yang sama. `PaymentConflictClassifier` tidak me-retry `uq_payment_idempotency` (hanya
+  `uk_penalty_accrual` dan optimistic-lock yang retryable).
 - **Implementasi C3 (ADR-010):** `POST /api/v1/payments` memakai endpoint scope `POST /api/v1/payments` dengan
   canonical JSON dari field request (amount dinormalkan ke skala 2). Claim berjalan di dalam `@Transactional`
   application service, jadi kegagalan operasi me-rollback claim dan retry dengan key yang sama tetap sah

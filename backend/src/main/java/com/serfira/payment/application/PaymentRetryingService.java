@@ -30,9 +30,13 @@ public class PaymentRetryingService {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(PaymentRetryingService.class);
 
-	/** Addendum §5: up to 3 attempts total (the first attempt plus 2 retries), backoff 50/150/400 ms. */
+	/**
+	 * Addendum §5: up to 3 attempts total (the first attempt plus 2 retries). Only the two gaps between
+	 * attempts take a pause, so the sequence is 50 ms then 150 ms (CR-13: the earlier 400 ms third slot
+	 * was unreachable with 3 attempts and has been removed).
+	 */
 	static final int MAX_ATTEMPTS = 3;
-	static final long[] BACKOFF_MILLIS = {50L, 150L, 400L};
+	static final long[] BACKOFF_MILLIS = {50L, 150L};
 
 	private final PaymentApplicationService payments;
 	private final Sleeper sleeper;

@@ -30,6 +30,7 @@ import com.serfira.shared.document.DocumentNumberGenerator;
 import com.serfira.shared.document.DocumentType;
 import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
+import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
@@ -413,8 +414,12 @@ public class ContractCommandService {
 			return new DuplicateContractException("customer already has a live contract for the same asset");
 		}
 		if (cause != null && cause.contains(IDEMPOTENCY_CONSTRAINT)) {
+			// Option A (ADR-017): a key is single-use forever. The in-memory idempotency row normally
+			// rejects a reused key first; this permanent backstop catches the case where the F4/T18
+			// cleanup job has already deleted that row, and returns the same expired-key code.
 			LOGGER.warn("contract create rejected by {}", IDEMPOTENCY_CONSTRAINT);
-			return new ConflictException("this Idempotency-Key was already used for a contract create request");
+			return new IdempotencyKeyExpiredException(
+					"Idempotency-Key was already used for a contract create request");
 		}
 		return ex;
 	}

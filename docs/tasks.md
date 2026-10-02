@@ -14,8 +14,10 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 
 **Snapshot:** `main` @ `0b282c0` plus the T7 implementation (ADR-015: RBAC matrix, roles-claim converter,
 fail-closed JWT identity, `support/TestJwts`, retired audit probe), the T8 implementation (new read-only
-`reporting` module with the aging report), and the T9 implementation (contract statement read through a new
-`ledger` statement port, V11 index).
+`reporting` module with the aging report), the T9 implementation (contract statement read through a new
+`ledger` statement port, V11 index), and the T24 implementation (ADR-017: idempotency keys are single-use
+forever, 409 `IDEMPOTENCY_KEY_EXPIRED`, the payment classifier no longer retries `uq_payment_idempotency`,
+`BACKOFF_MILLIS` tidied).
 
 **Verified on 2026-10-02 (through T8):**
 
@@ -32,6 +34,15 @@ not run:**
 - `ContractStatementIT`, `LedgerAccountNameIT`, the updated `EndpointRoleMatrixIT`, and the full
   `./gradlew test`/`./gradlew check` still need a run with Docker up before T9 is counted toward the suite
   totals above.
+
+**Verified on 2026-10-02 (T24) — Docker still unavailable, so the Testcontainers `*IT` suites did not run:**
+
+- `./gradlew compileJava compileTestJava`: pass.
+- `./gradlew test --tests "*Test"` (all unit tests): 43 suites / 335 tests pass, including the new
+  `PaymentConflictClassifierTest` (7) and `PaymentRetryingServiceTest`.
+- The rewritten `IdempotencyRetentionIT`, the new retention cases in `ContractIdempotencyIT` and
+  `PaymentIdempotencyIT`, and the full `./gradlew test` / `./gradlew check` still need a run with Docker up
+  before T9 and T24 are counted toward the suite totals above.
 
 **Implemented (verified in source):**
 
@@ -71,6 +82,14 @@ not run:**
   V11 adds the `journal_line (contract_id, entry_date)` index. The account name is read from
   `LedgerAccount.displayName()` (not an `accounts` join), pinned to the V1 seed by `LedgerAccountNameIT`.
   ADR-013 implementation note T9.
+- Idempotency lifecycle T24 is live (ADR-017, amends ADR-007 d9, option A): an `Idempotency-Key` is
+  single-use forever per endpoint and retention only bounds replay. `IdempotencyService` drops the expiry
+  takeover; a reused key past its window is 409 `IDEMPOTENCY_KEY_EXPIRED` (new `ErrorCode`) before the
+  supplier runs, so no billing/accrual/business write happens, whatever the body. After T18 deletes the
+  claim row the permanent backstops give the same code (`uq_contract_idempotency`,
+  `uq_payment_idempotency`). `PaymentConflictClassifier` is constraint-aware: only `uk_penalty_accrual` and
+  optimistic-lock conflicts are retried, never `uq_payment_idempotency` (CR-04). `PaymentRetryingService`'s
+  `BACKOFF_MILLIS` is `{50, 150}` (the unreachable 400 ms slot removed, CR-13). No migration.
 - Endpoints: `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
   `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, and `GET /api/v1/reports/aging`.
@@ -80,29 +99,29 @@ not run:**
   no `iss`/`aud` validation (ADR-005; T21).
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
-T1–T6 are DONE, so Sprint 4b is complete. The rest is split into **Sprint 4c** (T23 dependency alignment,
-DONE; T7 RBAC + JWT identity, DONE; T8 aging report, DONE; T9 statement, DONE), which completes Sprint 4c,
-and **Sprint 4d** (T24–T26 hardening from the 2026-09-30 external review, then T11 exit verification).
+T1–T6 are DONE, so Sprint 4b is complete. Sprint 4c (T23, T7, T8, T9) is complete. **Sprint 4d** is in
+progress: T24 (idempotency key lifecycle) is DONE; T25 (DB accounting backstops), T26 (daily job
+robustness) and T11 (exit verification) remain.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
 
 **Specification/implementation discrepancies found:**
 
-| #    | Documented                                                                                                                         | Implemented                                                                                                                                                                                                                                                             | Resolution                     |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| X-1  | Addendum §5: payment write path retries optimistic-lock failures up to 3× with a small backoff, then 409 `CONCURRENT_MODIFICATION` | Resolved by T5: `PaymentRetryingService` makes 3 attempts with 50 and 150 ms pauses via an injectable `Sleeper`, no `spring-retry` dependency added. The 400 ms entry in `BACKOFF_MILLIS` is unreachable; docs that said "50/150/400" were corrected 2026-09-30 (CR-13) | DONE (constant tidied in T24)  |
-| X-2  | TS §2.3 / Addendum §5: daily jobs use ShedLock and retry per record up to 5×                                                       | Resolved by T2/T3: V9 lock table; DB-time renewable lock; per-contract atomic billing→penalty with five total attempts                                                                                                                                                  | DONE                           |
-| X-3  | Addendum §10: `X-Request-Id`, JSON logs, `request_id` stored on `idempotency_keys`                                                 | None. `idempotency_keys.request_id` is not mapped by `IdempotencyKey`. No story in `05_SPRINT_PLAN.md` owns this                                                                                                                                                        | T20 (Sprint 6)                 |
-| X-4  | DM §1.4 state machine has no `OVERDUE → PARTIALLY_PAID` edge                                                                       | `Installment.applyPayment` moves OVERDUE + partial → `PARTIALLY_PAID`                                                                                                                                                                                                   | Ambiguity A-5 → T1             |
-| X-5  | TS §4.3 / Addendum §6: after a void, add a catch-up delta when expected > recognized                                               | ADR-012 decision 7 re-charges only dates that have **no** row yet. Dates already accrued at a reduced base are never re-priced, and `uk_penalty_accrual` allows only one row per date                                                                                   | Ambiguity A-3 → T1, E4         |
-| X-6  | TS §4.3: base is unpaid pokok+bunga                                                                                                | ADR-012 decision 2: penalty already paid also reduces the base (`InstallmentBalance.penaltyBase`)                                                                                                                                                                       | Ambiguity A-2 → T1, T10        |
-| X-7  | DM §1.9 / ADR-012: `penalty_accrual` is append-only                                                                                | Unlike its sibling append-only tables, it has no immutability trigger. `ck_penalty_accrual_days` allows `0` while the application requires ≥ 1                                                                                                                          | T2                             |
-| X-8  | `06_FRONTEND_SPEC.md §2.7`: statement columns "Debit / Kredit sum per entry"                                                       | Resolved by T1 (A-8, ADR-013 d7) as ledger-literal: debit/credit are per-`journal_line` posted values, no running balance; built in T9                                                                                                                                  | DONE (A-8 → T1, built in T9)   |
-| X-9  | TS §7: repo `serfira-core/`, package `com.multifinance`                                                                            | Repo `serfira/backend`, package `com.serfira`                                                                                                                                                                                                                           | Doc-only fix, deferred         |
-| X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | Closed by T7 (ADR-015 D5): the decoder rejects such a token (401), and the filter now discards the authentication defensively                                                                                                                                           | T7                             |
-| X-11 | `IdempotencyService` Javadoc: after retention "the key may be claimed again" (cites ADR-007 decision 9)                            | ADR-007 decision 9 says nothing about a takeover. The takeover re-runs the operation, which then always hits the permanent `uq_contract_idempotency` / `uq_payment_idempotency` backstop (CR-04)                                                                        | A-13 resolved (option A) → T24 |
-| X-12 | V1 comment / Addendum §1.2: `system_parameter` is append-only                                                                      | No trigger blocks UPDATE/DELETE (CR-12)                                                                                                                                                                                                                                 | T25                            |
+| #    | Documented                                                                                                                         | Implemented                                                                                                                                                                                                                                                                | Resolution                          |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| X-1  | Addendum §5: payment write path retries optimistic-lock failures up to 3× with a small backoff, then 409 `CONCURRENT_MODIFICATION` | Resolved by T5: `PaymentRetryingService` makes 3 attempts with 50 and 150 ms pauses via an injectable `Sleeper`, no `spring-retry` dependency added. The unreachable 400 ms entry in `BACKOFF_MILLIS` was removed in T24 (now `{50, 150}`), so code and docs agree (CR-13) | DONE (constant tidied in T24)       |
+| X-2  | TS §2.3 / Addendum §5: daily jobs use ShedLock and retry per record up to 5×                                                       | Resolved by T2/T3: V9 lock table; DB-time renewable lock; per-contract atomic billing→penalty with five total attempts                                                                                                                                                     | DONE                                |
+| X-3  | Addendum §10: `X-Request-Id`, JSON logs, `request_id` stored on `idempotency_keys`                                                 | None. `idempotency_keys.request_id` is not mapped by `IdempotencyKey`. No story in `05_SPRINT_PLAN.md` owns this                                                                                                                                                           | T20 (Sprint 6)                      |
+| X-4  | DM §1.4 state machine has no `OVERDUE → PARTIALLY_PAID` edge                                                                       | `Installment.applyPayment` moves OVERDUE + partial → `PARTIALLY_PAID`                                                                                                                                                                                                      | Ambiguity A-5 → T1                  |
+| X-5  | TS §4.3 / Addendum §6: after a void, add a catch-up delta when expected > recognized                                               | ADR-012 decision 7 re-charges only dates that have **no** row yet. Dates already accrued at a reduced base are never re-priced, and `uk_penalty_accrual` allows only one row per date                                                                                      | Ambiguity A-3 → T1, E4              |
+| X-6  | TS §4.3: base is unpaid pokok+bunga                                                                                                | ADR-012 decision 2: penalty already paid also reduces the base (`InstallmentBalance.penaltyBase`)                                                                                                                                                                          | Ambiguity A-2 → T1, T10             |
+| X-7  | DM §1.9 / ADR-012: `penalty_accrual` is append-only                                                                                | Unlike its sibling append-only tables, it has no immutability trigger. `ck_penalty_accrual_days` allows `0` while the application requires ≥ 1                                                                                                                             | T2                                  |
+| X-8  | `06_FRONTEND_SPEC.md §2.7`: statement columns "Debit / Kredit sum per entry"                                                       | Resolved by T1 (A-8, ADR-013 d7) as ledger-literal: debit/credit are per-`journal_line` posted values, no running balance; built in T9                                                                                                                                     | DONE (A-8 → T1, built in T9)        |
+| X-9  | TS §7: repo `serfira-core/`, package `com.multifinance`                                                                            | Repo `serfira/backend`, package `com.serfira`                                                                                                                                                                                                                              | Doc-only fix, deferred              |
+| X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | Closed by T7 (ADR-015 D5): the decoder rejects such a token (401), and the filter now discards the authentication defensively                                                                                                                                              | T7                                  |
+| X-11 | `IdempotencyService` Javadoc: after retention "the key may be claimed again" (cites ADR-007 decision 9)                            | Resolved by T24 (ADR-017): the takeover is removed, the Javadoc now describes single-use-forever semantics, and a reused expired key is 409 `IDEMPOTENCY_KEY_EXPIRED` before the operation runs                                                                            | DONE (A-13 option A → T24, ADR-017) |
+| X-12 | V1 comment / Addendum §1.2: `system_parameter` is append-only                                                                      | No trigger blocks UPDATE/DELETE (CR-12)                                                                                                                                                                                                                                    | T25                                 |
 
 ---
 
@@ -133,6 +152,7 @@ ADRs listed.
 | T7    | RBAC enforcement + JWT identity hardening (roles claim, matcher table, fail-closed `sub`/`exp`)                                                      | DONE   | ADR-015 (CR-01, CR-10, X-10)   |
 | T8    | Aging report (`GET /api/v1/reports/aging`): new read-only `reporting` module, per-installment buckets                                                | DONE   | ADR-013 impl note T8 (A-6/A-7) |
 | T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger-literal rows via a `ledger` read port, filters + paging                          | DONE   | ADR-013 impl note T9 (A-8)     |
+| T24   | Idempotency key lifecycle: single-use forever (option A), 409 `IDEMPOTENCY_KEY_EXPIRED`, classifier no longer retries `uq_payment_idempotency`       | DONE   | ADR-017 (A-13, CR-04, CR-13)   |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -883,8 +903,33 @@ business decision requires it. A-13 was decided 2026-09-30 (option A), so T24 is
 
 ### T24 — Idempotency key lifecycle (review CR-04, CR-13)
 
-Status: TODO (A-13 decided: option A)
+Status: DONE (A-13 decided: option A)
 Estimate: 2 pts
+
+Implementation note (2026-10-02): Accepted as `ADR-017-idempotency-key-lifecycle.md` (amends ADR-007
+decision 9). **The new ADR is ADR-017, not ADR-016** — this file's original scope said "ADR-016", but that
+number was already taken by `ADR-016-decimal-magnitude-and-activation-date-bounds.md`, so the lifecycle ADR
+got the next free number. Option A implemented: a key is single-use forever per endpoint, and retention only
+bounds replay. `IdempotencyService` drops the `reclaimExpired` takeover; when a claim already exists it reads
+the row and, if `expires_at` has passed, throws the new `IdempotencyKeyExpiredException` (409
+`IDEMPOTENCY_KEY_EXPIRED`, new `ErrorCode`) **before** the supplier runs — no billing, accrual, contract or
+payment work for an expired key, whatever the body. The permanent backstops return the same code once T18
+has deleted the row: `ContractCommandService.translateCreateViolation` now maps `uq_contract_idempotency` to
+the expired code (was `CONFLICT`), and a new `PaymentApplicationService.translatePaymentViolation` maps
+`uq_payment_idempotency` likewise. `PaymentConflictClassifier` now matches on the constraint name — only
+`uk_penalty_accrual` and optimistic-lock conflicts are retryable, so a `uq_payment_idempotency` `23505` is no
+longer retried (CR-04). `PaymentRetryingService.BACKOFF_MILLIS` trimmed to `{50, 150}` with its Javadoc
+corrected (CR-13); no behaviour change. The `IdempotencyService`/`IdempotencyKeyRepository` Javadoc now
+describes single-use-forever semantics (X-11). No migration: option A keeps the existing ADR-007 decision 8
+backstops. Docs synchronized: ADR-017, TS §2.5, DM (idempotency), and the `ContractController`/
+`PaymentController` OpenAPI 409 lists. The T13/T18 (and T16) carry-forward rows were reviewed and already
+state the A-13 option A / T24 rule and `IDEMPOTENCY_KEY_EXPIRED` (recorded when A-13 was resolved), so they
+needed no change. Verification: `compileJava --rerun-tasks` and `compileTestJava` pass;
+`PaymentConflictClassifierTest` (7) and `PaymentRetryingServiceTest` pass; full unit run
+`./gradlew test --tests "*Test"` = 43 suites / 335 tests / 0 failures. **Docker was unavailable on the
+machine, so the Testcontainers `*IT` suites did not run** — the rewritten `IdempotencyRetentionIT`, the new
+retention cases in `ContractIdempotencyIT`/`PaymentIdempotencyIT`, and the full `./gradlew test` / `./gradlew
+check` still need a run with Docker up before T24 counts toward the suite totals.
 
 Goal: Make every layer agree on what an `Idempotency-Key` means after its retention window, so a reused key
 gets one deterministic, truthful answer.
@@ -916,8 +961,9 @@ Scope:
 - `PaymentConflictClassifier`: never retry a `uq_payment_idempotency` violation. Only `uk_penalty_accrual`
   and optimistic-lock conflicts are retryable.
 - Remove the unreachable `400` from `PaymentRetryingService.BACKOFF_MILLIS` and fix its Javadoc (CR-13).
-- Record the decision in ADR-016, which amends ADR-007 decision 9. Fix the `IdempotencyService` Javadoc
-  (X-11).
+- Record the decision in ADR-017, which amends ADR-007 decision 9. (This file originally said "ADR-016", but
+  that number was taken by `ADR-016-decimal-magnitude-and-activation-date-bounds.md`; the lifecycle ADR is
+  therefore ADR-017.) Fix the `IdempotencyService` Javadoc (X-11).
 - Update TS §2.5, DM (idempotency), and the T13 (`uq_settlement_idempotency`, fully unique) and T18 carry-forwards.
 
 Business Rules: A retry inside the window replays or conflicts exactly as today (TS §2.5). No request can
