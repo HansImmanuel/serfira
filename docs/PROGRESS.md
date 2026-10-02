@@ -42,15 +42,27 @@ Sprint 4 (penalty, aging & phase-1 close) — **berjalan** (lihat [ADR-011](adr/
 - [x] T23 — Penyelarasan dependensi Boot 4: ShedLock `7.10.1` dan springdoc `3.1.1`. Skema tabel `shedlock` V9 sama dengan DDL PostgreSQL 7.10.1, jadi tanpa migrasi. `OpenApiSmokeIT` baru membuktikan `/v3/api-docs` dan Swagger UI publik tanpa token. `OpenApiSmokeIT` + `DailyServicing*IT` 10 pass, full test 463 pass, `check` pass
 - [x] T7 — RBAC + identitas JWT fail-closed (ADR-015): authority dari claim `roles` (array string, `AppRole` cermin `ck_app_user_role`), token ber-`SYSTEM` ditolak seluruhnya. Validator decoder mewajibkan `exp` dan `sub` berupa UUID, jadi token tanpa aktor → 401 sebelum terautentikasi (tutup CR-01). Matrix Addendum §3.4 di satu tabel matcher diakhiri `denyAll()`, plus `dispatcherTypeMatchers(ERROR).permitAll()` agar error dispatch mempertahankan statusnya. Probe `AuditedAssetTestController` dipensiunkan; atribusi `created_by` pindah ke `POST /contracts`. Helper token tes jadi `support/TestJwts`. Tes baru: `RolesClaimAuthoritiesConverterTest` (12), `EndpointRoleMatrixIT` (38 sel + deny-by-default + denied-writes-store-nothing), `JwtAuthenticationIT` (16), `ErrorDispatchSecurityIT` (4, server `RANDOM_PORT`). Full test 529 pass, `check` pass. Tanpa perubahan skema/dependensi
 - [x] T8 — Aging report (ADR-013 impl note T8): modul `reporting` read-only baru, `GET /api/v1/reports/aging`
-  mengembalikan bucket Current/1–30/31–60/61–90/>90 sebagai total portofolio dan per kontrak (basis
-  per-installment, ACTIVE saja, `as_of` hari-ini saja → 400 `INVALID_AS_OF_DATE`). DPD (`InstallmentAging`)
-  dan outstanding (`InstallmentBalance`) tetap milik `contract`, dibaca lewat `AgingReportSourcePort` (edge
-  satu arah `reporting` → `contract`, TS §1); penalty termasuk, penalty adjustment belum (belum ada E5).
-  Σ bucket = outstanding dijaga by construction. Satu baris matcher RBAC baru (ADMIN/FINANCE/MANAJEMEN).
-  Unit `AgingBucketTest`/`AgingBreakdownTest`/`AgingReportServiceTest` + Testcontainers `AgingReportIT` dan
-  `EndpointRoleMatrixIT` pass; full test 72 suites / 570 tests pass, `check` pass. Tanpa migrasi/dependensi
+      mengembalikan bucket Current/1–30/31–60/61–90/>90 sebagai total portofolio dan per kontrak (basis
+      per-installment, ACTIVE saja, `as_of` hari-ini saja → 400 `INVALID_AS_OF_DATE`). DPD (`InstallmentAging`)
+      dan outstanding (`InstallmentBalance`) tetap milik `contract`, dibaca lewat `AgingReportSourcePort` (edge
+      satu arah `reporting` → `contract`, TS §1); penalty termasuk, penalty adjustment belum (belum ada E5).
+      Σ bucket = outstanding dijaga by construction. Satu baris matcher RBAC baru (ADMIN/FINANCE/MANAJEMEN).
+      Unit `AgingBucketTest`/`AgingBreakdownTest`/`AgingReportServiceTest` + Testcontainers `AgingReportIT` dan
+      `EndpointRoleMatrixIT` pass; full test 72 suites / 570 tests pass, `check` pass. Tanpa migrasi/dependensi
 - [x] Hardening DoS input (ADR-016): guard `shared.money.DecimalBounds` menolak money di luar `NUMERIC(19,2)` dan rate di luar `NUMERIC(7,4)` memakai `precision()`/`scale()` saja (tanpa expand), dipasang di `ContractCommandService.create` sebelum `canonicalize`, di `PaymentApplicationService.requireAmount` sebelum `setScale`, dan sebagai backstop di `CanonicalRequestJson.money`/`.rate`. Aktivasi menolak tanggal efektif lebih tua dari `today − 1 tahun` (`requireActivatableStartDate`) agar backlog denda tidak teramplifikasi. Menutup 4 temuan CWE-400 scan 2026-10-01 (temuan authz #1 sudah ditutup T7). `DecimalBoundsTest` (8) + `CanonicalRequestJsonTest` (8) pass, `compileJava compileTestJava` pass; regresi 400 level service (payment/contract/activation) via MockMvc/IT dijalankan di CI (butuh Docker)
-- [ ] Sprint 4c (sisa) — T9 statement
+- [x] T9 — Contract statement (ADR-013 impl note T9): `GET /api/v1/contracts/{id}/statement` mengembalikan
+      baris jurnal kontrak kronologis dalam envelope `{data, error}`. Endpoint di `contract` (existence check →
+      404 `CONTRACT_NOT_FOUND`); read lewat `ledger.application.ContractStatementPort` read-only baru (edge
+      `contract → ledger` yang sudah ada, bukan edge baru). Ledger-literal (A-8): satu baris per `journal_line`,
+      `debit`/`credit` nilai apa adanya, tanpa running balance; reversal muncul sebagai barisnya sendiri
+      (`is_reversal`). Filter opsional `ref_type` + rentang `from`/`to` (Asia/Jakarta, inklusif), urutan
+      kronologis, paging `page`/`size`; kontrak DRAFT → kosong. Role ADMIN_OPERASIONAL/FINANCE (MANAJEMEN →
+      403). Migrasi V11 menambah index `journal_line (contract_id, entry_date)`. Tanpa `ErrorCode`/dependensi
+      baru; `account_name` dibaca dari `LedgerAccount.displayName()` dan dikunci ke seed oleh
+      `LedgerAccountNameIT`. Verifikasi: `compileJava compileTestJava` pass dan semua unit `*Test` pass; `*IT`
+      (ContractStatementIT, LedgerAccountNameIT, EndpointRoleMatrixIT) **belum** dijalankan karena Docker
+      tidak tersedia di mesin — perlu `./gradlew test`
+      dan `./gradlew check` dengan Docker aktif. **Sprint 4c selesai**
 - [ ] Sprint 4d — T24 lifecycle idempotency key (A-13 diputuskan: key sekali pakai per endpoint selamanya, retensi hanya membatasi replay), T25 backstop DB (jurnal/payment tanpa child, uniqueness event ledger, `system_parameter` append-only), T26 robustness job harian, lalu T11 Phase-1 exit verification
 
 Review eksternal 2026-09-30 (16 temuan, CR-01…CR-16) sudah diverifikasi terhadap kode dan dipetakan ke task di [tasks.md](tasks.md) → Planning Notes.

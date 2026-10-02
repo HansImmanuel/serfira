@@ -155,6 +155,10 @@ public class ResourceServerSecurityConfiguration {
 								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)
 						.requestMatchers(HttpMethod.GET, "/api/v1/reports/aging")
 								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)
+						// The statement is ADMIN_OPERASIONAL/FINANCE only (Addendum §3.4; MANAJEMEN -> 403).
+						// A single-segment "*" means "/api/v1/contracts/*" above does not match "/*/statement".
+						.requestMatchers(HttpMethod.GET, "/api/v1/contracts/*/statement")
+								.hasAnyRole(ADMIN, FINANCE)
 						.anyRequest().denyAll())
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(authenticationEntryPoint)

@@ -13,8 +13,9 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 ## Current Project State
 
 **Snapshot:** `main` @ `0b282c0` plus the T7 implementation (ADR-015: RBAC matrix, roles-claim converter,
-fail-closed JWT identity, `support/TestJwts`, retired audit probe) and the T8 implementation (new read-only
-`reporting` module with the aging report).
+fail-closed JWT identity, `support/TestJwts`, retired audit probe), the T8 implementation (new read-only
+`reporting` module with the aging report), and the T9 implementation (contract statement read through a new
+`ledger` statement port, V11 index).
 
 **Verified on 2026-10-02 (through T8):**
 
@@ -23,13 +24,23 @@ fail-closed JWT identity, `support/TestJwts`, retired audit probe) and the T8 im
 - Full `./gradlew test`: 72 suites / 570 tests pass.
 - `./gradlew check`: pass.
 
+**Verified on 2026-10-02 (T9) — Docker unavailable on the machine, so the Testcontainers `*IT` suites did
+not run:**
+
+- `./gradlew compileJava compileTestJava`: pass.
+- `./gradlew test --tests "*Test"` (all unit tests): pass.
+- `ContractStatementIT`, `LedgerAccountNameIT`, the updated `EndpointRoleMatrixIT`, and the full
+  `./gradlew test`/`./gradlew check` still need a run with Docker up before T9 is counted toward the suite
+  totals above.
+
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist.
   `frontend/` is empty.
-- Migrations V1–V10: full baseline schema, deferred accounting triggers (V3), state coherence (V4),
+- Migrations V1–V11: full baseline schema, deferred accounting triggers (V3), state coherence (V4),
   settlement immutability (V5), contract create safety (V6/V7), hardened SYSTEM principal (V8), ShedLock +
-  penalty-accrual integrity (V9), and explicit `job_run.business_date` for backfill audit (V10).
+  penalty-accrual integrity (V9), explicit `job_run.business_date` for backfill audit (V10), and the
+  `journal_line (contract_id, entry_date)` index for the contract statement (V11, T9).
 - Daily servicing T3 is live: configurable Jakarta cron and explicit backfill entry share one renewable
   ShedLock; every ACTIVE contract is processed atomically in billing → penalty order with five-attempt
   conflict retry, failure isolation, SYSTEM audit, and step-level `job_run` rows.
@@ -50,17 +61,28 @@ fail-closed JWT identity, `support/TestJwts`, retired audit probe) and the T8 im
   ACTIVE-only, `as_of` today-only → 400 `INVALID_AS_OF_DATE`). The DPD and outstanding formulas stay in
   `contract` and are read through `contract.application.AgingReportSourcePort`; penalty is included,
   penalty adjustments are not (no E5 yet). ADR-013 implementation note T8.
+- Statement T9 is live: `GET /api/v1/contracts/{id}/statement` returns the contract's posted journal lines,
+  oldest first, in the `{data, error}` envelope. The endpoint is in `contract` (existence check → 404
+  `CONTRACT_NOT_FOUND`); the read goes through the new read-only `ledger.application.ContractStatementPort`
+  (the existing `contract → ledger` edge, no new edge). Ledger-literal (ADR-013 A-8): one row per
+  `journal_line`, `debit`/`credit` the posted amounts, no running balance; reversals surface as their own
+  rows flagged `is_reversal`. Optional `ref_type` and inclusive business-zone `from`/`to` filters, chrono
+  order, `page`/`size` paging; a DRAFT contract → empty. Roles ADMIN_OPERASIONAL/FINANCE (MANAJEMEN → 403).
+  V11 adds the `journal_line (contract_id, entry_date)` index. The account name is read from
+  `LedgerAccount.displayName()` (not an `accounts` join), pinned to the V1 seed by `LedgerAccountNameIT`.
+  ADR-013 implementation note T9.
 - Endpoints: `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
-  `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`, `POST /api/v1/payments`, and
-  `GET /api/v1/reports/aging`.
+  `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
+  `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, and `GET /api/v1/reports/aging`.
 - Security: JWT HS256 resource server, default-deny, with the Addendum §3.4 **role matrix enforced** on all
-  seven existing endpoints (T7/T8, ADR-015). A token's `sub` must be a UUID and it must carry `exp`. There is
-  still no login/refresh/logout and no `iss`/`aud` validation (ADR-005; T21).
+  eight existing endpoints (T7/T8/T9, ADR-015). The statement is ADMIN_OPERASIONAL/FINANCE only (MANAJEMEN
+  → 403). A token's `sub` must be a UUID and it must carry `exp`. There is still no login/refresh/logout and
+  no `iss`/`aud` validation (ADR-005; T21).
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
 T1–T6 are DONE, so Sprint 4b is complete. The rest is split into **Sprint 4c** (T23 dependency alignment,
-DONE; T7 RBAC + JWT identity, DONE; T8 aging report, DONE; T9 statement) and **Sprint 4d** (T24–T26 hardening
-from the 2026-09-30 external review, then T11 exit verification).
+DONE; T7 RBAC + JWT identity, DONE; T8 aging report, DONE; T9 statement, DONE), which completes Sprint 4c,
+and **Sprint 4d** (T24–T26 hardening from the 2026-09-30 external review, then T11 exit verification).
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -68,7 +90,7 @@ matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
 **Specification/implementation discrepancies found:**
 
 | #    | Documented                                                                                                                         | Implemented                                                                                                                                                                                                                                                             | Resolution                     |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | --- | ------------------ |
 | X-1  | Addendum §5: payment write path retries optimistic-lock failures up to 3× with a small backoff, then 409 `CONCURRENT_MODIFICATION` | Resolved by T5: `PaymentRetryingService` makes 3 attempts with 50 and 150 ms pauses via an injectable `Sleeper`, no `spring-retry` dependency added. The 400 ms entry in `BACKOFF_MILLIS` is unreachable; docs that said "50/150/400" were corrected 2026-09-30 (CR-13) | DONE (constant tidied in T24)  |
 | X-2  | TS §2.3 / Addendum §5: daily jobs use ShedLock and retry per record up to 5×                                                       | Resolved by T2/T3: V9 lock table; DB-time renewable lock; per-contract atomic billing→penalty with five total attempts                                                                                                                                                  | DONE                           |
 | X-3  | Addendum §10: `X-Request-Id`, JSON logs, `request_id` stored on `idempotency_keys`                                                 | None. `idempotency_keys.request_id` is not mapped by `IdempotencyKey`. No story in `05_SPRINT_PLAN.md` owns this                                                                                                                                                        | T20 (Sprint 6)                 |
@@ -76,9 +98,9 @@ matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
 | X-5  | TS §4.3 / Addendum §6: after a void, add a catch-up delta when expected > recognized                                               | ADR-012 decision 7 re-charges only dates that have **no** row yet. Dates already accrued at a reduced base are never re-priced, and `uk_penalty_accrual` allows only one row per date                                                                                   | Ambiguity A-3 → T1, E4         |
 | X-6  | TS §4.3: base is unpaid pokok+bunga                                                                                                | ADR-012 decision 2: penalty already paid also reduces the base (`InstallmentBalance.penaltyBase`)                                                                                                                                                                       | Ambiguity A-2 → T1, T10        |
 | X-7  | DM §1.9 / ADR-012: `penalty_accrual` is append-only                                                                                | Unlike its sibling append-only tables, it has no immutability trigger. `ck_penalty_accrual_days` allows `0` while the application requires ≥ 1                                                                                                                          | T2                             |
-| X-8  | `06_FRONTEND_SPEC.md §2.7`: statement columns "Debit / Kredit sum per entry"                                                       | Every journal entry balances, so both sums are always equal. The column meaning is undefined                                                                                                                                                                            | Ambiguity A-8 → T1             |
+| X-8  | `06_FRONTEND_SPEC.md §2.7`: statement columns "Debit / Kredit sum per entry"                                                       | Resolved by T1 (A-8, ADR-013 d7) as ledger-literal: debit/credit are per-`journal_line` posted values, no running balance; built in T9                                                                                                                                  | DONE (A-8 → T1, built in T9)   |     | Ambiguity A-8 → T1 |
 | X-9  | TS §7: repo `serfira-core/`, package `com.multifinance`                                                                            | Repo `serfira/backend`, package `com.serfira`                                                                                                                                                                                                                           | Doc-only fix, deferred         |
-| X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | Closed by T7 (ADR-015 D5): the decoder rejects such a token (401), and the filter now discards the authentication defensively                                                                                                                                                                     | T7                             |
+| X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | Closed by T7 (ADR-015 D5): the decoder rejects such a token (401), and the filter now discards the authentication defensively                                                                                                                                           | T7                             |
 | X-11 | `IdempotencyService` Javadoc: after retention "the key may be claimed again" (cites ADR-007 decision 9)                            | ADR-007 decision 9 says nothing about a takeover. The takeover re-runs the operation, which then always hits the permanent `uq_contract_idempotency` / `uq_payment_idempotency` backstop (CR-04)                                                                        | A-13 resolved (option A) → T24 |
 | X-12 | V1 comment / Addendum §1.2: `system_parameter` is append-only                                                                      | No trigger blocks UPDATE/DELETE (CR-12)                                                                                                                                                                                                                                 | T25                            |
 
@@ -110,6 +132,7 @@ ADRs listed.
 | T23   | Spring Boot 4 dependency alignment (ShedLock 7.10.1, springdoc 3.1.1)                                                                                | DONE   | PR #1, `OpenApiSmokeIT`        |
 | T7    | RBAC enforcement + JWT identity hardening (roles claim, matcher table, fail-closed `sub`/`exp`)                                                      | DONE   | ADR-015 (CR-01, CR-10, X-10)   |
 | T8    | Aging report (`GET /api/v1/reports/aging`): new read-only `reporting` module, per-installment buckets                                                | DONE   | ADR-013 impl note T8 (A-6/A-7) |
+| T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger-literal rows via a `ledger` read port, filters + paging                          | DONE   | ADR-013 impl note T9 (A-8)     |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -506,9 +529,9 @@ Risks: More installment version bumps increase payment contention. Covered by T5
 
 **Goal:** The runtime stack is on the Boot 4 compatibility lines, every endpoint enforces the role matrix
 with a fail-closed JWT identity, and aging plus the statement are available.
-**Scope:** T23 (1 pt, DONE), T7 (3 pts, DONE), T8 (2 pts), T9 (2 pts) = 8 pts. Order: T23 → T7 → T8/T9
-(T8 and T9 are born with their role rules and 403 tests). **Exit:** the Addendum §3.4 rows for existing
-endpoints hold (met by T7), and `/v3/api-docs` is covered by a test (met by T23).
+**Scope:** T23 (1 pt, DONE), T7 (3 pts, DONE), T8 (2 pts, DONE), T9 (2 pts, DONE) = 8 pts, all DONE.
+Order: T23 → T7 → T8/T9 (T8 and T9 are born with their role rules and 403 tests). **Exit:** the Addendum
+§3.4 rows for existing endpoints hold (met by T7), and `/v3/api-docs` is covered by a test (met by T23).
 
 ### T23 — Spring Boot 4 dependency alignment (review CR-02, CR-03)
 
@@ -786,8 +809,34 @@ Risks: A-6 (historical `as_of`) could expand scope a lot if historical reconstru
 
 ### T9 — Contract statement (C5)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-10-02): `GET /api/v1/contracts/{id}/statement` returns the contract's posted
+journal lines, oldest first, in the `{data, error}` envelope. The endpoint lives in `contract`
+(`ContractController` + `ContractQueryService`): `contract` validates the id (404 `CONTRACT_NOT_FOUND`)
+and reads the lines through the new `ledger.application.ContractStatementPort` → `ContractStatementService`
+(`@Transactional(readOnly = true)`), which projects `journal_line` joined to its parent `journal_entry`.
+This reuses the existing `contract → ledger` edge (activation already posts via `LedgerPostingService`), so
+it is not a new module edge and `ledger` still depends on nothing; the port does no existence check. The
+statement is ledger-literal (ADR-013 A-8): one row per `journal_line`, `debit`/`credit` the posted line
+amounts (no running balance, no customer-view re-interpretation), with `account_code` (+ `account_name`
+from the new `LedgerAccount.displayName()`), `description`/`ref_type`/`ref_id`/`reversal_of_id` from the
+parent entry, and an `is_reversal` flag — a reversal appears as its own row, history is never hidden.
+Optional filters: `ref_type` (one `LedgerRefType`) and a `from`/`to` business-date range (Asia/Jakarta,
+both inclusive, resolved to a half-open instant window because `entry_date` is `timestamptz`); order is
+`entry_date asc, line.id asc`; pagination is `page`/`size` (size ≤ 100) via `PageResponse`. A DRAFT
+contract has posted nothing → an empty page; `from > to`/out-of-range paging → 400 `VALIDATION_ERROR`; a
+bad `ref_type`/date → 400 via `GlobalExceptionHandler`. Roles ADMIN_OPERASIONAL/FINANCE (MANAJEMEN → 403),
+enforced by one matcher row in `ResourceServerSecurityConfiguration` (Addendum §3.4). Migration
+`V11__journal_line_contract_statement_index.sql` adds `(contract_id, entry_date)` on `journal_line` (V1 had
+no `contract_id` index). No new `ErrorCode`, dependency, or decision. ADR-013 implementation note T9;
+X-8 closed. Tests: `ContractStatementIT` (statement behaviour), the flipped `EndpointRoleMatrixIT` cell, and
+`LedgerAccountNameIT` (account name = seed). Post-review cleanup: a shared `validatePaging` guard (removes
+the duplicated paging check) and the `statementPort` field rename. Verification: `compileJava
+compileTestJava` pass and all `*Test` unit tests pass; the `*IT` Testcontainers tests were **not** run here
+because Docker was unavailable on the machine — run `.\gradlew test` and `.\gradlew check` with Docker up to
+confirm.
 
 Goal: Deliver the rekening koran (DM §2, FE §2.7): a chronological list of the contract's financial
 movements.
@@ -1091,16 +1140,16 @@ Risks: None.
 
 ### Deferred
 
-| Item                                                                                        | Status   | Reason                                                                           |
-| ------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------- |
-| PRD C-5 update DRAFT contract                                                               | DEFERRED | Already deferred in `05_SPRINT_PLAN.md`.                                         |
-| R-3 cash-in report, R-4 CSV export, P-6 gateway stub, S-5 restructuring                     | DEFERRED | P2 / Fase 4 per PRD.                                                             |
-| Require auth for OpenAPI/Swagger outside dev                                                | DEFERRED | ADR-005 made it public by design. Revisit with T21.                              |
-| Rate limiting, security headers, CORS policy                                                | DEFERRED | No browser client or public deployment yet. Revisit with G2.                     |
-| Remove the unused Lombok dependency. Move the Sonar host out of `gradle-wrapper.properties` | DEFERRED | Hygiene only. The Sonar change is uncommitted local work owned by the developer. |
-| Envelope-rendering `ErrorController` for container-level errors (firewall, direct `/error`)  | DEFERRED | T7 note: Boot's default JSON is returned, leaking no internals. Low value until a browser client exists. |
-| Fix TS §7 repo structure (X-9)                                                              | DEFERRED | Documentation only.                                                              |
-| Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | DEFERRED | Deployment concern. No deployment exists yet.                                    |
+| Item                                                                                        | Status   | Reason                                                                                                   |
+| ------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| PRD C-5 update DRAFT contract                                                               | DEFERRED | Already deferred in `05_SPRINT_PLAN.md`.                                                                 |
+| R-3 cash-in report, R-4 CSV export, P-6 gateway stub, S-5 restructuring                     | DEFERRED | P2 / Fase 4 per PRD.                                                                                     |
+| Require auth for OpenAPI/Swagger outside dev                                                | DEFERRED | ADR-005 made it public by design. Revisit with T21.                                                      |
+| Rate limiting, security headers, CORS policy                                                | DEFERRED | No browser client or public deployment yet. Revisit with G2.                                             |
+| Remove the unused Lombok dependency. Move the Sonar host out of `gradle-wrapper.properties` | DEFERRED | Hygiene only. The Sonar change is uncommitted local work owned by the developer.                         |
+| Envelope-rendering `ErrorController` for container-level errors (firewall, direct `/error`) | DEFERRED | T7 note: Boot's default JSON is returned, leaking no internals. Low value until a browser client exists. |
+| Fix TS §7 repo structure (X-9)                                                              | DEFERRED | Documentation only.                                                                                      |
+| Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | DEFERRED | Deployment concern. No deployment exists yet.                                                            |
 
 ---
 
@@ -1145,7 +1194,7 @@ for this check; the last green run is the T6 run (460 tests).
 
 | ID    | Finding                                                   | Verdict (what was checked)                                                                                                                                                                                                                                                                                                    | Severity after check         | Task                |
 | ----- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ------------------- |
-| CR-01 | Non-UUID `sub` stays authenticated and writes as `SYSTEM` | **Fixed (T7, ADR-015 D5).** The decoder's `sub`-is-UUID validator rejects the token (401) before it authenticates; `AuditActorBindingFilter` also discards such an authentication defensively. `JwtAuthenticationIT` covers it                                           | HIGH (resolved)              | T7 (DONE)           |
+| CR-01 | Non-UUID `sub` stays authenticated and writes as `SYSTEM` | **Fixed (T7, ADR-015 D5).** The decoder's `sub`-is-UUID validator rejects the token (401) before it authenticates; `AuditActorBindingFilter` also discards such an authentication defensively. `JwtAuthenticationIT` covers it                                                                                                | HIGH (resolved)              | T7 (DONE)           |
 | CR-02 | ShedLock 6.9.0 on Boot 4.1.1                              | **Confirmed.** The ShedLock README matrix lists 7.x as tested with Boot 4.x and 6.x with Boot 3.3–3.5. No defect is observed: the lock ITs are green                                                                                                                                                                          | MEDIUM (unsupported pairing) | T23 (DONE)          |
 | CR-03 | springdoc 2.8.9 on Boot 4                                 | **Confirmed.** The springdoc README says Boot 4 needs springdoc v3. No test requests `/v3/api-docs`, so runtime compatibility is unverified                                                                                                                                                                                   | MEDIUM                       | T23 (DONE)          |
 | CR-04 | Retention takeover vs permanent business-row keys         | **Confirmed, severity lowered.** No double execution. After 7 days: contracts → 409 `DUPLICATE_CONTRACT`/`CONFLICT`. Payments → 3 attempts that redo billing and accrual, then 409 `CONCURRENT_MODIFICATION`, because `PaymentConflictClassifier` retries every `23505`. `uq_settlement_idempotency` will behave the same way | MEDIUM                       | A-13 (A) → T24      |
@@ -1185,7 +1234,7 @@ Corrections to the review itself:
 | A-10 | Confirm that no penalty accrues after maturity close (accrual requires ACTIVE)                                                                                                                                                                                                                                                                                                                                                                                                        | DM invariant 17 (silent on penalty)                                                                                                           | T1.a, T4                         |
 | A-11 | Confirm the payment retry of Addendum §5 is still wanted (planned as written in T5)                                                                                                                                                                                                                                                                                                                                                                                                   | Resolved: implemented as written in T5 (`PaymentRetryingService`)                                                                             | DONE                             |
 | A-13 | Resolved 2026-09-30 by the owner: **option A**. A key is single-use per endpoint forever, and retention only bounds replay. Reuse after expiry → 409 `IDEMPOTENCY_KEY_EXPIRED`, recorded in ADR-016 (written in T24). Rejected: B (reusable, relax the business-row backstops, weakens ADR-007 d8) and C (reusable, internal claim id on business rows, needs a migration). Question was: after retention, is an `Idempotency-Key` reusable (reclaim + re-run) or single-use forever? | `IdempotencyService`/`reclaimExpired` vs V7 `uq_contract_idempotency`, V1 `uq_payment_idempotency`/`uq_settlement_idempotency`; ADR-007 d8/d9 | T24, T13, T16, T18               |
-| A-12 | Resolved: `roles` claim, JSON string array, implemented in T7 (ADR-015 D1). Previously: JWT roles claim name                                                                                                                                                                                                                                                                                                                   | ADR-005, Addendum §3 (silent)                                                                                                                 | T7, T21                          |
+| A-12 | Resolved: `roles` claim, JSON string array, implemented in T7 (ADR-015 D1). Previously: JWT roles claim name                                                                                                                                                                                                                                                                                                                                                                          | ADR-005, Addendum §3 (silent)                                                                                                                 | T7, T21                          |
 
 ### Assumptions preserved by this plan
 

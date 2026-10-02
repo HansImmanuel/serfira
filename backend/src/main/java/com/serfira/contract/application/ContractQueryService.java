@@ -8,8 +8,13 @@ import com.serfira.contract.domain.ContractStatus;
 import com.serfira.contract.infrastructure.ContractInstallmentTotals;
 import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.ContractSpecifications;
+import com.serfira.contract.api.ContractStatementRow;
 import com.serfira.contract.infrastructure.InstallmentRepository;
+import com.serfira.ledger.application.ContractStatementLine;
+import com.serfira.ledger.application.ContractStatementPort;
+import com.serfira.ledger.domain.LedgerRefType;
 import com.serfira.shared.api.PageResponse;
+import com.serfira.shared.clock.Clock;
 import com.serfira.shared.error.BadRequestException;
 
 import org.springframework.data.domain.Page;
@@ -19,6 +24,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,10 +56,15 @@ public class ContractQueryService {
 
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
+	private final ContractStatementPort statementPort;
+	private final Clock clock;
 
-	public ContractQueryService(ContractRepository contracts, InstallmentRepository installments) {
+	public ContractQueryService(ContractRepository contracts, InstallmentRepository installments,
+			ContractStatementPort statementPort, Clock clock) {
 		this.contracts = contracts;
 		this.installments = installments;
+		this.statementPort = statementPort;
+		this.clock = clock;
 	}
 
 	/**
@@ -92,14 +104,63 @@ public class ContractQueryService {
 				.toList();
 	}
 
+	/**
+	 * Contract statement (rekening koran, T9 / PRD C-5): the contract's posted journal lines, oldest first,
+	 * read straight from the ledger (ADR-013 A-8). The {@code contract} module owns contract existence, so
+	 * it validates the id here and delegates the read to {@code ledger} through {@link ContractStatementPort}
+	 * (02_TECH_SPEC.md §1: {@code contract → ledger}).
+	 *
+	 * <p>An unknown contract is a 404, not an empty page. A DRAFT contract exists but has posted nothing,
+	 * so its statement is a valid empty page. The {@code from}/{@code to} filters are business-zone dates;
+	 * they are resolved to a half-open instant window {@code [from 00:00, to+1 00:00)} in Asia/Jakarta,
+	 * because {@code entry_date} is a {@code timestamptz} — a {@code to} day is inclusive of the whole day.
+	 *
+	 * @param contractId the contract
+	 * @param refType    optional event-type filter; {@code null} returns every type
+	 * @param from       optional inclusive start date (business zone); {@code null} means no lower bound
+	 * @param to         optional inclusive end date (business zone); {@code null} means no upper bound
+	 * @throws ContractNotFoundException if the contract does not exist (404 {@code CONTRACT_NOT_FOUND})
+	 * @throws BadRequestException       for {@code from > to} or out-of-range paging (400 {@code VALIDATION_ERROR})
+	 */
+	public PageResponse<ContractStatementRow> statement(
+			UUID contractId, LedgerRefType refType, LocalDate from, LocalDate to, int page, int size) {
+		if (!contracts.existsById(contractId)) {
+			throw new ContractNotFoundException(contractId);
+		}
+		if (from != null && to != null && from.isAfter(to)) {
+			throw new BadRequestException("from must not be after to");
+		}
+		OffsetDateTime fromInclusive = from == null ? null : from.atStartOfDay(clock.zone()).toOffsetDateTime();
+		OffsetDateTime toExclusive = to == null ? null : to.plusDays(1).atStartOfDay(clock.zone()).toOffsetDateTime();
+
+		Page<ContractStatementLine> result = statementPort.statement(contractId, fromInclusive, toExclusive,
+				refType, statementPageRequest(page, size));
+		List<ContractStatementRow> rows = result.getContent().stream()
+				.map(ContractStatementRow::from)
+				.toList();
+		return PageResponse.of(rows, result.getNumber(), result.getSize(), result.getTotalElements(),
+				result.getTotalPages());
+	}
+
+	/** Paging for the statement; sort is fixed chronological in the ledger query, so only page/size apply. */
+	private static PageRequest statementPageRequest(int page, int size) {
+		validatePaging(page, size);
+		return PageRequest.of(page, size);
+	}
+
 	private static PageRequest pageRequest(int page, int size, String sort) {
+		validatePaging(page, size);
+		return PageRequest.of(page, size, parseSort(sort));
+	}
+
+	/** Rejects out-of-range paging the same way for every list endpoint (TS §2.2, size 1..100). */
+	private static void validatePaging(int page, int size) {
 		if (page < 0) {
 			throw new BadRequestException("page must be >= 0");
 		}
 		if (size < 1 || size > MAX_PAGE_SIZE) {
 			throw new BadRequestException("size must be between 1 and " + MAX_PAGE_SIZE);
 		}
-		return PageRequest.of(page, size, parseSort(sort));
 	}
 
 	/**

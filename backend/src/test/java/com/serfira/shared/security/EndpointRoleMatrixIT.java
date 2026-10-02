@@ -107,10 +107,11 @@ class EndpointRoleMatrixIT {
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID, List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/installments", List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("GET /api/v1/reports/aging", List.of(ADMIN, FINANCE, MANAJEMEN));
-		// Not registered: denied for every role (C-5 deferred, T9 not built yet, no payment reads).
+		// Statement (T9): ADMIN_OPERASIONAL + FINANCE, MANAJEMEN denied (Addendum §3.4).
+		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/statement", List.of(ADMIN, FINANCE));
+		// Not registered: denied for every role (C-5 deferred, no payment reads).
 		allowedRoles.put("PUT /api/v1/contracts/" + RANDOM_ID, List.of());
 		allowedRoles.put("DELETE /api/v1/contracts/" + RANDOM_ID, List.of());
-		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/statement", List.of());
 		allowedRoles.put("GET /api/v1/payments", List.of());
 		allowedRoles.put("GET /api/v1/no-such-route", List.of());
 		allowedRoles.put("GET /error", List.of());
