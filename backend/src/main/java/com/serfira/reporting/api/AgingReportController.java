@@ -8,7 +8,11 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -26,6 +30,7 @@ import java.time.LocalDate;
  */
 @RestController
 @RequestMapping("/api/v1/reports")
+@Validated
 @Tag(name = "Reports", description = "Portfolio servicing reports")
 public class AgingReportController {
 
@@ -65,9 +70,9 @@ public class AgingReportController {
 			@RequestParam(name = "as_of", required = false)
 			@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf,
 			@Parameter(description = "0-based page index for the per-contract rows")
-			@RequestParam(defaultValue = "0") int page,
+			@RequestParam(defaultValue = "0") @Min(0) int page,
 			@Parameter(description = "Page size (1..100)")
-			@RequestParam(defaultValue = "20") int size) {
+			@RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
 		return ApiResponse.ok(reports.aging(asOf, page, size));
 	}
 }

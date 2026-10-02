@@ -30,6 +30,8 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -174,10 +176,12 @@ class AgingReportIT {
 		JsonNode report = data(getReport("/api/v1/reports/aging"));
 
 		assertThat(report.get("contracts").get("total_elements").asLong()).isEqualTo(1L);
-		assertThat(report.get("contracts").get("content").get(0).get("contract_id").asText())
-				.isEqualTo(active.toString());
+		List<String> rowContractIds = new ArrayList<>();
+		report.get("contracts").get("content").forEach(row -> rowContractIds.add(row.get("contract_id").asText()));
+		assertThat(rowContractIds)
+				.containsExactly(active.toString())
+				.doesNotContain(draft.toString(), closed.toString());
 		assertThat(decimal(report.get("portfolio"), "total_outstanding")).isEqualByComparingTo("500.00");
-		assertThat(draft).isNotNull();
 	}
 
 	@Test
