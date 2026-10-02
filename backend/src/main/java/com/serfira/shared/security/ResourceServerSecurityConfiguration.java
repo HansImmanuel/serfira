@@ -153,6 +153,8 @@ public class ResourceServerSecurityConfiguration {
 						.requestMatchers(HttpMethod.GET,
 								"/api/v1/contracts", "/api/v1/contracts/*", "/api/v1/contracts/*/installments")
 								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)
+						.requestMatchers(HttpMethod.GET, "/api/v1/reports/aging")
+								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)
 						.anyRequest().denyAll())
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(authenticationEntryPoint)
