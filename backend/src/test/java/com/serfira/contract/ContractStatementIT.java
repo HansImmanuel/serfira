@@ -46,10 +46,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * date-range boundaries, the role matrix (ADMIN_OPERASIONAL/FINANCE; MANAJEMEN → 403), an unknown contract
  * → 404, and a DRAFT contract → an empty statement.
  *
- * <p>The clock is fixed to {@link #TODAY}. A contract is created and activated through the real command
- * service — activation posts the CONTRACT_ACTIVATION disbursement entry (PIUTANG_POKOK debit / KAS credit)
- * dated at the start date — and a payment is driven over HTTP, posting a PAYMENT entry dated TODAY. So the
- * statement spans two well-separated business dates, which the range test leans on.
+ * <p>A contract is created and activated through the real command service — activation posts the
+ * CONTRACT_ACTIVATION disbursement entry (PIUTANG_POKOK debit / KAS credit) dated at the start date
+ * (2026-01-31) — and a payment is driven over HTTP on {@link #PAYMENT_DATE} (2026-02-01), posting a PAYMENT
+ * entry dated that day. {@link #PAYMENT_DATE} is before the first installment is due, so the payment bills no
+ * interest and accrues no penalty: the statement spans just two well-separated business dates, which the
+ * chronology and range tests lean on.
  */
 @Import({TestcontainersConfiguration.class, ContractStatementIT.FixedClockConfig.class})
 @SpringBootTest
@@ -58,6 +60,15 @@ class ContractStatementIT {
 
 	private static final LocalDate TODAY = LocalDate.of(2026, 10, 1);
 	private static final LocalDate START_DATE = LocalDate.of(2026, 1, 31);
+	/**
+	 * The payment business date, deliberately placed before the first installment is due (2026-02-28) so a
+	 * single payment posts only its own PAYMENT entry: no due interest is billed and no penalty is accrued.
+	 * That keeps the ledger sparse and the statement's two business dates — activation (2026-01-31) and the
+	 * payment — well separated, which is what the chronology and date-range assertions below lean on. Paying
+	 * on {@link #TODAY} instead would make this 8-month-overdue contract lazily bill 8 installments and accrue
+	 * hundreds of penalty days, burying the PAYMENT row far past the first statement page.
+	 */
+	private static final LocalDate PAYMENT_DATE = LocalDate.of(2026, 2, 1);
 	private static final UUID SYSTEM_USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
 	@Autowired
@@ -133,7 +144,7 @@ class ContractStatementIT {
 		assertThat(kas.get("credit").decimalValue()).isEqualByComparingTo(principal);
 		assertThat(kas.get("debit").decimalValue()).isEqualByComparingTo("0.00");
 
-		// A PAYMENT entry exists, dated TODAY, after the activation entry (chronological order).
+		// A PAYMENT entry exists, dated the payment day, after the activation entry (chronological order).
 		List<String> refTypesInOrder = new ArrayList<>();
 		List<String> entryDatesInOrder = new ArrayList<>();
 		content.forEach(row -> {
@@ -144,7 +155,7 @@ class ContractStatementIT {
 		assertThat(entryDatesInOrder).isSorted();
 		content.forEach(row -> {
 			if (row.get("ref_type").asText().equals("PAYMENT")) {
-				assertThat(row.get("entry_date").asText()).startsWith("2026-10-01");
+				assertThat(row.get("entry_date").asText()).startsWith("2026-02-01");
 			}
 		});
 	}
@@ -168,16 +179,16 @@ class ContractStatementIT {
 		UUID contractId = activateContract("B3333CC", "3171012501900003", "08123456781");
 		pay(contractId, "500000.00");
 
-		// The whole range: both the activation (2026-01-31) and the payment (2026-10-01) appear.
-		JsonNode whole = content(getStatement(contractId, "?from=2026-01-31&to=2026-10-01"));
+		// The whole range: both the activation (2026-01-31) and the payment (2026-02-01) appear.
+		JsonNode whole = content(getStatement(contractId, "?from=2026-01-31&to=2026-02-01"));
 		assertThat(refTypes(whole)).contains("CONTRACT_ACTIVATION", "PAYMENT");
 
-		// to = the activation day only → the payment on 2026-10-01 is excluded, activation included (inclusive).
+		// to = the activation day only → the payment on 2026-02-01 is excluded, activation included (inclusive).
 		JsonNode activationDayOnly = content(getStatement(contractId, "?to=2026-01-31"));
 		assertThat(refTypes(activationDayOnly)).containsOnly("CONTRACT_ACTIVATION");
 
 		// from = the payment day → the activation on 2026-01-31 is excluded, the payment included (inclusive).
-		JsonNode paymentDayOnly = content(getStatement(contractId, "?from=2026-10-01"));
+		JsonNode paymentDayOnly = content(getStatement(contractId, "?from=2026-02-01"));
 		assertThat(refTypes(paymentDayOnly)).containsOnly("PAYMENT");
 
 		// A window before everything is empty.
@@ -200,6 +211,11 @@ class ContractStatementIT {
 
 		assertThat(getStatement(contractId, "?ref_type=NOPE").getResponse().getStatus()).isEqualTo(400);
 		assertThat(getStatement(contractId, "?from=not-a-date").getResponse().getStatus()).isEqualTo(400);
+
+		// A parseable but far-future date overflows plusDays(1) / the timestamptz range: still a 400, not a 500.
+		MvcResult farFuture = getStatement(contractId, "?to=%2B999999999-12-31");
+		assertThat(farFuture.getResponse().getStatus()).isEqualTo(400);
+		assertThat(errorCode(farFuture)).isEqualTo("VALIDATION_ERROR");
 	}
 
 	@Test
@@ -258,6 +274,8 @@ class ContractStatementIT {
 	}
 
 	private void pay(UUID contractId, String amount) throws Exception {
+		// Pay on PAYMENT_DATE so the payment bills nothing and accrues no penalty (see PAYMENT_DATE).
+		((FixedClock) clock).setDate(PAYMENT_DATE);
 		MvcResult result = mockMvc.perform(post("/api/v1/payments")
 				.header("Authorization", "Bearer " + token)
 				.header("Idempotency-Key", "statement-pay-" + UUID.randomUUID())

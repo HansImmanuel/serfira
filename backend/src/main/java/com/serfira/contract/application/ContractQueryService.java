@@ -54,6 +54,15 @@ public class ContractQueryService {
 	private static final int MAX_PAGE_SIZE = 100;
 	private static final String DEFAULT_SORT_PROPERTY = "created_at";
 
+	/**
+	 * Statement date filters must stay inside a sane, database-supported year range. A client-supplied
+	 * {@code LocalDate} can parse far outside it (e.g. {@code +999999999-12-31}), where {@link LocalDate#plusDays}
+	 * overflows and the value lies outside what the ledger's {@code timestamptz} column can store — either would
+	 * surface as a 500 instead of the endpoint's documented 400 {@code VALIDATION_ERROR}.
+	 */
+	private static final int MIN_STATEMENT_YEAR = 1900;
+	private static final int MAX_STATEMENT_YEAR = 9999;
+
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
 	private final ContractStatementPort statementPort;
@@ -130,6 +139,10 @@ public class ContractQueryService {
 		if (from != null && to != null && from.isAfter(to)) {
 			throw new BadRequestException("from must not be after to");
 		}
+		// Bound the year before any date arithmetic: to.plusDays(1) overflows on LocalDate.MAX and a
+		// timestamptz outside PostgreSQL's range fails at the query — both must be a 400, not a 500.
+		requireStatementYear(from, "from");
+		requireStatementYear(to, "to");
 		OffsetDateTime fromInclusive = from == null ? null : from.atStartOfDay(clock.zone()).toOffsetDateTime();
 		OffsetDateTime toExclusive = to == null ? null : to.plusDays(1).atStartOfDay(clock.zone()).toOffsetDateTime();
 
@@ -146,6 +159,21 @@ public class ContractQueryService {
 	private static PageRequest statementPageRequest(int page, int size) {
 		validatePaging(page, size);
 		return PageRequest.of(page, size);
+	}
+
+	/**
+	 * Rejects a statement date filter whose year falls outside {@value #MIN_STATEMENT_YEAR}..{@value
+	 * #MAX_STATEMENT_YEAR}, so a parseable but absurd date (e.g. {@code +999999999-12-31}) is a 400
+	 * {@code VALIDATION_ERROR} instead of a 500 from {@link LocalDate#plusDays} overflow or the ledger query.
+	 */
+	private static void requireStatementYear(LocalDate date, String field) {
+		if (date == null) {
+			return;
+		}
+		if (date.getYear() < MIN_STATEMENT_YEAR || date.getYear() > MAX_STATEMENT_YEAR) {
+			throw new BadRequestException(field + " year must be between " + MIN_STATEMENT_YEAR + " and "
+					+ MAX_STATEMENT_YEAR);
+		}
 	}
 
 	private static PageRequest pageRequest(int page, int size, String sort) {
