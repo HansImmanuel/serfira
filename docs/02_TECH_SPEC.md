@@ -51,7 +51,12 @@ Aturan dependency:
   tabel modul `penalty`; pembacaan `penalty_adjustment` native di `contract` (ADR-010) tetap seam sementara
   sampai E5 menggantinya dengan interface modul `penalty`.
 - `ledger` tidak boleh bergantung ke module lain (paling dasar).
-- `reporting` boleh baca semua (read-only).
+- `reporting` boleh baca semua (read-only). Sejak T8, laporan aging membaca receivable angsuran kontrak
+  ACTIVE hanya lewat `contract.application.AgingReportSourcePort` (satu arah, `reporting` → port `contract`),
+  bukan menyentuh tabel/entity `contract`/`installment` langsung. Alasannya: definisi DPD
+  (`contract.domain.InstallmentAging`) dan formula outstanding (`contract.domain.InstallmentBalance`) adalah
+  aturan domain milik `contract`; port mengekspos snapshot per installment yang sudah terhitung sehingga
+  tidak ada formula kedua (ADR-013 A-7). Bucketing dan agregasi portofolio dilakukan di `reporting`.
 
 Jika suatu saat di-split microservice, seam sudah siap di interface antar-module.
 

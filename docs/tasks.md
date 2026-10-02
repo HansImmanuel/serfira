@@ -12,19 +12,20 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 
 ## Current Project State
 
-**Snapshot:** `main` @ `0b282c0` plus uncommitted T23 verification and the T7 implementation (ADR-015: RBAC
-matrix, roles-claim converter, fail-closed JWT identity, `support/TestJwts`, and the retired audit probe).
+**Snapshot:** `main` @ `0b282c0` plus the T7 implementation (ADR-015: RBAC matrix, roles-claim converter,
+fail-closed JWT identity, `support/TestJwts`, retired audit probe) and the T8 implementation (new read-only
+`reporting` module with the aging report).
 
-**Verified on 2026-10-01 (through T7):**
+**Verified on 2026-10-02 (through T8):**
 
 - `./gradlew compileJava compileTestJava`: pass.
-- `./gradlew test --rerun --tests "com.serfira.shared.security.*" --tests "*OpenApiSmokeIT"`: 100 tests pass.
-- Full `./gradlew test --rerun`: 67 suites / 529 tests pass.
+- Narrowest T8 tests (`com.serfira.reporting.*`, `*EndpointRoleMatrixIT`): pass.
+- Full `./gradlew test`: 72 suites / 570 tests pass.
 - `./gradlew check`: pass.
 
 **Implemented (verified in source):**
 
-- Modules `contract`, `payment`, `penalty`, `ledger`, `shared`. `settlement` and `reporting` do not exist.
+- Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist.
   `frontend/` is empty.
 - Migrations V1–V10: full baseline schema, deferred accounting triggers (V3), state coherence (V4),
   settlement immutability (V5), contract create safety (V6/V7), hardened SYSTEM principal (V8), ShedLock +
@@ -44,16 +45,22 @@ matrix, roles-claim converter, fail-closed JWT identity, `support/TestJwts`, and
   aging transaction through `contract.application.InstallmentAgingPort` that marks `PENDING`/`PARTIALLY_PAID`
   installments `OVERDUE` from `due_date + grace + 1` while `outstanding > 0`, with its own five-attempt retry
   and its own `aging` `job_run` row (ADR-013 implementation note T6).
+- Aging report T8 is live: `GET /api/v1/reports/aging` in a new read-only `reporting` module returns the
+  Current/1–30/31–60/61–90/>90 buckets as a portfolio total and per contract (per-installment basis,
+  ACTIVE-only, `as_of` today-only → 400 `INVALID_AS_OF_DATE`). The DPD and outstanding formulas stay in
+  `contract` and are read through `contract.application.AgingReportSourcePort`; penalty is included,
+  penalty adjustments are not (no E5 yet). ADR-013 implementation note T8.
 - Endpoints: `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
-  `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`, and `POST /api/v1/payments`.
-- Security: JWT HS256 resource server, default-deny, with the Addendum §3.4 **role matrix enforced** on the
-  six existing endpoints (T7, ADR-015). A token's `sub` must be a UUID and it must carry `exp`. There is still
-  no login/refresh/logout and no `iss`/`aud` validation (ADR-005; T21).
+  `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`, `POST /api/v1/payments`, and
+  `GET /api/v1/reports/aging`.
+- Security: JWT HS256 resource server, default-deny, with the Addendum §3.4 **role matrix enforced** on all
+  seven existing endpoints (T7/T8, ADR-015). A token's `sub` must be a UUID and it must carry `exp`. There is
+  still no login/refresh/logout and no `iss`/`aud` validation (ADR-005; T21).
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
 T1–T6 are DONE, so Sprint 4b is complete. The rest is split into **Sprint 4c** (T23 dependency alignment,
-DONE; T7 RBAC + JWT identity, DONE; T8 aging report, T9 statement) and **Sprint 4d** (T24–T26 hardening from the
-2026-09-30 external review, then T11 exit verification).
+DONE; T7 RBAC + JWT identity, DONE; T8 aging report, DONE; T9 statement) and **Sprint 4d** (T24–T26 hardening
+from the 2026-09-30 external review, then T11 exit verification).
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -102,6 +109,7 @@ ADRs listed.
 | T6    | Aging status step in the daily job                                                                                                                   | DONE   | ADR-013 implementation note T6 |
 | T23   | Spring Boot 4 dependency alignment (ShedLock 7.10.1, springdoc 3.1.1)                                                                                | DONE   | PR #1, `OpenApiSmokeIT`        |
 | T7    | RBAC enforcement + JWT identity hardening (roles claim, matcher table, fail-closed `sub`/`exp`)                                                      | DONE   | ADR-015 (CR-01, CR-10, X-10)   |
+| T8    | Aging report (`GET /api/v1/reports/aging`): new read-only `reporting` module, per-installment buckets                                                | DONE   | ADR-013 impl note T8 (A-6/A-7) |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -723,8 +731,25 @@ Risks:
 
 ### T8 — Aging report (D3)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-10-02): New read-only `reporting` module. `GET /api/v1/reports/aging` returns the
+Current/1–30/31–60/61–90/>90 buckets as a portfolio total and per contract, in the `{data, error}` envelope.
+Bucketing/aggregation live in `reporting.domain` (`AgingBucket`, `AgingBreakdown`) and
+`reporting.application` (`AgingReportService`); the DPD calendar (`InstallmentAging`) and the outstanding
+formula (`InstallmentBalance`) stay owned by `contract` and are read through the new one-way
+`contract.application.AgingReportSourcePort` → `AgingReportSourceService` (`InstallmentAgingSnapshot` per
+ACTIVE-contract installment with `outstanding > 0`), so there is no second formula (A-7, recorded in TS §1).
+Penalty is included in outstanding; penalty adjustments are not subtracted (no E5 yet) and the OpenAPI
+description says so. Scope is ACTIVE contracts only; `SETTLED`/`WRITTEN_OFF`/`PAID` installments drop out at
+`outstanding = 0`. `as_of` defaults to today and must be today, else 400 `INVALID_AS_OF_DATE` (new
+`ErrorCode`); Σ bucket = outstanding holds at both levels by construction. One matcher row added to
+`ResourceServerSecurityConfiguration` (ADMIN_OPERASIONAL/FINANCE/MANAJEMEN), with its matrix and 401/403
+tests. No migration, dependency, or decision change (A-6/A-7 were resolved in ADR-013; see its T8
+implementation note). Verification: `AgingBucketTest`, `AgingBreakdownTest`, `AgingReportServiceTest` (unit)
+and `AgingReportIT` + updated `EndpointRoleMatrixIT` (Testcontainers) pass; full `./gradlew test` = 72 suites
+/ 570 tests / 0 failures; `./gradlew check` passes.
 
 Goal: Deliver PRD D-2, an aging report per contract and for the portfolio.
 

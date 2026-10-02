@@ -262,5 +262,31 @@ T6 mengimplementasikan keputusan 4 (A-4/A-5) sebagai langkah ketiga job harian, 
 
 Tidak ada migrasi, perubahan API, atau dependency baru.
 
+### Implementation Note — T8 (2026-10-02)
+
+T8 mengimplementasikan keputusan 5 dan 6 (A-6/A-7) sebagai laporan aging read-only, tanpa membuat keputusan
+baru:
+
+- **Modul `reporting` baru.** `GET /api/v1/reports/aging` mengembalikan bucket Current/1–30/31–60/61–90/>90
+  sebagai total portofolio dan per kontrak dalam envelope `{data, error}` standar. Bucketing dan agregasi ada
+  di `reporting.domain` (`AgingBucket`, `AgingBreakdown`) dan `reporting.application` (`AgingReportService`).
+- **Satu formula, lewat port.** Definisi DPD (`InstallmentAging.daysPastDue`) dan outstanding
+  (`InstallmentBalance.of`) tetap milik `contract`; `reporting` membacanya lewat
+  `contract.application.AgingReportSourcePort` (edge satu arah `reporting` → `contract`, dicatat di TS §1),
+  yang mengeluarkan satu snapshot per installment ACTIVE dengan `outstanding > 0`. Tidak ada formula kedua
+  (A-7). Penalty **termasuk** dalam outstanding; penalty adjustment belum dikurangi karena belum ada waiver
+  flow (E5) — didokumentasikan di deskripsi OpenAPI endpoint.
+- **Cakupan dan `as_of`.** Hanya kontrak ACTIVE (A-7); installment `SETTLED`/`WRITTEN_OFF`/`PAID` keluar
+  sendiri karena outstanding-nya nol. `as_of` default hari ini dan **harus** hari ini; nilai lain ditolak
+  `400 INVALID_AS_OF_DATE` (`ErrorCode` baru), bukan diam-diam diabaikan (A-6). Σ bucket = outstanding
+  dijaga by construction di level kontrak dan portofolio (`AgingBreakdown`).
+- **Otorisasi.** Satu baris matcher baru di `ResourceServerSecurityConfiguration`
+  (`GET /api/v1/reports/aging` → ADMIN_OPERASIONAL/FINANCE/MANAJEMEN, Addendum §3.4), lahir dengan test
+  matriks dan 401/403-nya (`EndpointRoleMatrixIT`, `AgingReportIT`).
+
+Tidak ada migrasi atau dependency baru. Verifikasi: unit (`AgingBucketTest`, `AgingBreakdownTest`,
+`AgingReportServiceTest`) dan Testcontainers `AgingReportIT` lulus; full `./gradlew test` = 72 suites /
+570 tests / 0 gagal; `./gradlew check` lulus.
+
 **Referensi:** `tasks.md` T1/T3/T4/T6/T8/T9/T10/T16 dan §Planning Notes; ADR-010/ADR-011/ADR-012; DM
 §1.4/§1.9, §3 invariant 17; TS §2.0/§4.3; Addendum §6/§7.3/§10/§10A/§14; `06_FRONTEND_SPEC.md` §2.7/§2.9.

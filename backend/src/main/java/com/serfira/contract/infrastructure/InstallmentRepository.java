@@ -22,6 +22,20 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 	List<Installment> findByContractIdOrderByPeriodNo(UUID contractId);
 
 	/**
+	 * Every installment of every ACTIVE contract, ordered deterministically (contract number, then period),
+	 * with its contract fetched so the aging report can read {@code contract_no} and {@code grace_period_days}
+	 * without a per-row lazy load (T8). Scope is ACTIVE contracts only (ADR-013 A-7); the caller drops rows
+	 * with zero outstanding.
+	 */
+	@Query("""
+			select i from Installment i
+			join fetch i.contract c
+			where c.status = com.serfira.contract.domain.ContractStatus.ACTIVE
+			order by c.contractNo, i.periodNo
+			""")
+	List<Installment> findActiveContractInstallments();
+
+	/**
 	 * Outstanding totals per contract for a set of contracts, in one query.
 	 *
 	 * <p>Kept in step with {@code InstallmentBalance}: principal + recognized interest + penalty
