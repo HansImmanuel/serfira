@@ -43,7 +43,8 @@ Aturan dependency:
 - `penalty` menyentuh `installment` hanya lewat **application interface** milik `contract`
   (`InstallmentPenaltyPort`, ADR-012): step harian membaca due date, penalty base dan status, lalu menaikkan
   `penalty_amount` lewat seam itu, sementara tabel `penalty_accrual` tetap milik `penalty`. Job T3 juga
-  memperoleh daftar/status kontrak ACTIVE hanya lewat `ActiveContractListingPort`, dan step aging T6
+  memperoleh halaman keyset id/status kontrak ACTIVE hanya lewat `ActiveContractListingPort` (sejak T26
+  keyset paging, bukan satu list penuh), dan step aging T6
   menandai `OVERDUE` hanya lewat `InstallmentAgingPort` (transisi tetap diputuskan `contract`); repository/entity
   `contract` tidak pernah keluar dari modul pemiliknya. Arahnya satu arah (`penalty` → port `contract`);
   `contract` tidak tahu modul `penalty`, dan `penalty` dilarang menyentuh tabel/entity
@@ -127,7 +128,15 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   transaksi baru berurutan **billing → penalty**; kedua langkah/jurnal commit atau rollback bersama, sedangkan
   contract lain tetap independen. Optimistic-lock dan unique-key conflict (SQLSTATE `23505`) di-retry paling
   banyak 5 total attempts; error deterministik tidak di-retry. Contract yang menjadi non-ACTIVE saat menunggu
-  gilirannya dilewati.
+  gilirannya dilewati. Antar attempt orchestrator menjeda pada urutan tetap **50/150/400/1000 ms** (empat
+  jeda di antara lima attempt) lewat `shared.concurrency.Sleeper` (CR-09, Addendum §5).
+- Daftar kontrak ACTIVE dibaca secara **keyset (seek) paging** lewat `ActiveContractListingPort`
+  (`findActiveContractIdsAfter`), bukan satu `List<UUID>` penuh; ukuran halaman dari
+  `serfira.jobs.daily-servicing.batch-size` (default 500). Orchestrator iterasi halaman demi halaman sampai
+  halaman lebih pendek dari batch-size, memproses setiap contract tepat sekali (CR-08).
+- Robustness `job_run` (CR-07): di awal setiap run yang memegang lock, row `RUNNING` sisa crash
+  (billing/penalty-accrual/aging) ditandai `ABANDONED`; bila loop melempar, ketiga row diselesaikan `FAILED`
+  sebelum exception di-rethrow. `ABANDONED` adalah status terminal ketiga khusus crash recovery (V13).
 - Sejak T6, langkah ketiga **aging** berjalan untuk setiap contract di loop yang sama, **setelah** transaksi
   billing → penalty, dalam transaksinya sendiri (`DailyServicingContractProcessor.age` →
   `contract.application.InstallmentAgingPort`, `Propagation.MANDATORY`). Aging tetap dijalankan walau

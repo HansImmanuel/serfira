@@ -2,6 +2,7 @@ package com.serfira.contract.application;
 
 import com.serfira.contract.domain.ContractStatus;
 import com.serfira.contract.infrastructure.ContractRepository;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,8 +22,12 @@ public class ActiveContractListingService implements ActiveContractListingPort {
 	}
 
 	@Override
-	public List<UUID> findActiveContractIds() {
-		return contracts.findIdsByStatusOrderById(ContractStatus.ACTIVE);
+	public List<UUID> findActiveContractIdsAfter(UUID afterId, int limit) {
+		Objects.requireNonNull(afterId, "afterId");
+		if (limit < 1) {
+			throw new IllegalArgumentException("limit must be positive");
+		}
+		return contracts.findActiveContractIdsAfter(ContractStatus.ACTIVE, afterId, Limit.of(limit));
 	}
 
 	@Override

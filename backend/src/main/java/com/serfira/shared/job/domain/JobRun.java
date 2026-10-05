@@ -74,6 +74,39 @@ public class JobRun extends Auditable {
 		this.status = recordsFailed == 0 ? JobRunStatus.COMPLETED : JobRunStatus.FAILED;
 	}
 
+	/**
+	 * Marks a leftover RUNNING row as ABANDONED after a crash left it unfinished (CR-07; ADR-013 A-9
+	 * implementation note T26). The caller holds the daily-servicing lock, so no live run owns this row.
+	 * Counters are left at whatever the crashed run wrote (we do not know how far it got).
+	 */
+	public void abandon(OffsetDateTime finishedAt) {
+		if (status != JobRunStatus.RUNNING) {
+			throw new IllegalStateException("job run " + id + " is already " + status);
+		}
+		this.finishedAt = Objects.requireNonNull(finishedAt, "finishedAt");
+		this.status = JobRunStatus.ABANDONED;
+	}
+
+	/**
+	 * Finalizes a run that aborted before finishing, as FAILED, preserving the partial tallies at the moment
+	 * of the abort (CR-07a). Same {@code status == RUNNING} and non-negative counter guards as
+	 * {@link #complete}, but the status is unconditionally FAILED rather than derived from
+	 * {@code recordsFailed}: an escaping exception is not a clean completion. ABANDONED (crash recovery) and
+	 * FAILED (in-process loop escape) therefore stay distinct audit signals.
+	 */
+	public void failHard(int recordsProcessed, int recordsFailed, OffsetDateTime finishedAt) {
+		if (status != JobRunStatus.RUNNING) {
+			throw new IllegalStateException("job run " + id + " is already " + status);
+		}
+		if (recordsProcessed < 0 || recordsFailed < 0) {
+			throw new IllegalArgumentException("job run counters must be non-negative");
+		}
+		this.recordsProcessed = recordsProcessed;
+		this.recordsFailed = recordsFailed;
+		this.finishedAt = Objects.requireNonNull(finishedAt, "finishedAt");
+		this.status = JobRunStatus.FAILED;
+	}
+
 	public UUID getId() {
 		return id;
 	}

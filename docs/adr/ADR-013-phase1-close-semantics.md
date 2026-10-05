@@ -329,3 +329,35 @@ Migrasi `V11__journal_line_contract_statement_index.sql` menambahkan index `(con
 
 **Referensi:** `tasks.md` T1/T3/T4/T6/T8/T9/T10/T16 dan §Planning Notes; ADR-002/ADR-010/ADR-011/ADR-012; DM
 §1.4/§1.9, §3 invariant 17; TS §2.0/§4.3; Addendum §6/§7.3/§10/§10A/§14; `06_FRONTEND_SPEC.md` §2.7/§2.9.
+
+### Implementation Note — T26 (2026-10-14)
+
+T26 (review CR-07/CR-08/CR-09) menguatkan robustness job harian tanpa mengubah perilaku finansial atau makna
+A-9. Keputusan 8 (A-9) tetap: status normal `job_run` adalah `COMPLETED`/`FAILED` yang **diturunkan** dari
+`records_failed`, dan `records_processed`/`records_failed` tetap satuan **kontrak**, bukan baris accrual.
+
+- **Status terminal ketiga `ABANDONED` (CR-07).** Khusus crash recovery, tidak pernah diproduksi oleh run
+  normal. `FAILED` tetap berarti "run selesai dengan `records_failed > 0`", jadi `ABANDONED` sengaja dipisah
+  agar "JVM mati di tengah run" tidak tertukar dengan "run selesai dengan kontrak gagal". Migrasi `V13`
+  melebarkan `ck_job_run_status` menjadi `('RUNNING','COMPLETED','FAILED','ABANDONED')`.
+- **Abandonment di awal setiap run yang memegang lock (CR-07b).** Sebelum membuat tiga row baru, orchestrator
+  menandai setiap row `RUNNING` yang tersisa untuk `billing`/`penalty-accrual`/`aging` menjadi `ABANDONED`
+  (lewat `JobRunService.abandonStaleRuns`, `REQUIRES_NEW`, `finished_at` dari `Clock`). ShedLock menjamin
+  tidak ada run lain yang hidup, jadi row `RUNNING` hanya mungkin sisa crash — tidak ada heuristik timeout.
+- **Finalize `FAILED` saat loop melempar (CR-07a).** Jika exception (`RuntimeException`) lolos dari loop
+  per-contract, ketiga row diselesaikan `FAILED` lewat `JobRunService.failHard` (bukan `complete`) dengan
+  counter parsial yang sudah terkumpul, lalu exception di-rethrow — gagal nyaring, tidak ditelan. `Error`/
+  `Throwable` sengaja tidak ditangkap; row yang mereka tinggalkan `RUNNING` akan di-`ABANDONED` oleh run
+  berikutnya (CR-07b). Pada jalur ini, **status `FAILED`** yang bermakna, bukan nilai counter.
+- **Keyset batching (CR-08).** `ActiveContractListingPort` kini mengembalikan satu halaman keyset
+  (`findActiveContractIdsAfter(afterId, limit)`) alih-alih seluruh `List<UUID>`; orchestrator iterasi
+  halaman demi halaman (ukuran dari `serfira.jobs.daily-servicing.batch-size`, default 500) sampai halaman
+  lebih pendek dari `limit`. Halaman pertama memakai sentinel UUID nol `00000000-0000-0000-0000-000000000000`
+  agar bind selalu bertipe (menghindari X-13 `42P18`). Perilaku memproses setiap kontrak tepat sekali dan
+  batas transaksi per-contract tidak berubah.
+- **Backoff antar retry (CR-09).** `runWithRetry` kini menjeda antar attempt pada urutan tetap 50/150/400/1000
+  ms (empat jeda di antara lima attempt; panjang array `== MAX_ATTEMPTS - 1`, tanpa slot buntu) lewat
+  `shared.concurrency.Sleeper`, mengikuti pola `PaymentRetryingService`.
+
+Perubahan dokumen turunan: TS §2.3/§1 dan Addendum §5/§10. Satu migrasi (`V13`), tanpa perubahan API,
+endpoint HTTP, matriks keamanan, atau dependency baru.

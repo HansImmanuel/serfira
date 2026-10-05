@@ -2,6 +2,7 @@ package com.serfira.contract.infrastructure;
 
 import com.serfira.contract.domain.Contract;
 import com.serfira.contract.domain.ContractStatus;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -38,9 +39,16 @@ public interface ContractRepository extends JpaRepository<Contract, UUID>, JpaSp
 	@Query("select c from Contract c where c.id = :id")
 	Optional<Contract> findDetailById(@Param("id") UUID id);
 
-	/** Contract-owned projection for background servicing jobs; never exposes entities across modules. */
-	@Query("select c.id from Contract c where c.status = :status order by c.id")
-	List<UUID> findIdsByStatusOrderById(@Param("status") ContractStatus status);
+	/**
+	 * Keyset page for background servicing (CR-08): ACTIVE ids after a cursor, ascending, capped by
+	 * {@code limit}. Never exposes entities across modules. The first page passes the all-zero UUID sentinel
+	 * ({@code 00000000-0000-0000-0000-000000000000}) so the {@code afterId} bind is always a typed non-null
+	 * UUID (avoids the X-13 {@code 42P18} untyped-null failure); that sentinel is strictly less than every
+	 * {@code GenerationType.UUID}/{@code gen_random_uuid()} id, so it selects the true first page.
+	 */
+	@Query("select c.id from Contract c where c.status = :status and c.id > :afterId order by c.id")
+	List<UUID> findActiveContractIdsAfter(@Param("status") ContractStatus status,
+			@Param("afterId") UUID afterId, Limit limit);
 
 	boolean existsByIdAndStatus(UUID id, ContractStatus status);
 }

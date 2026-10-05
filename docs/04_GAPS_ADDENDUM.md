@@ -234,6 +234,8 @@ dalam window job. Step aging T6 mengikuti unit transisinya sendiri: satu transak
 setelah billing → penalty, dengan maksimum 5 percobaan tersendiri, dan tetap dijalankan walau billing →
 penalty contract itu gagal (ADR-013 implementation note T6). Setelah retry habis, record ditandai
 gagal, di-log, dan batch lanjut; kegagalan satu contract tidak menghentikan contract lain.
+  Antar attempt job harian menjeda pada urutan tetap **50/150/400/1000 ms** (empat jeda di antara lima
+  attempt), sejajar dengan jalur payment 50/150 ms (CR-09, ADR-013 implementation note T26).
 - Job memakai shedlock (sudah disebut di tech spec) untuk memastikan hanya satu
   instance yang jalan — ini mencegah job-vs-job race, tapi retry di atas tetap perlu
   untuk job-vs-payment race.
@@ -385,6 +387,11 @@ dengan angka bunga berjalan yang dihitung manual memakai konvensi ini.
   `records_failed` = jumlah kontrak yang gagal setelah retry habis. `status` akhir = `COMPLETED` bila
   `records_failed = 0`, selain itu `FAILED` — tidak ada status partial-success tersendiri; kedua counter
   bersama sudah membedakan gagal total dari gagal sebagian.
+- **Status crash-recovery `ABANDONED` (CR-07, T26):** selain `COMPLETED`/`FAILED` di atas, ada status
+  terminal ketiga `ABANDONED` khusus pemulihan crash — tidak pernah diproduksi run normal. Setiap run yang
+  memegang lock menandai row `RUNNING` sisa (billing/penalty-accrual/aging) menjadi `ABANDONED` di awal, dan
+  bila loop melempar, ketiga row diselesaikan `FAILED` sebelum exception di-rethrow. V13 melebarkan
+  `ck_job_run_status`.
 
 ---
 
