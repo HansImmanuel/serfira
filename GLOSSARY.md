@@ -23,7 +23,7 @@ Seeded from the domain model. Extend it lazily via `/domain-modeling` as new ter
 - **recognized_interest_amount** — Interest already recognized as a receivable (0 until Billing on the due date; may include settlement accrued interest). Only recognized interest is allocatable or collectable. (DM §1.4)
 - **Billing** — The act of recognizing due interest on an Installment whose `due_date` has been reached: one `BILLING` journal per Installment for `interest_amount − recognized_interest_amount`. `SETTLED`/`WRITTEN_OFF` installments are never billed. (ADR-011, DM §1.4)
 - **penalty_base** — `max(0, principal_amount + recognized_interest_amount − paid_amount − settled_amount − written_off_amount)`. The unpaid principal+recognized-interest balance a daily penalty is charged on. Penalties do not compound on unpaid penalty. (ADR-012, DM §1.4)
-- **effective_penalty** — `penalty_amount − active paid penalty allocations − penalty adjustments`. The currently collectable penalty. (DM §1.4)
+- **effective_penalty** — `penalty_amount − active paid penalty allocations − penalty adjustments`. The currently collectable penalty. Owned by the `penalty` module and exposed through `EffectivePenaltyPort`; `contract` totals, settlement, the payment cap (DB trigger backstop), and reporting all read it through that one port rather than reading `penalty_adjustment` directly. (DM §1.4, ADR-019)
 - **recognized_total** — `principal_amount + recognized_interest_amount + effective_penalty`. (DM §1.4)
 - **resolved_amount** — `paid_amount + settled_amount + written_off_amount`. (DM §1.4)
 - **outstanding** — `recognized_total − resolved_amount`. Prefer this precise term over the ambiguous word "balance". (DM §1.4)
@@ -50,8 +50,11 @@ Seeded from the domain model. Extend it lazily via `/domain-modeling` as new ter
 
 - **SettlementQuote** — An immutable snapshot of settlement components (`outstanding_principal`, `unpaid_billed_interest`, `accrued_interest`, `penalty_outstanding`, `rebate_amount`, `admin_fee`, `available_credit`, `credit_used`, `gross_amount`, `cash_due`) with a `valid_until` TTL and a `contract_version` for stale detection. Status `QUOTED | EXECUTED | EXPIRED`. Number `Q-YYYYMMDD-XXXX`. (DM §1.5)
 - **Settlement** — Execution of a quote: validates expiry, Contract still ACTIVE, and matching `contract_version` and snapshot before posting. Number `SET-YYYYMM-XXXX`. Idempotent. (DM §1.6)
-- **rebate_amount** — Discount applied at settlement, posted to `DISKON_PELUNASAN`. (DM §1.5/§1.12)
-- **Future unrecognized interest** — Scheduled interest not yet billed. Never immediately receivable, including at settlement, except via explicit in-period accrual. (DM §1.4, PRD)
+- **eligible interest** — The future unrecognized scheduled interest a settlement rebate is computed on: `Σ (interest_amount − recognized_interest_amount)` over not-yet-fully-billed installments. The interest the lender would never earn because the loan closes early. (ADR-018 D2, Addendum §16.3)
+- **rebate_amount** — The settlement rebate: `round(SETTLEMENT_REBATE_RATE × eligible interest, HALF_EVEN, 2)` (50%). In the normal early-settlement path the rebate is *never recognized* as a ledger line — the lender simply does not recognize the forgiven half of future interest, so there is **no** `DISKON_PELUNASAN` entry for it. (ADR-018 D2)
+- **future interest charged** — `eligible interest − rebate_amount`: the half of future interest the customer pays at settlement, recognized directly as `PENDAPATAN_BUNGA` income at execution (never as a cleared `PIUTANG_BUNGA` receivable, which was never booked). (ADR-018 D2)
+- **DISKON_PELUNASAN** — The settlement-rebate expense account. Used *only* to forgive an **already-recognized** receivable (billed interest or penalty) as a goodwill reduction: `Dr DISKON_PELUNASAN / Cr PIUTANG_*`. It is never used for the future-interest rebate, which is an un-recognition, not an expense. (ADR-018 D3, DM §1.12)
+- **Future unrecognized interest** — Scheduled interest not yet billed (`interest_amount − recognized_interest_amount`). Never a receivable, including at settlement. At settlement the charged half becomes `PENDAPATAN_BUNGA` income directly; it is never booked to `PIUTANG_BUNGA`. (DM §1.4, ADR-018 D2, PRD §5A)
 
 ## Ledger
 

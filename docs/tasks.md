@@ -1,4 +1,4 @@
-# Serfira tasks
+﻿# Serfira tasks
 
 Canonical implementation backlog. From Sprint 4b onward this file supersedes the per-sprint allocation in
 `05_SPRINT_PLAN.md`. The story IDs used there (A1…G6) are kept as cross-references. Business rules stay in
@@ -72,8 +72,9 @@ Full per-task implementation notes for all DONE work are archived in `tasks-arch
 DONE (Sprint 4b), Sprint 4c (T23, T7, T8, T9) is complete, and **Sprint 4d is complete**: T24 (idempotency
 key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness), T29 (fix the pre-existing
 statement query, X-13) and T11 (Phase-1 test hardening + exit verification) are all DONE. T10 stays
-DEFERRED (T1.a kept ADR-012 decision 2; no code change required). Next: Sprint 5 (T12–T15 settlement,
-credit, waivers).
+DEFERRED (T1.a kept ADR-012 decision 2; no code change required). **Sprint 5 (Settlement, Credit & Waiver,
+T12–T15) is planned** (2026-10-05, ADR-018 + ADR-019; see the Sprint 5 section) and ready to implement in
+order T14 → T15 → T12 → T13. T16 (void) remains in Sprint 6.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -147,16 +148,241 @@ and prove the next-day charge after a penalty-only payment equals `rate × unpai
 interest)` (worked check: 1,573.33, not 1,570.19). Depends on T1.a, T4. ADR-012 alternatives 5/6 list the
 rejected options T1.a would have to supersede.
 
+## Sprint 5 — Settlement, Credit & Waiver (Epic E): PLANNED
+
+Planned 2026-10-05 via `/grill-with-docs`. Decisions recorded in **ADR-018** (settlement quote/execution
+semantics) and **ADR-019** (effective-penalty port), with new/clarified GLOSSARY terms. Implementation
+order is **T14 → T15 → T12 → T13**: credit and waiver are upstream of settlement, which must price against
+the final effective-penalty formula and be able to consume credit. One branch and one PR per task.
+
+**Scope split (confirmed):** Sprint 5 = T12–T15 (11 pts). T16 (void, 5 pts) stays in Sprint 6 — it depends
+on the credit-consumed check (invariant 16) that T14 establishes.
+
+**Module placement:** a new `settlement` module (`api/application/domain/infrastructure`, ADR-001)
+depending on `ledger`, `contract` (ports), `penalty` (`EffectivePenaltyPort`). Credit apply lives in
+`contract` (data owner of `contract_credit`); waive/reduce lives in `penalty` (data owner of
+`penalty_adjustment`). TS §1 dependency rules gain the `settlement` edges.
+
+**Shared facts (verified against the schema, 2026-10-05; see
+`.agents/tasks/sprint5-settlement/ledger-conventions.md`):** all settlement/credit tables already exist in
+V1 (`contract_credit`, `contract_credit_application`, `settlement_quote`, `settlement`,
+`settlement_allocation`, `settlement_credit_application`) with full columns, CHECK constraints and
+immutability triggers (V5). `penalty_adjustment` also exists (V1) with its immutability trigger and is
+read natively by the V3 cap trigger and `InstallmentRepository`. `LedgerRefType` already includes
+`SETTLEMENT`, `PENALTY_WAIVER`, `CREDIT_APPLICATION`. The COA is complete (incl. `PENDAPATAN_BUNGA`,
+`PENDAPATAN_ADMIN`, `DISKON_PELUNASAN`). So Sprint 5 adds **behaviour + Java modules**, not tables; its
+migrations are thin.
+
+### T14 — E3 Excess → `contract_credit` + credit-apply endpoint (5 pts)
+
+**Dependencies:** none open (C2/C3 EXCESS path DONE; tables exist). First task of Sprint 5.
+
+**Scope.** Turn the existing `EXCESS` payment allocation into a durable `contract_credit` liability, and
+add an explicit endpoint to apply available credit to recognized receivable. Owner module: `contract`.
+
+**Business rules (Addendum §2, §16.3; ADR-009; GLOSSARY ContractCredit).**
+- When a payment produces an `EXCESS` allocation, write one `contract_credit` row
+  (`status = AVAILABLE`, `amount = excess`, `source_payment_allocation_id` = the EXCESS allocation,
+  `uk_contract_credit_source` already enforces one credit per EXCESS allocation). This is the first writer
+  of the table; the EXCESS→`TITIPAN_NASABAH` journal is unchanged (ADR-008; the credit row is the
+  liability's sub-ledger, not a second journal).
+- Available balance = `amount − Σ contract_credit_application.amount`. Status moves `AVAILABLE → APPLIED`
+  only when the balance reaches 0. `REFUNDED` is out of MVP.
+- `POST /api/v1/contracts/{id}/credit/apply` applies available credit to the **oldest installment with
+  recognized receivable**, reusing the payment waterfall **PENALTY → INTEREST → PRINCIPAL** (ADR-009),
+  oldest due first (`due_date`, tie-break `period_no`). Partial application is allowed: a single call may
+  apply less than the full balance (caller supplies an `amount`, or the endpoint applies the full balance
+  — pin in the request DTO), and one credit may fund many applications across installments. Credit is
+  **never auto-applied**; it only moves on an explicit call (invariant 6, PRD §5.4).
+- Application only reduces **recognized** receivable (never future unrecognized interest). Journal per
+  apply call: `Dr TITIPAN_NASABAH / Cr PIUTANG_DENDA|PIUTANG_BUNGA|PIUTANG_POKOK` (`ref_type = CREDIT_APPLICATION`,
+  `ref_id` = the application or a batch id — pin one entry per apply call). Resolution raises
+  `installment.paid_amount` through `InstallmentReceivablePort.applyPaymentResolution` (same mutator as a
+  payment; it already derives PAID/PARTIALLY_PAID and the MATURITY close).
+- `GET /api/v1/contracts/{id}/credit` returns balance + application history.
+- RBAC (Addendum §3.4): `POST …/credit/apply` ADMIN_OPERASIONAL only; `GET …/credit`
+  ADMIN_OPERASIONAL + FINANCE. Add both rows to `ResourceServerSecurityConfiguration` and
+  `EndpointRoleMatrixIT`.
+
+**Migration V14.** Add the DB cap enforcing `Σ contract_credit_application.amount ≤ contract_credit.amount`
+(invariant 11, not enforced today) — a deferred constraint trigger mirroring the entity guard. Mirror the
+AVAILABLE→APPLIED status rule as a guard. (No `CREATE TABLE`.) If one-entry-per-apply is enforced at the DB
+level, this is also where `CREDIT_APPLICATION` could be added to `uq_journal_entry_event` — decide during
+implementation; default is to rely on the service guard (ADR-008 d5), consistent with how PAYMENT behaves.
+
+**Acceptance criteria.**
+- An overpayment books a `contract_credit` AVAILABLE row equal to the EXCESS amount, linked to its source
+  allocation; no second journal beyond the existing EXCESS→`TITIPAN_NASABAH`.
+- Applying credit to the oldest recognized installment posts a balanced `Dr TITIPAN_NASABAH / Cr PIUTANG_*`
+  entry, raises `paid_amount`, derives the right installment status, and records a
+  `contract_credit_application` row. Partial application leaves the credit AVAILABLE with reduced balance;
+  full application flips it to APPLIED.
+- Applying more than the available balance, or against an installment with no recognized receivable, is
+  rejected (400/409) and writes nothing.
+- The DB cap rejects `Σ applications > amount` even via raw SQL.
+- Role matrix enforced; denied calls store nothing.
+
+**Tests.** Unit: a credit-apply allocator mirrors `PaymentAllocationEngine` ordering (pure). IT
+(`ContractCreditIT`, Testcontainers, real commits): overpayment→credit; partial then full apply across two
+installments; over-apply rejected; apply-with-no-recognized-receivable rejected; journal balances and
+Σ allocations rule; raw-SQL cap violation; role matrix cells. Reuse `TestJwts`, `FixedClock`.
+
+### T15 — E5 Penalty waive/reduce + `EffectivePenaltyPort` (2 pts → ~3 with the seam)
+
+**Dependencies:** none open (`penalty_adjustment` table + V3 cap exist). Do after T14, before T12.
+
+**Scope.** Add the first writer of `penalty_adjustment` (waive/reduce), expose effective penalty through a
+`penalty`-owned port, and retire the temporary native read in `contract`. Owner module: `penalty`.
+Decisions in **ADR-019**.
+
+**Business rules (Addendum §16.4; ADR-019; GLOSSARY PenaltyAdjustment, effective_penalty).**
+- New `PenaltyAdjustment` JPA entity in `penalty.domain` (extends `Auditable` — the table has
+  `updated_at NOT NULL`, ADR-008 correction). Append-only (`WAIVE`/`REDUCE`, `amount > 0`, required
+  `reason`, `approved_by` = JWT `sub`); V1 immutability trigger already blocks UPDATE/DELETE.
+- `POST /api/v1/penalty-adjustments` (ADMIN_OPERASIONAL only, Addendum §3.4) records an adjustment and
+  posts a correcting journal `Dr <waiver expense> / Cr PIUTANG_DENDA` (`ref_type = PENALTY_WAIVER`,
+  `ref_id = penalty_adjustment.id`). **Pin the expense account during implementation**: reuse
+  `DISKON_PELUNASAN` vs. a new `BEBAN_WAIVER_DENDA` (ADR-019 D3 fixes the shape, not the final code; if a
+  new account is chosen it is seeded in V15). The waiver reverses recognized penalty *receivable*, never
+  the append-only accrual history.
+- Introduce `penalty.application.EffectivePenaltyPort` (`loadEffectivePenalty(contractId)` →
+  per-installment `grossAccrued`, `adjustment`, `effective`). Replace the native
+  `InstallmentRepository.sumPenaltyAdjustmentsByInstallmentIds` read; `contract` totals, settlement, and
+  reporting read effective penalty through this one port (closes CR-14). The V3 cap trigger stays as the
+  DB backstop (two-layer invariant pattern).
+- Effective penalty = `penalty_amount − active penalty allocation − Σ adjustment` (invariant 9); waiver
+  must not drive effective penalty below 0 (guard + DB check).
+
+**Migration V15.** Thin: the DB cap ensuring `Σ adjustment ≤ gross recognized penalty` per installment
+(if not already covered by V3), plus the COA seed **only if** a new waiver expense account is chosen, plus
+optionally extending `uq_journal_entry_event` to `PENALTY_WAIVER`. (No `CREATE TABLE`.)
+
+**Acceptance criteria.**
+- A waive/reduce records an append-only `penalty_adjustment` and a balanced `… / Cr PIUTANG_DENDA` entry;
+  effective penalty drops by the adjustment and never goes negative.
+- A later payment's penalty cap reflects the adjustment (V3 trigger already subtracts it; confirm parity
+  with the port).
+- The `contract` receivable snapshot's effective penalty now comes through the port; no native
+  `penalty_adjustment` read remains in `contract`.
+- Role matrix enforced; UPDATE/DELETE of an adjustment rejected at the DB.
+
+**Tests.** Unit: effective-penalty formula (pure), negative-guard. IT (`PenaltyAdjustmentIT`): waive then
+pay (cap reflects it); reduce; over-waive rejected; adjustment immutability (SQLSTATE P0001); journal
+balances; role matrix. Port parity test: `EffectivePenaltyService` equals the V3 trigger's subtraction.
+
+### T12 — E1 Settlement quote (5 pts)
+
+**Dependencies:** T15 (effective penalty via port). New `settlement` module starts here. Decisions in
+**ADR-018**.
+
+**Scope.** Price an immutable settlement quote with a TTL and a `contract.version` snapshot, over HTTP.
+No execution yet. Owner module: new `settlement`.
+
+**Business rules (ADR-018 D2/D6/D7/D8; Addendum §8, §13, §16.3; config §1).**
+- `POST /api/v1/settlements/quote` for an ACTIVE contract. **Accrue-before-resolve first** (ADR-013): in
+  the same transaction, bill and accrue through the quote business date so the components price against the
+  base actually in force (the settlement analogue of T4).
+- Pure `SettlementQuoteEngine` (domain, no Spring) computes, per ADR-018:
+  - `outstanding_principal` = Σ unpaid principal incl. future periods;
+  - `unpaid_billed_interest` = recognized-but-unpaid interest (real `PIUTANG_BUNGA`);
+  - `accrued_interest` (D7) = running interest of the single earliest unbilled active period, ACT/30,
+    `min(daysElapsed, 30)/30`, HALF_EVEN; 0 if that period is already billed;
+  - `penalty_outstanding` = effective penalty via `EffectivePenaltyPort` (T15/ADR-019);
+  - `futureInterestGross` (D2) = `Σ(interestAmount − recognizedInterestAmount) − accrued_interest`
+    (the active period's *earned* slice is excluded — it is in `accrued_interest`; its *unearned*
+    remainder and all fully-future periods are included);
+  - `rebate_amount` = `round(0.50 × futureInterestGross, HALF_EVEN, 2)`;
+  - `admin_fee` = `SETTLEMENT_ADMIN_FEE` (150,000);
+  - `available_credit` = Σ AVAILABLE `contract_credit`; `credit_used` set at quote per the credit policy;
+  - `gross_amount` = principal + unpaid_billed_interest + accrued_interest + penalty_outstanding +
+    (futureInterestGross − rebate_amount) + admin_fee;
+  - `cash_due` = gross_amount − credit_used.
+- Persist `settlement_quote` (`status = QUOTED`, `valid_until = quoted_at + SETTLEMENT_QUOTE_TTL_MINUTES`
+  (15), `contract_version` = current `contract.version`). Component columns are immutable (V5); only
+  status/version/audit may change.
+- New read seam: add scheduled `interestAmount` to the settlement-facing contract snapshot (the existing
+  `InstallmentReceivable` exposes only `recognizedInterestAmount`) so `futureInterestGross` is computable —
+  via a new `contract` port method or an added field (ADR-010-style seam; record in TS §1).
+- RBAC: `POST /settlements/quote` ADMIN_OPERASIONAL only (Addendum §3.4). Matrix + `EndpointRoleMatrixIT`.
+
+**Migration.** None required for the quote (table + immutability exist). (The `uq_journal_entry_event`
+extension belongs to T13, which posts the journal.)
+
+**Acceptance criteria.**
+- A quote for the Demo-B contract at month 7 produces components matching the engine golden values; the
+  active-period split is correct (earned slice in `accrued_interest`, remainder rebate-eligible).
+- `gross_amount` and `cash_due` satisfy the D6 identities; `futureInterestCharged` reconstructs to
+  `futureInterestGross − rebate_amount`.
+- A mid-period quote (settlement between due dates) charges the elapsed days' running interest in full and
+  rebates only the remainder — no double count of the active period.
+- Quote snapshot columns are immutable (raw-SQL UPDATE of a component rejected).
+- Role matrix enforced.
+
+**Tests.** Unit `SettlementQuoteEngineTest` (golden, Demo-B pinned numbers incl. the mid-period split, zero
+future interest at the final period, ACT/30 cap at exactly 30 days, HALF_EVEN rounding of the rebate). IT
+`SettlementQuoteIT`: accrue-before-resolve actually bills/accrues; quote persisted with the right TTL and
+`contract_version`; snapshot immutability; role matrix. `FixedClock` for determinism.
+
+### T13 — E2 Settlement execution (5 pts)
+
+**Dependencies:** T12 (quote), T14 (credit consumption). Decisions in **ADR-018 D1/D4/D5/D9/D10**.
+
+**Scope.** Execute a QUOTED quote into an immutable `settlement`, post the one balanced journal, resolve
+installments, consume credit, and close the contract SETTLEMENT. Over HTTP, idempotent.
+
+**Business rules (ADR-018; Addendum §13; ADR-017).**
+- `POST /api/v1/settlements` with an `Idempotency-Key` and the quote id. **Re-price at execution**
+  (accrue-before-resolve again) and **revalidate** against the snapshot (D9):
+  - `409 STALE_SETTLEMENT_QUOTE` if `contract.version` or any recomputed component differs;
+  - `409 SETTLEMENT_QUOTE_EXPIRED` if `clock.now() > valid_until`;
+  - `409 SETTLEMENT_QUOTE_ALREADY_EXECUTED` if the quote is already EXECUTED (`uk_settlement_quote_id` is
+    the DB backstop — one settlement per quote).
+- Idempotency (ADR-017 single-use-forever): identical key replays the stored response; expired key →
+  `409 IDEMPOTENCY_KEY_EXPIRED`; `uq_settlement_idempotency` is the permanent backstop (already fully
+  unique in V1, consistent with option A).
+- Credit policy (D10, §13): consume **all** AVAILABLE credit; if `available_credit > gross_amount` reject
+  `409 CREDIT_EXCEEDS_SETTLEMENT` (refund out of MVP). Each consumed source → `settlement_credit_application`.
+- Post **one** balanced `SETTLEMENT` journal entry (D1/D4): Dr `KAS` (cash_received) + `TITIPAN_NASABAH`
+  (credit_used); Cr `PIUTANG_POKOK`/`PIUTANG_BUNGA`/`PIUTANG_DENDA` (receivable cleared) + `PENDAPATAN_BUNGA`
+  (accrued + future interest charged, D2) + `PENDAPATAN_ADMIN` (admin fee). No `DISKON_PELUNASAN` line in
+  the normal path (D3). Zero components contribute no line.
+- `settlement_allocation` records only receivable resolution per installment (PENALTY/INTEREST/PRINCIPAL,
+  oldest first); income/fee/credit are journal-only (D5).
+- Close the contract SETTLEMENT and move open installments to SETTLED (`settled_amount`/`settled_at`)
+  through the `contract` module's own path, never the payment-resolution MATURITY path (D10).
+- RBAC: `POST /settlements` ADMIN_OPERASIONAL only. Matrix + `EndpointRoleMatrixIT`.
+
+**Migration V16.** Extend `uq_journal_entry_event` (V12) to include `'SETTLEMENT'` (drop + recreate the
+partial unique index with `SETTLEMENT` added to the `ref_type IN (…)` list) so the one-entry-per-settlement
+rule has a DB backstop (ADR-008 T25 note; ADR-018 D1). Add the `contract` SETTLED-close support if the V4
+coherence checks need it (verify `settled_amount`/`settled_at` writers against V4). (No `CREATE TABLE`.)
+
+**Acceptance criteria.**
+- Executing the Demo-B month-7 quote posts a single balanced `SETTLEMENT` entry with exactly the D4 lines,
+  closes the contract SETTLEMENT, moves installments to SETTLED, and returns the settlement record.
+- A stale (version/component-changed) or expired quote is rejected with the right 409 and writes nothing.
+- Re-executing an EXECUTED quote (different key) is rejected; identical-key replay returns the stored
+  settlement; expired key → `IDEMPOTENCY_KEY_EXPIRED`.
+- Credit greater than gross is rejected; credit ≤ gross is fully consumed and recorded.
+- A second non-reversal `SETTLEMENT` entry for the same settlement is rejected by the extended index (raw
+  SQL).
+- Role matrix enforced.
+
+**Tests.** IT `SettlementExecutionIT` (Testcontainers, real commits so deferred triggers fire): happy path
+balances and closes; stale quote; expired quote; already-executed; idempotent replay; expired key; credit
+fully consumed; credit-exceeds-gross rejected; duplicate-entry rejected by the extended index; role matrix.
+`AccountingInvariantsIT` extended for the `SETTLEMENT`-single-entry backstop. `FixedClock`, `TestJwts`,
+pinned Demo-B golden numbers shared with `SettlementQuoteEngineTest`.
+
 ## Future / Deferred Work
 
 ### Later sprints (planned, detailed at their sprint planning)
 
+> **Sprint 5 (T12–T15) is now fully planned** in the "Sprint 5 — Settlement, Credit & Waiver" section
+> above (ADR-018, ADR-019). The rows below are the still-stubbed later tasks.
+
 | ID  | Story                                                              | Sprint | Status | Carry-forward requirements from this plan                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | --- | ------------------------------------------------------------------ | ------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T12 | E1 Settlement quote                                                | 5      | TODO   | Before taking the snapshot, bill and accrue through the quote date (accrue-before-resolve; ADR-012 risk ii). ACT/30 golden test (Addendum §8).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| T13 | E2 Settlement execution                                            | 5      | TODO   | Re-bill and re-accrue at execution, then revalidate the snapshot (`STALE_SETTLEMENT_QUOTE`). Decide whether settlement creates one entry or several, then extend T25's scoped `(ref_type, ref_id)` index to `SETTLEMENT` accordingly (ADR-008 decision 5). Apply the A-13 (option A) / T24 rule: an expired settlement key → 409 `IDEMPOTENCY_KEY_EXPIRED`, and a `uq_settlement_idempotency` violation (V1, fully unique, already consistent with A) maps to the same code. Born with RBAC tests (T7 matcher table).                                                                                                                                               |
-| T14 | E3 Excess → `contract_credit` + apply endpoint                     | 5      | TODO   | Credit applies only to recognized receivable. DB cap on Σ applications ≤ credit amount (invariant 11; not enforced today).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| T15 | E5 Penalty waive/reduce                                            | 5      | TODO   | Replace the native `penalty_adjustment` read in `InstallmentRepository` with a `penalty`-owned port (ADR-010 seam). Subtract adjustments in `sumTotalsByContractId(s)` and in the status derivation of `Installment.applyPayment` (its E5 extension point). Reconcile the gross vs net penalty caps between V3 `assert_installment_amounts` and `assert_payment_allocation_component_caps`. One outstanding formula for payment snapshot, contract totals, settlement and reporting (review CR-14).                                                                                                                                                                 |
 | T16 | E4 Void payment + synchronous penalty recalc                       | 6      | TODO   | The void re-pricing rule is resolved by ADR-013 (A-3): no re-pricing of already-accrued dates, catch-up only for dates with no row yet. Make `payment.amount` non-updatable (the parent-side deferred checks moved to T25). Revisit the V3 allocation-total trigger, which counts VOIDED rows (C3 note), and T25's payment-insert check for voided payments. Under A-13 (option A) a voided payment's key stays consumed; because `uq_payment_idempotency` only covers `POSTED`, keep that true after T18 deletes the claim row (for example by widening the index to all statuses in the void migration). Void is blocked when credit was consumed (invariant 16). |
 | T17 | F1 Consistency check job                                           | 6      | TODO   | Runs after aging in the T3 job, reusing its ShedLock, `job_run`, keyset batching and backoff (T26).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | T18 | F4 Idempotency key cleanup job                                     | 6      | TODO   | Reuses the T3/T26 job infrastructure. Deleting a row must not re-open the key: the T24/A-13 rule and the business-row backstops decide what a later reuse returns. Note (ADR-017 consequences, PR #5 bot review): after the row is deleted the exact 409 depends on which truthful guard fires first (`DUPLICATE_CONTRACT` for a same-request contract retry, `CONTRACT_STATE_INVALID` for a payment against a now-inactive contract), not necessarily `IDEMPOTENCY_KEY_EXPIRED`. Decide here whether a pre-business-logic permanent-key probe is wanted to make the code uniform.                                                                                  |
