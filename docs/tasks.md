@@ -59,15 +59,21 @@ not run:**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist.
   `frontend/` is empty.
-- Migrations V1–V12: full baseline schema, deferred accounting triggers (V3), state coherence (V4),
+- Migrations V1–V13: full baseline schema, deferred accounting triggers (V3), state coherence (V4),
   settlement immutability (V5), contract create safety (V6/V7), hardened SYSTEM principal (V8), ShedLock +
   penalty-accrual integrity (V9), explicit `job_run.business_date` for backfill audit (V10), the
   `journal_line (contract_id, entry_date)` index for the contract statement (V11, T9), and the parent-side
   accounting backstops — journal-entry/payment parent-side deferred checks, the scoped
-  `uq_journal_entry_event` index, and `system_parameter` append-only (V12, T25).
+  `uq_journal_entry_event` index, and `system_parameter` append-only (V12, T25), and the `ck_job_run_status`
+  widen for the new `ABANDONED` job-run status (V13, T26).
 - Daily servicing T3 is live: configurable Jakarta cron and explicit backfill entry share one renewable
   ShedLock; every ACTIVE contract is processed atomically in billing → penalty order with five-attempt
-  conflict retry, failure isolation, SYSTEM audit, and step-level `job_run` rows.
+  conflict retry, failure isolation, SYSTEM audit, and step-level `job_run` rows. **Hardened by T26 (CR-07/
+  CR-08/CR-09):** a crashed run's `RUNNING` rows are closed as the new `ABANDONED` status by the next locked
+  run (and finalized `FAILED` on loop escape); the ACTIVE list is read by keyset paging
+  (`findActiveContractIdsAfter`, configurable `serfira.jobs.daily-servicing.batch-size`, default 500) instead
+  of one full `List`; and the per-contract retry backs off `{50, 150, 400, 1000}` ms via the injected
+  `Sleeper`. V13 widens `ck_job_run_status`.
 - Lazy payment accrual T4 is live: `POST /api/v1/payments` calls `PenaltyAccrualPort` after billing and before
   snapshot/allocation/resolution inside the idempotency supplier, using one captured business date. Replay
   skips the supplier and a failed attempt rolls back accrual, journals, payment writes, resolution, and the
@@ -121,8 +127,8 @@ not run:**
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
 T1–T6 are DONE, so Sprint 4b is complete. Sprint 4c (T23, T7, T8, T9) is complete. **Sprint 4d** is in
-progress: T24 (idempotency key lifecycle) and T25 (DB accounting backstops) are DONE; T26 (daily job
-robustness) and T11 (exit verification) remain.
+progress: T24 (idempotency key lifecycle), T25 (DB accounting backstops) and T26 (daily job robustness) are
+DONE; T29 (fix the pre-existing statement query, X-13) and T11 (exit verification) remain.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -176,6 +182,7 @@ ADRs listed.
 | T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger-literal rows via a `ledger` read port, filters + paging                          | DONE   | ADR-013 impl note T9 (A-8)     |
 | T24   | Idempotency key lifecycle: single-use forever (option A), 409 `IDEMPOTENCY_KEY_EXPIRED`, classifier no longer retries `uq_payment_idempotency`       | DONE   | ADR-017 (A-13, CR-04, CR-13)   |
 | T25   | DB accounting backstops: V12 parent-side deferred checks, scoped `uq_journal_entry_event`, `system_parameter` append-only                            | DONE   | ADR-008 d5 note (CR-05/06/12)  |
+| T26   | Daily job robustness: `ABANDONED` status + V13, stale-row/loop-escape finalization, keyset batching, retry backoff                                   | DONE   | ADR-013 A-9 note T26 (CR-07/08/09) |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -1108,8 +1115,40 @@ Risks: A trigger bypass in test cleanup must stay inside test sources.
 
 ### T26 — Daily job robustness (review CR-07, CR-08, CR-09)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-10-05): All three fixes landed on the daily servicing orchestrator
+(`penalty.application.DailyServicingOrchestrator`), the `shared.job` lifecycle, and the `contract` listing
+port, with no change to money/ledger, HTTP, security, or the A-9 counter/three-`job_run`-rows contract.
+**CR-07 (stale RUNNING).** New terminal status `JobRunStatus.ABANDONED` + forward-only migration
+`V13__job_run_abandoned_status.sql` widening `ck_job_run_status` (drop/re-add the IN-list; strict superset,
+so it applies cleanly on empty and on a V12 DB). `JobRun.abandon`/`JobRun.failHard` and
+`JobRunService.abandonStaleRuns(jobNames)`/`JobRunService.failHard(...)` (both `REQUIRES_NEW`, injected
+`Clock`, via a new `JobRunRepository.findByStatusAndJobNameIn`). At the start of each locked run the
+orchestrator abandons any pre-existing `RUNNING` row of the three job names (the ShedLock guarantees no other
+run is live, so a `RUNNING` row is a crash remnant — no timeout heuristic); if the per-contract loop throws,
+the three rows are finalized `FAILED` with the partial tallies and the exception is rethrown (never
+swallowed). `ABANDONED` is kept distinct from `FAILED` so "the JVM died" is not conflated with "finished with
+`records_failed > 0`". `Error`/`Throwable` are deliberately not caught; CR-07(b) finalizes any row they leave
+`RUNNING` on the next locked run. **CR-08 (keyset batching).** `ActiveContractListingPort.findActiveContractIds()`
+replaced by `findActiveContractIdsAfter(afterId, limit)`; the repository query is a plain
+`where status = :status and c.id > :afterId order by c.id` with a `Limit`, and the first page passes the
+all-zero UUID sentinel (`00000000-0000-0000-0000-000000000000`) so the `afterId` bind is always a typed
+non-null UUID — deliberately avoiding the X-13 `42P18` untyped-null failure, and strictly below every
+`gen_random_uuid()` id so it selects the true first page. The orchestrator pages with a `do/while` until a
+short page, each contract keeping its own transactions. Batch size is configurable via
+`serfira.jobs.daily-servicing.batch-size` (`@Value` default 500, added to both `application.properties`).
+**CR-09 (backoff).** `runWithRetry` injects the existing `shared.concurrency.Sleeper` and pauses on
+`BACKOFF_MILLIS = {50, 150, 400, 1000}` on the retryable branch only — exactly `MAX_ATTEMPTS - 1 = 4` entries,
+no unreachable trailing slot (T24/CR-13 lesson), indexed by `attempt - 1`. Docs synchronized: ADR-013 A-9
+implementation note T26, TS §2.3 and §1 (the port edge), Addendum §5 and §10. Verification (Docker available):
+`.\gradlew compileJava compileTestJava` pass; new unit tests (`JobRunTest`, `ActiveContractListingServiceTest`,
+expanded `DailyServicingOrchestratorTest`) + all `*Test` pass; new `DailyJobRobustnessIT` + `com.serfira.penalty.*`
+pass; the required `DailyServicingJobIT`/`DailyServicingLockIT`/`DailyAgingJobIT`/`TransactionIT` stay green.
+Full `.\gradlew check` = 621 tests, 5 failed — **all 5 are `com.serfira.contract.ContractStatementIT`, the
+pre-existing T9/statement bug (X-13 / T29)**, confirmed to fail identically on unmodified `main` (`a10b552`);
+T26 touches nothing on the statement path. `check` goes green once T29 fixes the statement query.
 
 Goal: Keep the daily job's audit trail truthful after a crash, and keep it bounded in memory and in
 contention as the portfolio grows.
@@ -1347,9 +1386,9 @@ for this check; the last green run is the T6 run (460 tests).
 | CR-04 | Retention takeover vs permanent business-row keys         | **Confirmed, severity lowered.** No double execution. After 7 days: contracts → 409 `DUPLICATE_CONTRACT`/`CONFLICT`. Payments → 3 attempts that redo billing and accrual, then 409 `CONCURRENT_MODIFICATION`, because `PaymentConflictClassifier` retries every `23505`. `uq_settlement_idempotency` will behave the same way | MEDIUM                       | A-13 (A) → T24      |
 | CR-05 | Ledger one-entry-per-event only in Java                   | **Partially true.** It is a documented decision (ADR-008 d5), and every current event has its own DB guard, so the race described does not occur today. Adopted as defense in depth, scoped to current ref types                                                                                                              | LOW                          | T25 (DONE)          |
 | CR-06 | Zero-line entry / zero-allocation payment bypass V3       | **Confirmed.** The V3 triggers are on child tables only. This was already a T16 carry-forward; moved earlier                                                                                                                                                                                                                  | MEDIUM                       | T25 (DONE)          |
-| CR-07 | `job_run` stuck in `RUNNING`                              | **Confirmed.** It also happens when any exception escapes `runAsSystem`, not only on JVM death. It affects the audit trail, not money                                                                                                                                                                                         | MEDIUM                       | T26                 |
-| CR-08 | All ACTIVE ids loaded at once                             | **Confirmed** (`findIdsByStatusOrderById` returns a `List`). It is ids only, so it is not a Phase-1 concern                                                                                                                                                                                                                   | LOW                          | T26                 |
-| CR-09 | Daily retry without backoff                               | **Confirmed** (`continue`, 5 attempts, no pause)                                                                                                                                                                                                                                                                              | LOW–MEDIUM                   | T26                 |
+| CR-07 | `job_run` stuck in `RUNNING`                              | **Fixed (T26).** The next locked run marks pre-existing `RUNNING` rows `ABANDONED` (new status, V13) at start, and finalizes its three rows `FAILED` if the loop throws, then rethrows                                                                                                                                        | MEDIUM                       | T26 (DONE)          |
+| CR-08 | All ACTIVE ids loaded at once                             | **Fixed (T26).** `findActiveContractIdsAfter` keyset paging with a zero-UUID first-page sentinel; the orchestrator pages by `serfira.jobs.daily-servicing.batch-size` (default 500)                                                                                                                                           | LOW                          | T26 (DONE)          |
+| CR-09 | Daily retry without backoff                               | **Fixed (T26).** `runWithRetry` injects `Sleeper` and pauses `{50, 150, 400, 1000}` ms between the five attempts                                                                                                                                                                                                             | LOW–MEDIUM                   | T26 (DONE)          |
 | CR-10 | No `iss`/`aud`/active-user/role checks                    | **Roles + `exp` fixed (T7, ADR-015).** Role matrix enforced and `exp` now required. `iss`/`aud`/active-user still need a real issuer                                                                                                                                                                                          | MEDIUM                       | T7 (DONE), T21      |
 | CR-11 | No key rotation                                           | **Confirmed and documented** (ADR-007 consequences). The `v1:` envelope carries no key id                                                                                                                                                                                                                                     | MEDIUM (pre-production)      | T28                 |
 | CR-12 | `system_parameter` append-only only by convention         | **Fixed (T25, V12).** `block_modification()` now blocks UPDATE/DELETE; the two ITs delete their own rows through a scoped single-connection trigger bypass (`AppendOnlyTestCleanup`), not by weakening the trigger                                                                                                             | MEDIUM                       | T25 (DONE)          |
