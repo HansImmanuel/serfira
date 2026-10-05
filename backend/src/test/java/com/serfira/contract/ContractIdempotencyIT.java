@@ -155,8 +155,13 @@ class ContractIdempotencyIT {
 		assertThat(contractIds).containsOnly(contractIds.get(0));
 		assertThat(count("contract")).isEqualTo(1L);
 		assertThat(count("idempotency_keys")).isEqualTo(1L);
+		// The claim is INSERT ... ON CONFLICT (endpoint, key) DO NOTHING, so under READ COMMITTED a losing
+		// retry blocks until the winner commits and then replays the stored response — commonly returning the
+		// same id with no failure. Any loser that does throw must be a domain ConflictException
+		// (ErrorCode.CONFLICT), never a raw SQLException / optimistic-lock error and never null — so no loser
+		// can quietly write a second contract (ADR-017, TS §2.5).
 		assertThat(failures).as("losing retries must fail loudly, never write a second contract: %s", failures)
-				.allSatisfy(cause -> assertThat(cause).isNotNull());
+				.allSatisfy(cause -> assertThat(cause).isInstanceOf(ConflictException.class));
 	}
 
 	@Test
