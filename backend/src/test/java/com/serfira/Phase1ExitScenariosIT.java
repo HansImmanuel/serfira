@@ -1,5 +1,6 @@
 package com.serfira;
 
+import com.serfira.penalty.application.LockedDailyServicingJob;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.security.AppRole;
@@ -54,6 +55,13 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  *   <li>8 — jatuh tempo 31 di bulan pendek (PRD §5.8): a 31st start day clamps to each month's last day.</li>
  *   <li>9 — Februari / leap year (PRD §5.9): a leap-February due date is 02-29, a non-leap one clamps to 02-28.</li>
  * </ul>
+ *
+ * <p>Scenario 2 recognizes penalty through the payment path's lazy accrual (the product rule: a payment
+ * bills and accrues in its own transaction even if the nightly job has not run). The daily servicing job —
+ * the other half of "end-to-end over HTTP <em>plus the job</em>" (PRD §7 operational demo) — is exercised
+ * directly in {@link #scenario2b_theDailyServicingJobBillsAccruesAndAgesALateInstallment()}, which runs the
+ * real {@link LockedDailyServicingJob} for a late date with no payment and no SQL seeding, then settles the
+ * aged installment over HTTP.
  */
 @Import({TestcontainersConfiguration.class, Phase1ExitScenariosIT.FixedClockConfig.class})
 @SpringBootTest
@@ -87,6 +95,9 @@ class Phase1ExitScenariosIT {
 
 	@Autowired
 	Clock clock;
+
+	@Autowired
+	LockedDailyServicingJob job;
 
 	private UUID actorId;
 	private String token;
@@ -181,6 +192,62 @@ class Phase1ExitScenariosIT {
 				Long.class, installment1)).isEqualTo(28L);
 		assertThat(jdbc.queryForObject("select sum(amount) from penalty_accrual where installment_id = ?",
 				BigDecimal.class, installment1)).isEqualByComparingTo(ACCRUED_PENALTY);
+
+		UUID paymentId = UUID.fromString(payment.get("id").asText());
+		assertAllocationsSumToAmount(paymentId, LATE_PAYMENT_TOTAL);
+		assertEveryJournalEntryBalances(contractId);
+	}
+
+	// -------------------------------------------------------------------------------------
+	// Scenario 2b — the daily servicing job itself bills, accrues and ages (PRD §7 operational demo)
+	// -------------------------------------------------------------------------------------
+
+	/**
+	 * The "plus the job" half of scope item 3: the nightly servicing job, not a payment, must bill due
+	 * interest, accrue the overdue penalty and move the installment to OVERDUE for a late contract. Run
+	 * through the real {@link LockedDailyServicingJob} (billing → penalty → aging, SYSTEM actor) for the
+	 * late business date with no payment and no SQL seeding of the behaviour, then settle the aged
+	 * installment over HTTP so the servicing-then-payment path is proven end to end.
+	 */
+	@Test
+	void scenario2b_theDailyServicingJobBillsAccruesAndAgesALateInstallment() throws Exception {
+		UUID contractId = activateFixtureContract("3171012501900001", "08123456789", "B1234XY",
+				LocalDate.of(2026, 1, 31));
+
+		// The nightly job runs for the late date: it bills period 1's interest, accrues the 28 chargeable
+		// penalty days and ages the installment, all as SYSTEM — no HTTP payment yet.
+		fixedClock().setDate(LATE_BUSINESS_DATE);
+		job.run(LATE_BUSINESS_DATE);
+
+		UUID installment1 = installmentId(contractId, 1);
+		// Billing recognized period 1's interest (future interest stays unrecognized until its own due date).
+		assertThat(jdbc.queryForObject(
+				"select recognized_interest_amount from installment where id = ?", BigDecimal.class, installment1))
+				.isEqualByComparingTo(PERIOD_INTEREST);
+		// The job accrued exactly the 28 append-only penalty rows summing to the known total (invariant 8).
+		assertThat(jdbc.queryForObject("select count(*) from penalty_accrual where installment_id = ?",
+				Long.class, installment1)).isEqualTo(28L);
+		assertThat(jdbc.queryForObject("select sum(amount) from penalty_accrual where installment_id = ?",
+				BigDecimal.class, installment1)).isEqualByComparingTo(ACCRUED_PENALTY);
+		// Aging moved the overdue installment to OVERDUE (DM §1.4, ADR-013 T6).
+		assertThat(installmentStatus(contractId, 1)).isEqualTo("OVERDUE");
+		// Every row the job wrote is attributed to SYSTEM, never an HTTP actor (Addendum §3.3).
+		assertThat(jdbc.queryForList(
+				"select distinct created_by from penalty_accrual where installment_id = ?", UUID.class, installment1))
+				.containsExactly(SYSTEM_USER_ID);
+		assertEveryJournalEntryBalances(contractId);
+
+		// A later HTTP payment settles the job-serviced installment: penalty-first waterfall, then PAID.
+		MvcResult paid = pay(contractId, "scenario-2b", LATE_PAYMENT_TOTAL);
+
+		assertThat(paid.getResponse().getStatus()).isEqualTo(201);
+		JsonNode payment = data(paid);
+		assertThat(allocationTypes(payment)).containsExactly("PENALTY", "INTEREST", "PRINCIPAL");
+		assertThat(decimal(payment.get("allocations").get(0), "amount")).isEqualByComparingTo(ACCRUED_PENALTY);
+		assertThat(installmentStatus(contractId, 1)).isEqualTo("PAID");
+		// The job already accrued the 28 days; the payment adds no new accrual rows for period 1.
+		assertThat(jdbc.queryForObject("select count(*) from penalty_accrual where installment_id = ?",
+				Long.class, installment1)).isEqualTo(28L);
 
 		UUID paymentId = UUID.fromString(payment.get("id").asText());
 		assertAllocationsSumToAmount(paymentId, LATE_PAYMENT_TOTAL);

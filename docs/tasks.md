@@ -71,8 +71,8 @@ not run:**
 **Verified on 2026-10-05 (T11) — Docker available, so the Testcontainers `*IT` suites ran:**
 
 - `.\gradlew check`: pass.
-- Forced full `.\gradlew test --rerun-tasks` (all tasks executed, not cached): **80 suites / 632 tests /
-  0 failures / 0 errors / 0 skipped** (621 before T11 + 11 new tests: 4 child-table immutability, the
+- Forced full `.\gradlew test --rerun-tasks` (all tasks executed, not cached): **80 suites / 633 tests /
+  0 failures / 0 errors / 0 skipped** (621 before T11 + 12 new tests: 4 child-table immutability, the 7
   `Phase1ExitScenariosIT` scenarios, and `PiiLoggingIT`).
 - Diff is test-only: `AccountingInvariantsIT`, `Phase1ExitScenariosIT` (new), `PiiLoggingIT` (new),
   `ContractIdempotencyIT`, `PaymentIdempotencyIT`. No production code, migration, or unrelated file changed.
@@ -1329,7 +1329,11 @@ assert `isInstanceOf(ConflictException.class)` (pins `ErrorCode.CONFLICT`, consi
 TS §2.5); the two bare-`RuntimeException` asserts in `AccountingInvariantsIT` become `P0001` SQLSTATE checks.
 (4) **PRD §7 scenarios 1–4 and 8–9** — new `Phase1ExitScenariosIT` drives them entirely over HTTP
 (`POST /contracts`, `/activate`, `/payments`; `GET /installments`) with `TestJwts` + a `@Primary FixedClock`,
-no SQL seeding of the behaviour under test. Asserts the PENALTY→INTEREST→PRINCIPAL waterfall oldest-due-first,
+no SQL seeding of the behaviour under test. The "plus the job" half of scope item 3 is covered by
+`scenario2b`, which runs the real `LockedDailyServicingJob` for a late date (no payment, no SQL seeding) and
+asserts the job itself bills interest, accrues the 28 penalty days as SYSTEM, and ages the installment to
+OVERDUE, then settles it over HTTP (added after the 2026-10-05 spec-axis review flagged the job was only
+exercised in `PiiLoggingIT`). Asserts the PENALTY→INTEREST→PRINCIPAL waterfall oldest-due-first,
 overpayment booked as `TITIPAN_NASABAH` and never auto-applied, partial-payment state, month-end/leap-year
 due-date clamping, Σ allocations = amount, and per-entry ledger balance. Money constants are reused from
 `PaymentApiIT`'s engine derivations; the two new ones are arithmetic over those (`LATE_PAYMENT_TOTAL =
