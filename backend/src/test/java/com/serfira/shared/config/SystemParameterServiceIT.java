@@ -2,6 +2,7 @@ package com.serfira.shared.config;
 
 import com.serfira.TestcontainersConfiguration;
 import com.serfira.shared.clock.Clock;
+import com.serfira.support.AppendOnlyTestCleanup;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +47,11 @@ class SystemParameterServiceIT {
 
 	@AfterEach
 	void removeTestRows() {
-		jdbc.update("delete from system_parameter where param_key = ?", TEST_KEY);
+		// system_parameter is append-only in the database since V12 (block_modification on
+		// UPDATE/DELETE). This test-only cleanup deletes its own IT_ rows through a trigger bypass
+		// (session_replication_role = replica) scoped to a single connection and reset immediately —
+		// never by weakening the trigger. The Testcontainers role is a superuser, so it may set it.
+		AppendOnlyTestCleanup.deleteSystemParameters(jdbc, "param_key = ?", TEST_KEY);
 	}
 
 	@Test

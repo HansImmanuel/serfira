@@ -133,6 +133,29 @@ Yang belum pernah diputuskan adalah perilakunya:
 
 ---
 
+## Implementation Note — T25 (2026-10-03): scoped DB duplicate-event guard added
+
+Decision 5 deferred a DB-level unique index on `(ref_type, ref_id)` because the guard was
+application-level and a settlement might legitimately post several entries (E2). T25 (review CR-05)
+adds that guard as **defense in depth, scoped to the ref types the ledger posts today**, in migration
+V12 (numbered V12 because V11 was taken by T9's statement index):
+
+```sql
+CREATE UNIQUE INDEX uq_journal_entry_event
+    ON journal_entry (ref_type, ref_id)
+    WHERE reversal_of_id IS NULL
+      AND ref_type IN ('CONTRACT_ACTIVATION', 'BILLING', 'PENALTY_ACCRUAL', 'PAYMENT');
+```
+
+This amends decision 5: there is now a DB backstop for the four current event types, but it stays
+scoped so E2 keeps the freedom to post several `SETTLEMENT` entries per event. When settlement is
+built (T13), decide whether it posts one entry or several and extend (or deliberately not extend) the
+predicate to `SETTLEMENT` accordingly — never widen it without that decision. A reversal keeps the
+original `(ref_type, ref_id)` and is excluded via `reversal_of_id IS NULL`, so corrections are
+unaffected. V12 also adds the parent-side deferred checks (an entry needs ≥ 2 balanced lines; a
+payment's allocations must sum to its amount), closing CR-06. `AccountingInvariantsIT` covers all of
+these plus the `SETTLEMENT`-still-multi-entry case.
+
 ## References
 
 - `02_TECH_SPEC.md` §1 (dependency modul), §3 (ledger + posting rules), §5 (constraint penting)
@@ -141,3 +164,4 @@ Yang belum pernah diputuskan adalah perilakunya:
 - `05_SPRINT_PLAN.md` §5 Sprint 3 (C1)
 - ADR-002 (double-entry ledger), ADR-006 (creation & activation), ADR-007 (idempotent creation)
 - Implementasi: `LedgerPostingService`, `LedgerPosting`, `JournalEntry`, `LedgerPostingIT`
+- T25 (docs/tasks.md): V12 parent-side checks + scoped `uq_journal_entry_event`, `AccountingInvariantsIT`

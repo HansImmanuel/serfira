@@ -16,6 +16,7 @@ import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.InstallmentRepository;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.config.SystemParameterKeys;
+import com.serfira.support.AppendOnlyTestCleanup;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -80,7 +81,11 @@ class ContractActivationIT {
 	@AfterEach
 	void removeConfigurationOverrides() {
 		// Only this suite's overrides: the V1 seed rows must stay (BaselineSchemaIT counts them).
-		jdbc.update("delete from system_parameter where effective_date = ? and param_key in (?, ?)",
+		// system_parameter is append-only in the database since V12; this test-only cleanup bypasses
+		// the trigger on a single connection (see AppendOnlyTestCleanup) rather than weakening it.
+		// The predicate is bound, matching the parameterized delete it replaced.
+		AppendOnlyTestCleanup.deleteSystemParameters(jdbc,
+				"effective_date = ? and param_key in (?, ?)",
 				java.sql.Date.valueOf(clock.today()),
 				SystemParameterKeys.DEFAULT_GRACE_PERIOD_DAYS,
 				SystemParameterKeys.DEFAULT_PENALTY_RATE_DAILY);

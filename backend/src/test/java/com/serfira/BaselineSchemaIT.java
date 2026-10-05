@@ -80,8 +80,21 @@ class BaselineSchemaIT {
 	@Test
 	void journalEntriesCannotBeUpdatedOrDeleted() {
 		UUID id = UUID.randomUUID();
-		jdbc.update("insert into journal_entry (id, entry_date, ref_type, ref_id, posted_at, created_at) "
-				+ "values (?, clock_timestamp(), 'TEST', ?, clock_timestamp(), clock_timestamp())", id, id);
+		// V12 adds a parent-side deferred check (an entry needs ≥ 2 balanced lines), so the entry and
+		// its lines are inserted in one statement (a data-modifying CTE commits them together).
+		jdbc.update("""
+				with e as (
+					insert into journal_entry (id, entry_date, ref_type, ref_id, posted_at, created_at)
+					values (?, clock_timestamp(), 'TEST', ?, clock_timestamp(), clock_timestamp())
+					returning id
+				), l1 as (
+					insert into journal_line (journal_entry_id, entry_date, account_code, debit, credit, created_at)
+					select e.id, clock_timestamp(), 'KAS', 500.00, 0, clock_timestamp() from e
+					returning journal_entry_id
+				)
+				insert into journal_line (journal_entry_id, entry_date, account_code, debit, credit, created_at)
+				select e.id, clock_timestamp(), 'PIUTANG_POKOK', 0, 500.00, clock_timestamp() from e
+				""", id, id);
 
 		assertThatThrownBy(() -> jdbc.update("update journal_entry set description = 'tampered' where id = ?", id))
 				.isInstanceOf(DataAccessException.class);
@@ -130,12 +143,21 @@ class BaselineSchemaIT {
 						clock_timestamp(), clock_timestamp()
 					from c, a
 					returning id
+				), p as (
+					insert into payment (payment_no, contract_id, amount, channel, paid_at, idempotency_key,
+						created_at, updated_at)
+					select 'PAY-X-0001', k.id, 100.00, 'CASH', clock_timestamp(), 'pay-key-1',
+						clock_timestamp(), clock_timestamp()
+					from k
+					returning id
 				)
-				insert into payment (payment_no, contract_id, amount, channel, paid_at, idempotency_key,
+				-- V12 parent-side check: a payment needs allocations summing to its amount. This
+				-- contract has no schedule, so a single EXCESS allocation (no installment, no cap) is
+				-- the simplest valid allocation and keeps the idempotency-key assertion the point.
+				insert into payment_allocation (payment_id, installment_id, allocation_type, amount,
 					created_at, updated_at)
-				select 'PAY-X-0001', k.id, 100.00, 'CASH', clock_timestamp(), 'pay-key-1',
-					clock_timestamp(), clock_timestamp()
-				from k
+				select p.id, null, 'EXCESS', 100.00, clock_timestamp(), clock_timestamp()
+				from p
 				""";
 		jdbc.update(firstPayment);
 

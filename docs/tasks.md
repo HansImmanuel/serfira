@@ -44,14 +44,27 @@ not run:**
   `PaymentIdempotencyIT`, and the full `./gradlew test` / `./gradlew check` still need a run with Docker up
   before T9 and T24 are counted toward the suite totals above.
 
+**Verified on 2026-10-03 (T25) — Docker available, so the Testcontainers `*IT` suites ran:**
+
+- `./gradlew compileJava compileTestJava`: pass.
+- `./gradlew test --tests "com.serfira.AccountingInvariantsIT"` (32, including the six new V12 cases): pass.
+- `SystemParameterServiceIT`, `ContractActivationIT` (append-only cleanup via `AppendOnlyTestCleanup`) and
+  `BaselineSchemaIT` (two fixtures made atomic for the parent-side payment/entry checks): pass.
+- Full `./gradlew test`: 600 tests, 5 failed. **All 5 failures are a pre-existing T9 statement-query bug**
+  (X-13 / T29), not caused by T25 — confirmed to fail identically on a clean `main` with the T25 work
+  stashed. T24's and T9's own `*IT` suites were green in this run. `./gradlew check` will pass once T29
+  fixes the statement query.
+
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist.
   `frontend/` is empty.
-- Migrations V1–V11: full baseline schema, deferred accounting triggers (V3), state coherence (V4),
+- Migrations V1–V12: full baseline schema, deferred accounting triggers (V3), state coherence (V4),
   settlement immutability (V5), contract create safety (V6/V7), hardened SYSTEM principal (V8), ShedLock +
-  penalty-accrual integrity (V9), explicit `job_run.business_date` for backfill audit (V10), and the
-  `journal_line (contract_id, entry_date)` index for the contract statement (V11, T9).
+  penalty-accrual integrity (V9), explicit `job_run.business_date` for backfill audit (V10), the
+  `journal_line (contract_id, entry_date)` index for the contract statement (V11, T9), and the parent-side
+  accounting backstops — journal-entry/payment parent-side deferred checks, the scoped
+  `uq_journal_entry_event` index, and `system_parameter` append-only (V12, T25).
 - Daily servicing T3 is live: configurable Jakarta cron and explicit backfill entry share one renewable
   ShedLock; every ACTIVE contract is processed atomically in billing → penalty order with five-attempt
   conflict retry, failure isolation, SYSTEM audit, and step-level `job_run` rows.
@@ -90,6 +103,14 @@ not run:**
   `uq_payment_idempotency`). `PaymentConflictClassifier` is constraint-aware: only `uk_penalty_accrual` and
   optimistic-lock conflicts are retried, never `uq_payment_idempotency` (CR-04). `PaymentRetryingService`'s
   `BACKOFF_MILLIS` is `{50, 150}` (the unreachable 400 ms slot removed, CR-13). No migration.
+- DB accounting backstops T25 are live (V12, review CR-05/CR-06/CR-12): parent-side deferred checks reject a
+  `journal_entry` with fewer than two balanced lines and a `payment` whose allocations do not sum to its
+  amount (the V3 triggers only saw the child tables); a scoped partial unique index `uq_journal_entry_event`
+  on `(ref_type, ref_id)` rejects a duplicate non-reversal entry for the four ref types posted today while
+  leaving `SETTLEMENT` free for E2 (amends ADR-008 d5); and `system_parameter` is append-only in the
+  database (`block_modification()` on UPDATE/DELETE). No Java change — existing write paths already satisfy
+  the checks. Test cleanups that delete config rows bypass the trigger on one connection via
+  `support/AppendOnlyTestCleanup`, never by weakening it.
 - Endpoints: `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
   `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, and `GET /api/v1/reports/aging`.
@@ -100,7 +121,7 @@ not run:**
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
 T1–T6 are DONE, so Sprint 4b is complete. Sprint 4c (T23, T7, T8, T9) is complete. **Sprint 4d** is in
-progress: T24 (idempotency key lifecycle) is DONE; T25 (DB accounting backstops), T26 (daily job
+progress: T24 (idempotency key lifecycle) and T25 (DB accounting backstops) are DONE; T26 (daily job
 robustness) and T11 (exit verification) remain.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
@@ -121,7 +142,8 @@ matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
 | X-9  | TS §7: repo `serfira-core/`, package `com.multifinance`                                                                            | Repo `serfira/backend`, package `com.serfira`                                                                                                                                                                                                                              | Doc-only fix, deferred              |
 | X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | Closed by T7 (ADR-015 D5): the decoder rejects such a token (401), and the filter now discards the authentication defensively                                                                                                                                              | T7                                  |
 | X-11 | `IdempotencyService` Javadoc: after retention "the key may be claimed again" (cites ADR-007 decision 9)                            | Resolved by T24 (ADR-017): the takeover is removed, the Javadoc now describes single-use-forever semantics, and a reused expired key is 409 `IDEMPOTENCY_KEY_EXPIRED` before the operation runs                                                                            | DONE (A-13 option A → T24, ADR-017) |
-| X-12 | V1 comment / Addendum §1.2: `system_parameter` is append-only                                                                      | No trigger blocks UPDATE/DELETE (CR-12)                                                                                                                                                                                                                                    | T25                                 |
+| X-12 | V1 comment / Addendum §1.2: `system_parameter` is append-only                                                                      | Resolved by T25 (V12): `block_modification()` on `system_parameter` UPDATE/DELETE; the two ITs bypass it on one connection via `AppendOnlyTestCleanup` (CR-12)                                                                                                             | DONE (T25)                          |
+| X-13 | T9 statement query should run on PostgreSQL                                                                                         | `JournalLineRepository.findContractStatement` uses `(:fromInclusive is null or …)` with typed bind params; PostgreSQL cannot infer the type of the untyped `null` side and raises `42P18 could not determine data type of parameter`, so every `/statement` call is 500. Surfaced on the first Docker run of `ContractStatementIT` (T9's `*IT` were never run with Docker). Pre-existing on `main`, independent of T25                                                                | T29 (new bug task)                  |
 
 ---
 
@@ -153,6 +175,7 @@ ADRs listed.
 | T8    | Aging report (`GET /api/v1/reports/aging`): new read-only `reporting` module, per-installment buckets                                                | DONE   | ADR-013 impl note T8 (A-6/A-7) |
 | T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger-literal rows via a `ledger` read port, filters + paging                          | DONE   | ADR-013 impl note T9 (A-8)     |
 | T24   | Idempotency key lifecycle: single-use forever (option A), 409 `IDEMPOTENCY_KEY_EXPIRED`, classifier no longer retries `uq_payment_idempotency`       | DONE   | ADR-017 (A-13, CR-04, CR-13)   |
+| T25   | DB accounting backstops: V12 parent-side deferred checks, scoped `uq_journal_entry_event`, `system_parameter` append-only                            | DONE   | ADR-008 d5 note (CR-05/06/12)  |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -995,8 +1018,45 @@ business-row backstops (ADR-007 decision 8) unchanged.
 
 ### T25 — Complete the database accounting backstops (review CR-05, CR-06, CR-12)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-10-03): Added `V12__accounting_backstops.sql` — **numbered V12, not V11**: this
+file's scope said "V11", but V11 was already taken by T9's `journal_line` statement index, and applied
+migrations are never renamed, so the next free number is V12. Three backstops:
+(1) **Parent-side deferred checks (CR-06).** Two `DEFERRABLE INITIALLY DEFERRED` constraint triggers on
+`INSERT`: `trg_journal_entry_has_lines_deferred` (≥ 2 balanced lines) and `trg_payment_has_allocations_deferred`
+(Σ allocations = `payment.amount`). INSERT is the only event that needs covering — `journal_entry` is
+immutable (V1) and a `payment` can only move `POSTED → VOIDED`, never shed its allocations (immutable, V1).
+(2) **Event uniqueness (CR-05, amends ADR-008 d5).** Partial unique index `uq_journal_entry_event` on
+`(ref_type, ref_id) WHERE reversal_of_id IS NULL AND ref_type IN ('CONTRACT_ACTIVATION','BILLING','PENALTY_ACCRUAL','PAYMENT')`.
+Scoped to the four ref types the ledger posts today, so E2 keeps the freedom to post several `SETTLEMENT`
+entries per event; reversals share `(ref_type, ref_id)` and are excluded. No existing data can violate it
+(the service posts one entry per event today), so the index builds cleanly on an empty or V11 database.
+(3) **`system_parameter` append-only (CR-12 / X-12).** `trg_system_parameter_immutable` attaches
+`block_modification()` for UPDATE/DELETE. No Java change: every current write path already satisfies all
+three checks. The two ITs that deleted their own rows (`SystemParameterServiceIT`, `ContractActivationIT`)
+now call the test-only `support/AppendOnlyTestCleanup`, which deletes on a single connection with
+`session_replication_role = replica` set and reset around the delete (the Testcontainers role is a
+superuser; the application role is not, so the trigger stays in force in every real environment). Docs:
+ADR-008 gets a T25 implementation note amending decision 5; X-12 closed; CR-05/CR-06/CR-12 closed. New
+`AccountingInvariantsIT` cases: 0-line entry, 1-line entry, 0-allocation payment, duplicate non-reversal
+`(BILLING, installment)` rejected while a reversal is allowed, `SETTLEMENT` still allows several entries,
+and `system_parameter` UPDATE/DELETE rejected. Each rejection asserts the SQLSTATE, which also pins the
+timing: the two parent-side checks are DEFERRED and fail at COMMIT with `P0001` (raise_exception), while
+`uq_journal_entry_event` fails at the INSERT statement with `23505` (unique_violation) and the
+`system_parameter` BEFORE trigger fails at the UPDATE/DELETE statement with `P0001` — so the AC phrase
+"fails at commit" is literally true only for the parent-side triggers (noted in the V12 header and the
+tests). The parent-side payment check also meant three pre-T25
+fixtures that committed a standalone payment or a lineless entry had to insert the parent and its children
+atomically (`AccountingInvariantsIT`, `BaselineSchemaIT`), matching the real write path — no guard was
+weakened. Verification (Docker up): `.\gradlew compileJava compileTestJava` passes;
+`AccountingInvariantsIT` (32), `BaselineSchemaIT`, `SystemParameterServiceIT` and `ContractActivationIT` all
+pass; the full `.\gradlew test` is **600 tests / 5 failed, and all 5 failures are the pre-existing T9
+contract-statement bug** (`JournalLineRepository.findContractStatement`'s untyped-`null` binds → 500;
+recorded as X-13 / new task T29), which was verified to fail identically on a clean `main` with the T25 work
+stashed. No T25 change introduces a regression. `.\gradlew check` will go green once T29 fixes the statement
+query.
 
 Goal: Make the claim that "the database is the backstop" true for the cases the V3 triggers cannot see,
 before Sprint 5 adds new posting types.
@@ -1093,6 +1153,41 @@ Tests:
 
 Risks: A contract activated during a run with an id below the cursor waits for the next day. The current
 snapshot list behaves the same way.
+
+### T29 — Fix the contract statement query on PostgreSQL (bug, X-13)
+
+Status: TODO
+Estimate: 1 pt
+
+Goal: Make `GET /api/v1/contracts/{id}/statement` work on PostgreSQL. It is 500 for every call today.
+
+Context: `JournalLineRepository.findContractStatement` (T9) guards its optional filters with
+`(:fromInclusive is null or line.entryDate >= :fromInclusive)` and the same shape for `:toExclusive` and
+`:refType`. When the parameter is bound to `null`, PostgreSQL sees an untyped `null` on one side of the
+`OR` and raises `42P18 could not determine data type of parameter`, so the whole query fails — including
+the no-filter and DRAFT-contract cases. The bug was found on the first Docker run of `ContractStatementIT`
+(5 of its tests fail with 500 `INTERNAL_ERROR`); T9's note records that its `*IT` suites were never run with
+Docker, so this never surfaced. It is pre-existing on `main` and independent of T25 (verified by running the
+test with the T25 working tree stashed).
+
+Scope: Give PostgreSQL a type for the nullable binds, without changing the documented filter semantics
+(inclusive `from`, exclusive-upper `to`, optional `ref_type`). Options to weigh at implementation time:
+cast the bind (`cast(:fromInclusive as timestamp)`), pass a typed sentinel, or build the predicate
+dynamically (Specification/Criteria) so absent filters drop out of the SQL entirely. Keep the paging and
+chronological order unchanged.
+
+Dependencies: none. It should land before T11 counts the Phase-1 exit, because the statement is part of the
+PRD §7 demo.
+
+Acceptance Criteria:
+
+- Every `ContractStatementIT` test passes against PostgreSQL: no filter, `ref_type` filter, `from`/`to`
+  boundaries, DRAFT → empty, role matrix, 404.
+- `./gradlew test` and `./gradlew check` are green.
+
+Tests: the existing `ContractStatementIT` (no new behaviour; the query is fixed, not the spec).
+
+Risks: none of note.
 
 ### T10 — Component-exact penalty base (conditional)
 
@@ -1250,14 +1345,14 @@ for this check; the last green run is the T6 run (460 tests).
 | CR-02 | ShedLock 6.9.0 on Boot 4.1.1                              | **Confirmed.** The ShedLock README matrix lists 7.x as tested with Boot 4.x and 6.x with Boot 3.3–3.5. No defect is observed: the lock ITs are green                                                                                                                                                                          | MEDIUM (unsupported pairing) | T23 (DONE)          |
 | CR-03 | springdoc 2.8.9 on Boot 4                                 | **Confirmed.** The springdoc README says Boot 4 needs springdoc v3. No test requests `/v3/api-docs`, so runtime compatibility is unverified                                                                                                                                                                                   | MEDIUM                       | T23 (DONE)          |
 | CR-04 | Retention takeover vs permanent business-row keys         | **Confirmed, severity lowered.** No double execution. After 7 days: contracts → 409 `DUPLICATE_CONTRACT`/`CONFLICT`. Payments → 3 attempts that redo billing and accrual, then 409 `CONCURRENT_MODIFICATION`, because `PaymentConflictClassifier` retries every `23505`. `uq_settlement_idempotency` will behave the same way | MEDIUM                       | A-13 (A) → T24      |
-| CR-05 | Ledger one-entry-per-event only in Java                   | **Partially true.** It is a documented decision (ADR-008 d5), and every current event has its own DB guard, so the race described does not occur today. Adopted as defense in depth, scoped to current ref types                                                                                                              | LOW                          | T25                 |
-| CR-06 | Zero-line entry / zero-allocation payment bypass V3       | **Confirmed.** The V3 triggers are on child tables only. This was already a T16 carry-forward; moved earlier                                                                                                                                                                                                                  | MEDIUM                       | T25                 |
+| CR-05 | Ledger one-entry-per-event only in Java                   | **Partially true.** It is a documented decision (ADR-008 d5), and every current event has its own DB guard, so the race described does not occur today. Adopted as defense in depth, scoped to current ref types                                                                                                              | LOW                          | T25 (DONE)          |
+| CR-06 | Zero-line entry / zero-allocation payment bypass V3       | **Confirmed.** The V3 triggers are on child tables only. This was already a T16 carry-forward; moved earlier                                                                                                                                                                                                                  | MEDIUM                       | T25 (DONE)          |
 | CR-07 | `job_run` stuck in `RUNNING`                              | **Confirmed.** It also happens when any exception escapes `runAsSystem`, not only on JVM death. It affects the audit trail, not money                                                                                                                                                                                         | MEDIUM                       | T26                 |
 | CR-08 | All ACTIVE ids loaded at once                             | **Confirmed** (`findIdsByStatusOrderById` returns a `List`). It is ids only, so it is not a Phase-1 concern                                                                                                                                                                                                                   | LOW                          | T26                 |
 | CR-09 | Daily retry without backoff                               | **Confirmed** (`continue`, 5 attempts, no pause)                                                                                                                                                                                                                                                                              | LOW–MEDIUM                   | T26                 |
 | CR-10 | No `iss`/`aud`/active-user/role checks                    | **Roles + `exp` fixed (T7, ADR-015).** Role matrix enforced and `exp` now required. `iss`/`aud`/active-user still need a real issuer                                                                                                                                                                                          | MEDIUM                       | T7 (DONE), T21      |
 | CR-11 | No key rotation                                           | **Confirmed and documented** (ADR-007 consequences). The `v1:` envelope carries no key id                                                                                                                                                                                                                                     | MEDIUM (pre-production)      | T28                 |
-| CR-12 | `system_parameter` append-only only by convention         | **Confirmed.** No trigger exists. Two ITs delete rows during cleanup                                                                                                                                                                                                                                                          | MEDIUM                       | T25                 |
+| CR-12 | `system_parameter` append-only only by convention         | **Fixed (T25, V12).** `block_modification()` now blocks UPDATE/DELETE; the two ITs delete their own rows through a scoped single-connection trigger bypass (`AppendOnlyTestCleanup`), not by weakening the trigger                                                                                                             | MEDIUM                       | T25 (DONE)          |
 | CR-13 | 50/150/400 ms documented, 50/150 ms real                  | **Confirmed.** `BACKOFF_MILLIS[2]` is unreachable. The docs are corrected in this re-plan; the code constant is tidied in T24. Addendum §5 only gave the values as an example ("mis.") and is unchanged                                                                                                                       | LOW                          | docs now, T24       |
 | CR-14 | Outstanding formula differs across read and write paths   | **Confirmed but dormant.** No `penalty_adjustment` write path exists. It was already a T15 carry-forward                                                                                                                                                                                                                      | LOW                          | T15                 |
 | CR-15 | CI runs only `test` + compose build                       | **Confirmed**                                                                                                                                                                                                                                                                                                                 | LOW                          | T23 (smoke IT), T27 |

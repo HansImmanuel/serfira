@@ -13,11 +13,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Sprint 2 readiness suite for the V3–V5 migration set, run against a real PostgreSQL 16
@@ -113,6 +115,30 @@ class AccountingInvariantsIT {
 				"key-" + UUID.randomUUID());
 	}
 
+	private void insertPaymentWithId(UUID paymentId, BigDecimal amount) {
+		jdbc.update("""
+				insert into payment (id, payment_no, contract_id, amount, channel, paid_at, idempotency_key,
+					created_at, updated_at)
+					values (?, ?, ?, ?, 'CASH', clock_timestamp(), ?, clock_timestamp(), clock_timestamp())""",
+				paymentId,
+				"PAY-IT-" + UUID.randomUUID().toString().replace("-", "").substring(0, 22), contractId, amount,
+				"key-" + UUID.randomUUID());
+	}
+
+	/**
+	 * Insert a payment with a single matching PRINCIPAL allocation in one transaction, so the V12
+	 * parent-side check (Σ allocations = amount) and the V3 component caps both pass. The fixture
+	 * installment's principal_amount is 75,000, so any {@code amount} up to that is a valid allocation.
+	 */
+	private UUID insertValidPayment(BigDecimal amount) {
+		UUID paymentId = UUID.randomUUID();
+		tx.executeWithoutResult(status -> {
+			insertPaymentWithId(paymentId, amount);
+			insertAllocation(paymentId, "PRINCIPAL", amount.toPlainString());
+		});
+		return paymentId;
+	}
+
 	private void insertAllocation(UUID paymentId, String allocationType, String amount) {
 		jdbc.update("""
 				insert into payment_allocation (payment_id, installment_id, allocation_type, amount, created_at, updated_at)
@@ -188,63 +214,72 @@ class AccountingInvariantsIT {
 
 	@Test
 	void paymentAllocationsMustTotalPaymentAmountAtCommit() {
-		UUID paymentId = insertPayment(new BigDecimal("1000.00"));
+		// V12 adds a parent-side deferred check on payment INSERT, so a payment and its allocations
+		// must commit in one transaction (as the real write path does). The id is captured inside.
+		UUID[] holder = new UUID[1];
 		tx.executeWithoutResult(status -> {
-			insertAllocation(paymentId, "PRINCIPAL", "600.00");
-			insertAllocation(paymentId, "PRINCIPAL", "400.00");
+			holder[0] = insertPayment(new BigDecimal("1000.00"));
+			insertAllocation(holder[0], "PRINCIPAL", "600.00");
+			insertAllocation(holder[0], "PRINCIPAL", "400.00");
 		});
-		assertThat(countOf("payment_allocation", "payment_id", paymentId)).isEqualTo(2L);
+		assertThat(countOf("payment_allocation", "payment_id", holder[0])).isEqualTo(2L);
 	}
 
 	@Test
 	void mismatchedPaymentAllocationSumIsRejectedAtCommit() {
-		UUID paymentId = insertPayment(new BigDecimal("1000.00"));
+		UUID paymentId = UUID.randomUUID();
 		assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+			insertPaymentWithId(paymentId, new BigDecimal("1000.00"));
 			insertAllocation(paymentId, "PRINCIPAL", "600.00");
 			insertAllocation(paymentId, "PRINCIPAL", "300.00");
 		})).isInstanceOf(RuntimeException.class);
+		assertThat(countOf("payment", "id", paymentId)).isZero();
 		assertThat(countOf("payment_allocation", "payment_id", paymentId)).isZero();
 	}
 
 	@Test
 	void interestAllocationBeyondRecognizedAmountIsRejectedAtCommit() {
 		// Fixture recognized_interest_amount = 0 — an INTEREST allocation is impossible by itself.
-		UUID paymentId = insertPayment(new BigDecimal("100.00"));
-		assertThatThrownBy(() -> tx.executeWithoutResult(status ->
-				insertAllocation(paymentId, "INTEREST", "100.00")))
-				.isInstanceOf(RuntimeException.class);
+		UUID paymentId = UUID.randomUUID();
+		assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+			insertPaymentWithId(paymentId, new BigDecimal("100.00"));
+			insertAllocation(paymentId, "INTEREST", "100.00");
+		})).isInstanceOf(RuntimeException.class);
 		assertThat(countOf("payment_allocation", "payment_id", paymentId)).isZero();
 	}
 
 	@Test
 	void recognitionThenAllocationInSameTransactionCommits() {
 		// H-4: recognized_interest update and the allocation are separate statements in one tx.
-		UUID paymentId = insertPayment(new BigDecimal("100.00"));
+		UUID[] holder = new UUID[1];
 		tx.executeWithoutResult(status -> {
+			holder[0] = insertPayment(new BigDecimal("100.00"));
 			jdbc.update("update installment set recognized_interest_amount = 100.00 where id = ?", installmentId);
-			insertAllocation(paymentId, "INTEREST", "100.00");
+			insertAllocation(holder[0], "INTEREST", "100.00");
 		});
-		assertThat(countOf("payment_allocation", "payment_id", paymentId)).isEqualTo(1L);
+		assertThat(countOf("payment_allocation", "payment_id", holder[0])).isEqualTo(1L);
 	}
 
 	@Test
 	void allocationThenRecognitionInSameTransactionCommits() {
 		// H-4 mirrored: allocation first, recognition second — deferred checks must still pass.
-		UUID paymentId = insertPayment(new BigDecimal("100.00"));
+		UUID[] holder = new UUID[1];
 		tx.executeWithoutResult(status -> {
-			insertAllocation(paymentId, "INTEREST", "100.00");
+			holder[0] = insertPayment(new BigDecimal("100.00"));
+			insertAllocation(holder[0], "INTEREST", "100.00");
 			jdbc.update("update installment set recognized_interest_amount = 100.00 where id = ?", installmentId);
 		});
-		assertThat(countOf("payment_allocation", "payment_id", paymentId)).isEqualTo(1L);
+		assertThat(countOf("payment_allocation", "payment_id", holder[0])).isEqualTo(1L);
 	}
 
 	@Test
 	void penaltyAllocationBeyondEffectiveOutstandingIsRejectedAtCommit() {
 		// Fixture penalty_amount = 0: any PENALTY allocation must be rejected at commit.
-		UUID paymentId = insertPayment(new BigDecimal("50.00"));
-		assertThatThrownBy(() -> tx.executeWithoutResult(status ->
-				insertAllocation(paymentId, "PENALTY", "50.00")))
-				.isInstanceOf(RuntimeException.class);
+		UUID paymentId = UUID.randomUUID();
+		assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+			insertPaymentWithId(paymentId, new BigDecimal("50.00"));
+			insertAllocation(paymentId, "PENALTY", "50.00");
+		})).isInstanceOf(RuntimeException.class);
 		assertThat(countOf("payment_allocation", "payment_id", paymentId)).isZero();
 	}
 
@@ -300,7 +335,9 @@ class AccountingInvariantsIT {
 
 	@Test
 	void voidedPaymentRequiresReasonAndTimestamp() {
-		UUID paymentId = insertPayment(new BigDecimal("100.00"));
+		// A valid payment needs allocations summing to its amount (V12 parent-side check), inserted
+		// atomically; the test then exercises the V4 void-coherence rule on the committed row.
+		UUID paymentId = insertValidPayment(new BigDecimal("100.00"));
 		assertThatThrownBy(() -> jdbc.update("update payment set status = 'VOIDED' where id = ?", paymentId))
 				.isInstanceOf(DataIntegrityViolationException.class);
 	}
@@ -380,5 +417,145 @@ class AccountingInvariantsIT {
 					created_at, updated_at)
 					values (?, date '2026-03-01', ?, 10.00, clock_timestamp(), clock_timestamp())
 					returning id""", UUID.class, installmentId, daysLate);
+	}
+
+	// -------------------------------------------------------------------------------------
+	// V12 — parent-side accounting backstops (T25, review CR-05/CR-06/CR-12):
+	//   * a journal_entry must have ≥ 2 balanced lines (CR-06),
+	//   * a payment must have allocations summing to its amount (CR-06),
+	//   * at most one non-reversal entry per (ref_type, ref_id) for current ref types; a reversal
+	//     may still share the pair (CR-05, amends ADR-008 d5),
+	//   * system_parameter is append-only in the database (CR-12 / X-12).
+	//
+	// Rejection timing differs by guard, and these tests assert the SQLSTATE so the distinction is
+	// pinned (the T25 AC phrase "fails at commit" is literally true only for the first group):
+	//   * the two parent-side constraint triggers are DEFERRED, so they raise raise_exception
+	//     (SQLSTATE P0001) at COMMIT — asserted by letting the inner statements succeed and catching
+	//     the failure from tx.executeWithoutResult itself;
+	//   * uq_journal_entry_event raises unique_violation (23505) at the INSERT statement;
+	//   * trg_system_parameter_immutable (BEFORE UPDATE/DELETE) raises P0001 at the statement.
+	// -------------------------------------------------------------------------------------
+
+	private static final String SQLSTATE_RAISE_EXCEPTION = "P0001";
+	private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
+
+	@Test
+	void journalEntryWithZeroLinesIsRejectedAtCommit() {
+		UUID entryId = UUID.randomUUID();
+		Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(status -> jdbc.update("""
+				insert into journal_entry (id, entry_date, ref_type, ref_id, posted_at, created_at)
+					values (?, clock_timestamp(), 'TEST', ?, clock_timestamp(), clock_timestamp())""",
+				entryId, entryId)));
+		// The INSERT itself succeeds; the deferred trigger fires at COMMIT with P0001.
+		assertThat(sqlStateOf(thrown)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+		assertThat(countOf("journal_entry", "id", entryId)).isZero();
+	}
+
+	@Test
+	void journalEntryWithOneLineIsRejectedAtCommit() {
+		UUID entryId = UUID.randomUUID();
+		Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(status -> {
+			jdbc.update("""
+					insert into journal_entry (id, entry_date, ref_type, ref_id, posted_at, created_at)
+						values (?, clock_timestamp(), 'TEST', ?, clock_timestamp(), clock_timestamp())""",
+					entryId, entryId);
+			jdbc.update("""
+					insert into journal_line (journal_entry_id, entry_date, account_code, debit, credit, created_at)
+						values (?, clock_timestamp(), 'KAS', 500.00, 0, clock_timestamp())""", entryId);
+		}));
+		assertThat(sqlStateOf(thrown)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+		assertThat(countOf("journal_entry", "id", entryId)).isZero();
+	}
+
+	@Test
+	void paymentWithZeroAllocationsIsRejectedAtCommit() {
+		UUID paymentId = UUID.randomUUID();
+		Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(status -> jdbc.update("""
+				insert into payment (id, payment_no, contract_id, amount, channel, paid_at, idempotency_key,
+					created_at, updated_at)
+					values (?, 'PAY-IT-NOALLOC', ?, 100.00, 'CASH', clock_timestamp(), 'noalloc-key',
+						clock_timestamp(), clock_timestamp())""", paymentId, contractId)));
+		assertThat(sqlStateOf(thrown)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+		assertThat(countOf("payment", "id", paymentId)).isZero();
+	}
+
+	@Test
+	void secondNonReversalEntryForTheSameEventIsRejectedAtStatementTimeWhileAReversalIsAllowed() {
+		// First BILLING entry for the installment commits.
+		insertBalancedEntry(UUID.randomUUID(), "BILLING", installmentId, null);
+
+		// A second non-reversal BILLING entry for the same ref_id violates uq_journal_entry_event.
+		// The unique index is not deferred, so it rejects at the INSERT statement with 23505.
+		UUID duplicateId = UUID.randomUUID();
+		Throwable thrown = catchThrowable(() -> insertBalancedEntry(duplicateId, "BILLING", installmentId, null));
+		assertThat(thrown).isInstanceOf(DataIntegrityViolationException.class);
+		assertThat(sqlStateOf(thrown)).isEqualTo(SQLSTATE_UNIQUE_VIOLATION);
+		assertThat(countOf("journal_entry", "id", duplicateId)).isZero();
+
+		// A reversal of the original (reversal_of_id set) shares (BILLING, installment) and is allowed.
+		UUID originalId = jdbc.queryForObject(
+				"select id from journal_entry where ref_type = 'BILLING' and ref_id = ? and reversal_of_id is null",
+				UUID.class, installmentId);
+		UUID reversalId = UUID.randomUUID();
+		insertBalancedEntry(reversalId, "BILLING", installmentId, originalId);
+		assertThat(countOf("journal_entry", "id", reversalId)).isEqualTo(1L);
+	}
+
+	@Test
+	void settlementEventsMayStillPostSeveralEntries() {
+		// The uq_journal_entry_event index is scoped to current ref types, leaving SETTLEMENT free
+		// for E2 to post more than one entry per event (ADR-008 decision 5, kept open by T25).
+		UUID refId = UUID.randomUUID();
+		insertBalancedEntry(UUID.randomUUID(), "SETTLEMENT", refId, null);
+		insertBalancedEntry(UUID.randomUUID(), "SETTLEMENT", refId, null);
+		assertThat(jdbc.queryForObject(
+				"select count(*) from journal_entry where ref_type = 'SETTLEMENT' and ref_id = ?",
+				Long.class, refId)).isEqualTo(2L);
+	}
+
+	@Test
+	void systemParameterCannotBeUpdatedOrDeleted() {
+		// A V1 seed row stands in for any append-only configuration row. The BEFORE trigger rejects
+		// at the UPDATE/DELETE statement (not at commit) with raise_exception (P0001).
+		Throwable onUpdate = catchThrowable(() -> jdbc.update(
+				"update system_parameter set param_value = '99' where param_key = 'DEFAULT_GRACE_PERIOD_DAYS'"));
+		assertThat(onUpdate).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onUpdate)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+
+		Throwable onDelete = catchThrowable(() -> jdbc.update(
+				"delete from system_parameter where param_key = 'DEFAULT_GRACE_PERIOD_DAYS'"));
+		assertThat(onDelete).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onDelete)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+	}
+
+	/** Walk the cause chain to the originating {@link SQLException} and return its SQLSTATE. */
+	private static String sqlStateOf(Throwable thrown) {
+		assertThat(thrown).as("an exception was expected").isNotNull();
+		for (Throwable cause = thrown; cause != null; cause = cause.getCause()) {
+			if (cause instanceof SQLException sqlException) {
+				return sqlException.getSQLState();
+			}
+		}
+		throw new AssertionError("no SQLException in the cause chain of " + thrown, thrown);
+	}
+
+	/**
+	 * Insert a journal entry with two balanced lines (KAS debit / PIUTANG_POKOK credit) in one
+	 * transaction so the V3 and V12 deferred checks pass. {@code reversalOfId} is {@code null} for an
+	 * original entry or the id of the entry being reversed.
+	 */
+	private void insertBalancedEntry(UUID entryId, String refType, UUID refId, UUID reversalOfId) {
+		tx.executeWithoutResult(status -> {
+			jdbc.update("""
+					insert into journal_entry (id, entry_date, ref_type, ref_id, reversal_of_id, posted_at, created_at)
+						values (?, clock_timestamp(), ?, ?, ?, clock_timestamp(), clock_timestamp())""",
+					entryId, refType, refId, reversalOfId);
+			jdbc.update("""
+					insert into journal_line (journal_entry_id, entry_date, account_code, debit, credit, created_at)
+						values (?, clock_timestamp(), 'KAS', 500.00, 0, clock_timestamp())""", entryId);
+			jdbc.update("""
+					insert into journal_line (journal_entry_id, entry_date, account_code, debit, credit, created_at)
+						values (?, clock_timestamp(), 'PIUTANG_POKOK', 0, 500.00, clock_timestamp())""", entryId);
+		});
 	}
 }
