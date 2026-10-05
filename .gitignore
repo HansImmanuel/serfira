@@ -28,6 +28,10 @@ review-pr-*
 # Kiro local backups
 .kiro/*.zip
 
+# Agent run artifacts and worktrees
+.agents/
+.worktrees/
+
 # Frontend (placeholder for future phases)
 node_modules/
 .next/
