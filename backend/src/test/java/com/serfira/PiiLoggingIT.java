@@ -57,8 +57,16 @@ class PiiLoggingIT {
 
 	/** First installment due date of the fixture contract. */
 	private static final LocalDate BUSINESS_DATE = LocalDate.of(2026, 2, 28);
-	/** Period 1 is overdue on this date, so the daily job bills and accrues penalty. */
-	private static final LocalDate LATE_BUSINESS_DATE = LocalDate.of(2026, 3, 31);
+	/**
+	 * Period 1 is paid in full on {@link #BUSINESS_DATE}, so for the job to actually accrue penalty (and emit
+	 * the penalty-accrual log this guard must scan) it has to run on a date where period 2 is chargeable.
+	 * Period 2 is due 2026-03-31; with the snapshotted 3-day grace its first chargeable day is 2026-04-04,
+	 * where it is one day late. On that date the job bills period 2's interest and accrues one penalty day.
+	 */
+	private static final LocalDate LATE_BUSINESS_DATE = LocalDate.of(2026, 4, 4);
+
+	/** The accrual logger whose "Accrued …" line this guard requires the job to have emitted. */
+	private static final String PENALTY_ACCRUAL_LOGGER = "com.serfira.penalty.application.PenaltyAccrualService";
 
 	/** Known-plaintext PII fixture. The raw phone normalizes (trunk 0 → 62) to 628123456789. */
 	private static final String NIK = "3171012501900001";
@@ -130,13 +138,19 @@ class PiiLoggingIT {
 		MvcResult paid = pay(contractId, "pii-payment", "1573333.33");
 		assertThat(paid.getResponse().getStatus()).isEqualTo(201);
 
-		// (c) the daily servicing job for a late date (bills + accrues penalty, which logs per contract).
+		// (c) the daily servicing job for a date where period 2 is chargeable (bills + accrues penalty, which
+		// logs per contract). Period 1 is already paid, so this is the installment that produces the accrual.
 		fixedClock().setDate(LATE_BUSINESS_DATE);
 		job.run(LATE_BUSINESS_DATE);
 
 		List<ILoggingEvent> events = new ArrayList<>(appender.list);
-		// The appender must have observed logging, so the absence assertions below are meaningful.
-		assertThat(events).isNotEmpty();
+		// The penalty-accrual path must actually have run and logged, otherwise the PII scan below would
+		// never cover it. Require the PenaltyAccrualService "Accrued …" line for this business date.
+		assertThat(events)
+				.as("the daily job must have emitted a penalty-accrual log for %s", LATE_BUSINESS_DATE)
+				.anyMatch(event -> event.getLoggerName().equals(PENALTY_ACCRUAL_LOGGER)
+						&& event.getFormattedMessage().startsWith("Accrued ")
+						&& event.getFormattedMessage().contains(LATE_BUSINESS_DATE.toString()));
 		for (ILoggingEvent event : events) {
 			String line = renderFully(event);
 			assertThat(line)

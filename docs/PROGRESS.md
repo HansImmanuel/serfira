@@ -89,7 +89,7 @@ Sprint 4 (penalty, aging & phase-1 close) — **berjalan** (lihat [ADR-011](adr/
       diturunkan dari `PaymentApiIT`. `PiiLoggingIT` baru membuktikan NIK/telepon mentah dan telepon ter-normalisasi
       `628…` tak pernah muncul di log lintas create/payment/job. Ekstensi cleanup TRUNCATE bersama ditunda (NO-GO,
       behaviour-neutral). Verifikasi (Docker aktif, di-rerun paksa oleh orchestrator): `.\gradlew check` pass dan
-      full `.\gradlew test --rerun-tasks` = **80 suites / 632 tests / 0 gagal**. Review semantik: APPROVED (dua
+      full `.\gradlew test --rerun-tasks` = **80 suites / 633 tests / 0 gagal**. Review semantik: APPROVED (dua
       observasi non-blocking). Branch `t11-phase1-exit-verification` @ `a8fa1a6`. **Sprint 4d selesai → Sprint 4
       (Penalty, Aging & Phase-1 Close) selesai.**
 
