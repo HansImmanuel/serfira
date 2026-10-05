@@ -190,8 +190,12 @@ class PaymentIdempotencyIT {
 		assertThat(paymentIds).containsOnly(paymentIds.get(0));
 		assertThat(count("payment")).isEqualTo(1L);
 		assertThat(countPaymentClaims()).isEqualTo(1L);
-		// A losing retry must fail loudly rather than receive the money a second time.
-		assertThat(failures).allSatisfy(cause -> assertThat(cause).isNotNull());
+		// The claim is INSERT ... ON CONFLICT (endpoint, key) DO NOTHING, so under READ COMMITTED a losing
+		// retry blocks until the winner commits and then replays the stored response — commonly returning the
+		// same id with no failure at all. If a loser ever does throw, it must be a domain ConflictException
+		// (ErrorCode.CONFLICT), never a raw SQLException / DataIntegrityViolation / optimistic-lock error and
+		// never null — i.e. no loser can quietly receive the money twice (ADR-017, TS §2.5).
+		assertThat(failures).allSatisfy(cause -> assertThat(cause).isInstanceOf(ConflictException.class));
 		assertThat(paidAmountOf(1)).isEqualByComparingTo("100000.00");
 	}
 

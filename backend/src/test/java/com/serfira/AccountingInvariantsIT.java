@@ -157,6 +157,48 @@ class AccountingInvariantsIT {
 					returning id""", UUID.class, contractId);
 	}
 
+	/**
+	 * Insert a settlement_quote → settlement → settlement_allocation chain in one transaction and return
+	 * the allocation id. The whole settlement schema exists in V1/V5 even though the settlement write path
+	 * is unbuilt (E2), so a minimal valid row is reachable directly via JDBC. {@code allocation_type} must
+	 * be one of PENALTY/INTEREST/PRINCIPAL and {@code amount > 0} (V1 CHECK constraints).
+	 */
+	private UUID insertSettlementWithAllocation() {
+		UUID[] holder = new UUID[1];
+		tx.executeWithoutResult(status -> {
+			UUID quoteId = insertQuote();
+			UUID settlementId = jdbc.queryForObject("""
+					insert into settlement (settlement_no, contract_id, quote_id, cash_received, rebate_amount,
+						admin_fee, executed_at, idempotency_key, created_at, updated_at)
+						values ('SET-IT-ALLOC', ?, ?, 0.00, 0.00, 0.00, clock_timestamp(), 'set-alloc-key',
+							clock_timestamp(), clock_timestamp())
+						returning id""", UUID.class, contractId, quoteId);
+			holder[0] = jdbc.queryForObject("""
+					insert into settlement_allocation (settlement_id, installment_id, allocation_type, amount,
+						created_at, updated_at)
+						values (?, ?, 'PRINCIPAL', 100.00, clock_timestamp(), clock_timestamp())
+						returning id""", UUID.class, settlementId, installmentId);
+		});
+		return holder[0];
+	}
+
+	/** Insert an active app_user to satisfy penalty_adjustment.approved_by (NOT NULL FK to app_user). */
+	private UUID insertApprover() {
+		return jdbc.queryForObject("""
+				insert into app_user (username, password_hash, full_name, role, is_active, created_at, updated_at)
+					values (?, 'test-hash', 'IT Approver', 'ADMIN_OPERASIONAL', TRUE, clock_timestamp(), clock_timestamp())
+					returning id""", UUID.class, "it-approver-" + UUID.randomUUID());
+	}
+
+	/** Insert a minimal valid WAIVE adjustment (amount > 0) against the fixture installment. */
+	private UUID insertPenaltyAdjustment(UUID approverId) {
+		return jdbc.queryForObject("""
+				insert into penalty_adjustment (installment_id, adjustment_type, amount, reason, approved_by,
+					created_at, updated_at)
+					values (?, 'WAIVE', 10.00, 'it fixture', ?, clock_timestamp(), clock_timestamp())
+					returning id""", UUID.class, installmentId, approverId);
+	}
+
 	private long countOf(String table, String column, UUID value) {
 		return jdbc.queryForObject("select count(*) from " + table + " where " + column + " = ?", Long.class, value);
 	}
@@ -193,8 +235,11 @@ class AccountingInvariantsIT {
 
 	@Test
 	void unbalancedJournalEntryIsRejectedAtCommitAndNothingPersists() {
+		// The Σ debit = Σ credit guard (invariant 1, DM §1.8, ADR-002) is a DEFERRED constraint trigger, so
+		// the inner statements succeed and the raise_exception surfaces at COMMIT with SQLSTATE P0001 — not a
+		// generic RuntimeException. Asserting the SQLSTATE pins the exact backstop that fired.
 		UUID entryId = UUID.randomUUID();
-		assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+		Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(status -> {
 			jdbc.update("""
 					insert into journal_entry (id, entry_date, ref_type, ref_id, posted_at, created_at)
 					values (?, clock_timestamp(), 'TEST', ?, clock_timestamp(), clock_timestamp())""", entryId, entryId);
@@ -204,7 +249,8 @@ class AccountingInvariantsIT {
 			jdbc.update("""
 					insert into journal_line (journal_entry_id, entry_date, account_code, debit, credit, created_at)
 					values (?, clock_timestamp(), 'PIUTANG_POKOK', 0, 499.00, clock_timestamp())""", entryId);
-		})).isInstanceOf(RuntimeException.class);
+		}));
+		assertThat(sqlStateOf(thrown)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
 		assertThat(countOf("journal_line", "journal_entry_id", entryId)).isZero();
 	}
 
@@ -227,12 +273,16 @@ class AccountingInvariantsIT {
 
 	@Test
 	void mismatchedPaymentAllocationSumIsRejectedAtCommit() {
+		// Σ allocations = payment.amount (invariant 3, DM §1.8) is a DEFERRED parent-side check, so the
+		// inserts succeed and the raise_exception fires at COMMIT with SQLSTATE P0001, not a bare
+		// RuntimeException. The SQLSTATE assertion pins exactly which backstop rejected the write.
 		UUID paymentId = UUID.randomUUID();
-		assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+		Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(status -> {
 			insertPaymentWithId(paymentId, new BigDecimal("1000.00"));
 			insertAllocation(paymentId, "PRINCIPAL", "600.00");
 			insertAllocation(paymentId, "PRINCIPAL", "300.00");
-		})).isInstanceOf(RuntimeException.class);
+		}));
+		assertThat(sqlStateOf(thrown)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
 		assertThat(countOf("payment", "id", paymentId)).isZero();
 		assertThat(countOf("payment_allocation", "payment_id", paymentId)).isZero();
 	}
@@ -373,6 +423,96 @@ class AccountingInvariantsIT {
 				.isInstanceOf(DataAccessException.class);
 		assertThatThrownBy(() -> jdbc.update("delete from settlement_quote where id = ?", quoteId))
 				.isInstanceOf(DataAccessException.class);
+	}
+
+	// -------------------------------------------------------------------------------------
+	// V1 — append-only child tables (T11). journal_line, payment_allocation,
+	// settlement_allocation and penalty_adjustment each carry a block_modification() trigger
+	// (BEFORE UPDATE OR DELETE), so corrections flow through reversal/adjustment rows, never edits
+	// of posted history (DM §1.8/§1.9/§1.10, invariants 8 & 12, ADR-002). The trigger is a bare
+	// RAISE EXCEPTION, so every rejection carries SQLSTATE P0001 at the statement — asserted here so
+	// the backstop is pinned, not a generic RuntimeException. (journal_entry, penalty_accrual,
+	// settlement, settlement_quote and system_parameter are covered by their own sections above/below.)
+	// -------------------------------------------------------------------------------------
+
+	@Test
+	void journalLineCannotBeUpdatedOrDeleted() {
+		UUID entryId = UUID.randomUUID();
+		insertBalancedEntry(entryId, "TEST", entryId, null);
+		UUID lineId = jdbc.queryForObject(
+				"select id from journal_line where journal_entry_id = ? limit 1", UUID.class, entryId);
+
+		Throwable onUpdate = catchThrowable(
+				() -> jdbc.update("update journal_line set debit = 1.00 where id = ?", lineId));
+		assertThat(onUpdate).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onUpdate)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+
+		Throwable onDelete = catchThrowable(
+				() -> jdbc.update("delete from journal_line where id = ?", lineId));
+		assertThat(onDelete).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onDelete)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+		// The posted line survives both rejected mutations.
+		assertThat(countOf("journal_line", "id", lineId)).isEqualTo(1L);
+	}
+
+	@Test
+	void paymentAllocationCannotBeUpdatedOrDeleted() {
+		UUID paymentId = insertValidPayment(new BigDecimal("100.00"));
+		UUID allocationId = jdbc.queryForObject(
+				"select id from payment_allocation where payment_id = ? limit 1", UUID.class, paymentId);
+
+		Throwable onUpdate = catchThrowable(
+				() -> jdbc.update("update payment_allocation set amount = 1.00 where id = ?", allocationId));
+		assertThat(onUpdate).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onUpdate)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+
+		Throwable onDelete = catchThrowable(
+				() -> jdbc.update("delete from payment_allocation where id = ?", allocationId));
+		assertThat(onDelete).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onDelete)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+		assertThat(countOf("payment_allocation", "id", allocationId)).isEqualTo(1L);
+	}
+
+	@Test
+	void settlementAllocationCannotBeUpdatedOrDeleted() {
+		UUID allocationId = insertSettlementWithAllocation();
+
+		Throwable onUpdate = catchThrowable(
+				() -> jdbc.update("update settlement_allocation set amount = 1.00 where id = ?", allocationId));
+		assertThat(onUpdate).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onUpdate)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+
+		Throwable onDelete = catchThrowable(
+				() -> jdbc.update("delete from settlement_allocation where id = ?", allocationId));
+		assertThat(onDelete).isInstanceOf(DataAccessException.class);
+		assertThat(sqlStateOf(onDelete)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+		assertThat(countOf("settlement_allocation", "id", allocationId)).isEqualTo(1L);
+	}
+
+	@Test
+	void penaltyAdjustmentCannotBeUpdatedOrDeleted() {
+		UUID approverId = insertApprover();
+		try {
+			UUID adjustmentId = insertPenaltyAdjustment(approverId);
+
+			Throwable onUpdate = catchThrowable(
+					() -> jdbc.update("update penalty_adjustment set amount = 1.00 where id = ?", adjustmentId));
+			assertThat(onUpdate).isInstanceOf(DataAccessException.class);
+			assertThat(sqlStateOf(onUpdate)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+
+			Throwable onDelete = catchThrowable(
+					() -> jdbc.update("delete from penalty_adjustment where id = ?", adjustmentId));
+			assertThat(onDelete).isInstanceOf(DataAccessException.class);
+			assertThat(sqlStateOf(onDelete)).isEqualTo(SQLSTATE_RAISE_EXCEPTION);
+			assertThat(countOf("penalty_adjustment", "id", adjustmentId)).isEqualTo(1L);
+		} finally {
+			// The adjustment is immutable (DELETE is blocked, as asserted above), so the only way to release
+			// its FK to app_user is TRUNCATE. Clear it first, then remove the seeded approver so a suite that
+			// deletes app_user rows (e.g. ContractApiIT) is never left a dangling reference. @AfterEach's
+			// truncateAll repeats the penalty_adjustment TRUNCATE harmlessly.
+			jdbc.execute("TRUNCATE TABLE penalty_adjustment CASCADE");
+			jdbc.update("delete from app_user where id = ?", approverId);
+		}
 	}
 
 	// -------------------------------------------------------------------------------------
