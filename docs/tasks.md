@@ -55,6 +55,16 @@ not run:**
   stashed. T24's and T9's own `*IT` suites were green in this run. `./gradlew check` will pass once T29
   fixes the statement query.
 
+**Verified on 2026-10-05 (T29) — Docker available, so the Testcontainers `*IT` suites ran:**
+
+- `.\gradlew compileJava compileTestJava`: pass.
+- `.\gradlew test --tests "com.serfira.contract.ContractStatementIT"`: 9 tests, all pass (the 5 that
+  returned 500 `42P18` now pass).
+- `.\gradlew test --tests "*LedgerAccountNameIT"`: 2 tests, pass.
+- Full `.\gradlew test`: **621 tests, 0 failed** (the 5 pre-existing `ContractStatementIT` failures are
+  cleared by the T29 cast fix; no new failures).
+- `.\gradlew check`: pass.
+
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist.
@@ -127,8 +137,8 @@ not run:**
 
 **Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
 T1–T6 are DONE, so Sprint 4b is complete. Sprint 4c (T23, T7, T8, T9) is complete. **Sprint 4d** is in
-progress: T24 (idempotency key lifecycle), T25 (DB accounting backstops) and T26 (daily job robustness) are
-DONE; T29 (fix the pre-existing statement query, X-13) and T11 (exit verification) remain.
+progress: T24 (idempotency key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness) and
+T29 (fix the pre-existing statement query, X-13) are DONE; T11 (exit verification) remains.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -149,7 +159,7 @@ matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
 | X-10 | ADR-005 decision 3 / `AuditActorBindingFilter` Javadoc: a non-UUID `sub` fails closed and authorization rejects the request        | Closed by T7 (ADR-015 D5): the decoder rejects such a token (401), and the filter now discards the authentication defensively                                                                                                                                              | T7                                  |
 | X-11 | `IdempotencyService` Javadoc: after retention "the key may be claimed again" (cites ADR-007 decision 9)                            | Resolved by T24 (ADR-017): the takeover is removed, the Javadoc now describes single-use-forever semantics, and a reused expired key is 409 `IDEMPOTENCY_KEY_EXPIRED` before the operation runs                                                                            | DONE (A-13 option A → T24, ADR-017) |
 | X-12 | V1 comment / Addendum §1.2: `system_parameter` is append-only                                                                      | Resolved by T25 (V12): `block_modification()` on `system_parameter` UPDATE/DELETE; the two ITs bypass it on one connection via `AppendOnlyTestCleanup` (CR-12)                                                                                                             | DONE (T25)                          |
-| X-13 | T9 statement query should run on PostgreSQL                                                                                         | `JournalLineRepository.findContractStatement` uses `(:fromInclusive is null or …)` with typed bind params; PostgreSQL cannot infer the type of the untyped `null` side and raises `42P18 could not determine data type of parameter`, so every `/statement` call is 500. Surfaced on the first Docker run of `ContractStatementIT` (T9's `*IT` were never run with Docker). Pre-existing on `main`, independent of T25                                                                | T29 (new bug task)                  |
+| X-13 | T9 statement query should run on PostgreSQL                                                                                         | Resolved by T29: the three `is null` guards in `findContractStatement` (and its `countQuery`) are wrapped in `cast(... as timestamp/string)`, so each nullable bind has a declared type and PostgreSQL no longer raises `42P18`. Filter semantics unchanged; `ContractStatementIT` (9) and full `.\gradlew test` (621) green                                                                | DONE (T29)                          |
 
 ---
 
@@ -183,6 +193,7 @@ ADRs listed.
 | T24   | Idempotency key lifecycle: single-use forever (option A), 409 `IDEMPOTENCY_KEY_EXPIRED`, classifier no longer retries `uq_payment_idempotency`       | DONE   | ADR-017 (A-13, CR-04, CR-13)   |
 | T25   | DB accounting backstops: V12 parent-side deferred checks, scoped `uq_journal_entry_event`, `system_parameter` append-only                            | DONE   | ADR-008 d5 note (CR-05/06/12)  |
 | T26   | Daily job robustness: `ABANDONED` status + V13, stale-row/loop-escape finalization, keyset batching, retry backoff                                   | DONE   | ADR-013 A-9 note T26 (CR-07/08/09) |
+| T29   | Fix contract statement query on PostgreSQL: `cast(...)`-typed nullable binds in `findContractStatement`/`countQuery`, clearing `42P18`                | DONE   | X-13 (bug task)                |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -1195,8 +1206,23 @@ snapshot list behaves the same way.
 
 ### T29 — Fix the contract statement query on PostgreSQL (bug, X-13)
 
-Status: TODO
+Status: DONE
 Estimate: 1 pt
+
+Implementation note (2026-10-05): Fixed `JournalLineRepository.findContractStatement` (main `@Query` and
+its `countQuery`) by wrapping only the three `is null` guards in an HQL `cast(...)`:
+`(cast(:fromInclusive as timestamp) is null or line.entryDate >= :fromInclusive)`,
+`(cast(:toExclusive as timestamp) is null or line.entryDate < :toExclusive)`, and
+`(cast(:refType as string) is null or entry.refType = :refType)`. Root cause: a bare `:param is null` left
+each nullable bind untyped, so PostgreSQL raised `42P18 could not determine data type of parameter` and
+every `/statement` call returned 500. The casts give the bind a declared type when `null`; the real
+comparisons are untouched, so the inclusive `from` / exclusive-upper `to` window, the optional exact
+`ref_type` match, the ordering (`entry_date asc, id asc`) and paging are unchanged. The method signature,
+`StatementLineProjection`, and `ContractStatementService` were not touched. The now-inaccurate
+`:param is null` Javadoc sentence was replaced to describe the cast-typed guards. Verified from
+`backend/`: `.\gradlew test --tests "com.serfira.contract.ContractStatementIT"` (9 tests, green),
+`.\gradlew test --tests "*LedgerAccountNameIT"` (2 tests, green), full `.\gradlew test` (621 tests, 0
+failures — previously 5 failing in `ContractStatementIT`), and `.\gradlew check` (green).
 
 Goal: Make `GET /api/v1/contracts/{id}/statement` work on PostgreSQL. It is 500 for every call today.
 
