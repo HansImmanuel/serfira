@@ -95,4 +95,22 @@ Sprint 4 (penalty, aging & phase-1 close) — **berjalan** (lihat [ADR-011](adr/
 
 Review eksternal 2026-09-30 (16 temuan, CR-01…CR-16) sudah diverifikasi terhadap kode dan dipetakan ke task di [tasks.md](tasks.md) → Planning Notes.
 
-Sprint 5+ (settlement, credit application, void, consistency check, write-off, frontend) belum dimulai.
+Sprint 5 (settlement, credit application, void, consistency check, write-off, frontend) — **berjalan**:
+
+- [x] T14 — E3 Excess → `contract_credit` + credit-apply endpoint (ADR-009, Addendum §2). Overpayment kini
+      memesan satu baris `contract_credit` AVAILABLE (sub-ledger liability `TITIPAN_NASABAH`, bukan jurnal
+      kedua) lewat `ContractCreditPort` baru milik `contract` yang dipanggil write path `payment`
+      (`uk_contract_credit_source` = satu credit per alokasi EXCESS). `POST /api/v1/contracts/{id}/credit/apply`
+      (ADMIN_OPERASIONAL) mengaplikasikan saldo tersedia ke installment due tertua dengan recognized receivable
+      memakai engine murni baru `CreditApplicationEngine` (PENALTY → INTEREST → PRINCIPAL, due_date lalu
+      period_no), partial diperbolehkan, satu credit boleh mendanai banyak application, tidak pernah
+      auto-apply; hanya mengurangi recognized receivable, resolusi lewat
+      `InstallmentReceivablePort.applyPaymentResolution`. Satu jurnal per panggilan (`Dr TITIPAN_NASABAH /
+      Cr PIUTANG_*`, `ref_type=CREDIT_APPLICATION`, `ref_id` = application pertama; mengandalkan service guard
+      `LedgerPostingService`, ADR-008 d5). `GET /api/v1/contracts/{id}/credit` (ADMIN_OPERASIONAL + FINANCE)
+      mengembalikan saldo + histori. Status flip AVAILABLE → APPLIED hanya saat saldo 0. Migrasi V14: trigger
+      deferred cap `Σ application.amount ≤ amount` (invariant 11) + guard status, tanpa `CREATE TABLE`, tanpa
+      menyentuh `uq_journal_entry_event`. Retry optimistic-lock `ContractCreditRetryingService` (3 percobaan,
+      50/150 ms) mencerminkan jalur payment. Verifikasi (Docker aktif): `CreditApplicationEngineTest` (16) +
+      `ContractCreditIT` (10) + `EndpointRoleMatrixIT` + `OpenApiSmokeIT` pass; full `.\gradlew test` = **665
+      tests, 0 gagal**; `.\gradlew check` hijau. Branch `t14-contract-credit`.

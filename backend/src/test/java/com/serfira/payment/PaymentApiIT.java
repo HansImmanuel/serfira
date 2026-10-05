@@ -262,8 +262,20 @@ class PaymentApiIT {
 		assertThat(creditByAccount(entryId)).containsEntry("TITIPAN_NASABAH", new BigDecimal(excess));
 		assertThat(creditTotal(entryId)).isEqualByComparingTo("12000000.00");
 		assertThat(creditTotal(entryId).subtract(new BigDecimal(excess))).isEqualByComparingTo(dueWindowCapacity);
-		// E3 owns contract_credit; C3 records the EXCESS allocation only.
-		assertThat(count("contract_credit")).isZero();
+		// E3 (T14): the EXCESS now also books one durable contract_credit row (the liability sub-ledger),
+		// AVAILABLE and equal to the excess, linked to the EXCESS allocation — not a second journal entry.
+		UUID paymentId = UUID.fromString(payment.get("id").asText());
+		UUID excessAllocationId = jdbc.queryForObject(
+				"select id from payment_allocation where payment_id = ? and allocation_type = 'EXCESS'",
+				UUID.class, paymentId);
+		assertThat(count("contract_credit")).isEqualTo(1L);
+		assertThat(jdbc.queryForObject("select amount from contract_credit where contract_id = ?",
+				BigDecimal.class, contractId)).isEqualByComparingTo(excess);
+		assertThat(jdbc.queryForObject("select status from contract_credit where contract_id = ?",
+				String.class, contractId)).isEqualTo("AVAILABLE");
+		assertThat(jdbc.queryForObject("select source_payment_allocation_id from contract_credit where contract_id = ?",
+				UUID.class, contractId)).isEqualTo(excessAllocationId);
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isZero();
 		// Periods 2–12 are still unresolved, so no maturity close happens (invariant 17, ADR-011).
 		assertThat(jdbc.queryForObject("select status from contract where id = ?", String.class, contractId))
 				.isEqualTo("ACTIVE");

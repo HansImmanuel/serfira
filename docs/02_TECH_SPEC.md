@@ -28,9 +28,15 @@ Aturan dependency:
 - `payment` juga boleh bergantung ke `contract` melalui **application interface**-nya (ADR-010, ADR-011):
   `InstallmentReceivablePort` (`contract.application`) adalah satu-satunya jalur bagi write path pembayaran
   untuk membaca receivable angsuran dan menerapkan hasil resolusinya, dan `InstallmentBillingPort` adalah
-  satu-satunya jalur untuk billing/recognition bunga due date sebelum alokasi dihitung. Keduanya satu arah
-  (`payment` → port `contract`); `contract` tidak tahu modul `payment`, dan `payment` tetap dilarang menyentuh
-  tabel/entity `contract`/`installment` langsung.
+  satu-satunya jalur untuk billing/recognition bunga due date sebelum alokasi dihitung. Sejak T14 (E3)
+  ditambah `ContractCreditPort` (`contract.application`): saat sebuah pembayaran menghasilkan alokasi
+  `EXCESS`, write path `payment` memesan satu baris `contract_credit` (sub-ledger liability `TITIPAN_NASABAH`,
+  bukan jurnal kedua) lewat seam ini — kepemilikan tabel `contract_credit`/`contract_credit_application` tetap
+  di `contract`. Ketiganya satu arah (`payment` → port `contract`); `contract` tidak tahu modul `payment`,
+  dan `payment` tetap dilarang menyentuh tabel/entity `contract`/`installment`/`contract_credit` langsung.
+  Jurnal `CREDIT_APPLICATION` (E3) sengaja tidak masuk `uq_journal_entry_event`; service guard
+  `LedgerPostingService` menegakkan satu entry non-reversal per `(ref_type, ref_id)`, konsisten dengan
+  `PAYMENT` (ADR-008 d5).
 - Sejak T4, `payment` boleh bergantung ke `penalty` hanya melalui
   `penalty.application.PenaltyAccrualPort` (ADR-014). Edge ini satu arah (`payment` → port `penalty`):
   `penalty` tidak tahu modul `payment`, dan `payment` dilarang membaca/menulis repository, entity, atau tabel

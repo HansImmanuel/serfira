@@ -42,11 +42,12 @@ Older per-task verification snapshots (T8, T9, T24, T25, T29) live in `tasks-arc
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist;
   `frontend/` is empty.
-- Migrations V1–V13. Baseline + accounting triggers (V3), state coherence (V4), settlement immutability (V5),
+- Migrations V1–V14. Baseline + accounting triggers (V3), state coherence (V4), settlement immutability (V5),
   contract-create safety (V6/V7), SYSTEM hardening (V8), ShedLock + penalty-accrual integrity (V9),
   `job_run.business_date` (V10), the `journal_line (contract_id, entry_date)` statement index (V11, T9), the
   parent-side accounting backstops + `uq_journal_entry_event` + `system_parameter` append-only (V12, T25),
-  and the `ck_job_run_status` widen for `ABANDONED` (V13, T26).
+  the `ck_job_run_status` widen for `ABANDONED` (V13, T26), and the `contract_credit_application` cap +
+  status-guard deferred triggers (V14, T14).
 - Daily servicing (T3, hardened by T26): one renewable ShedLock for cron + backfill; every ACTIVE contract
   processed atomically billing → penalty → aging with five-attempt backoff retry, failure isolation, SYSTEM
   audit, three `job_run` rows; crashed `RUNNING` rows closed `ABANDONED`; keyset paging by
@@ -59,12 +60,18 @@ Older per-task verification snapshots (T8, T9, T24, T25, T29) live in `tasks-arc
   query fixed for PostgreSQL in T29).
 - DB accounting backstops (T25, V12): parent-side deferred ≥2-balanced-lines / Σ-allocations checks, scoped
   `uq_journal_entry_event`, `system_parameter` append-only.
-- Endpoints (8): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
+- Credit (T14, E3): a payment's EXCESS books a durable `contract_credit` row via `ContractCreditPort`
+  (new `payment → contract` edge, sub-ledger not a journal); `POST /api/v1/contracts/{id}/credit/apply`
+  applies it to recognized receivable (pure `CreditApplicationEngine`, one `CREDIT_APPLICATION` journal per
+  call), `GET /api/v1/contracts/{id}/credit` reads balance + history. V14 enforces the Σ-applications cap
+  and the AVAILABLE→APPLIED status rule.
+- Endpoints (10): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
-  `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, `GET /api/v1/reports/aging`.
-- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all eight
-  endpoints (T7, ADR-015). `sub` must be a UUID with `exp`. No login/refresh/logout, no `iss`/`aud`
-  validation yet (ADR-005; T21).
+  `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, `GET /api/v1/reports/aging`,
+  `POST /api/v1/contracts/{id}/credit/apply`, `GET /api/v1/contracts/{id}/credit`.
+- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all ten
+  endpoints (T7, ADR-015; the two credit rows added by T14). `sub` must be a UUID with `exp`. No
+  login/refresh/logout, no `iss`/`aud` validation yet (ADR-005; T21).
 
 Full per-task implementation notes for all DONE work are archived in `tasks-archive.md`.
 
@@ -74,7 +81,8 @@ key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness), T29 (
 statement query, X-13) and T11 (Phase-1 test hardening + exit verification) are all DONE. T10 stays
 DEFERRED (T1.a kept ADR-012 decision 2; no code change required). **Sprint 5 (Settlement, Credit & Waiver,
 T12–T15) is planned** (2026-10-05, ADR-018 + ADR-019; see the Sprint 5 section) and ready to implement in
-order T14 → T15 → T12 → T13. T16 (void) remains in Sprint 6.
+order T14 → T15 → T12 → T13. **T14 (E3 credit) is DONE** (branch `t14-contract-credit`); T15 → T12 → T13 remain. T16 (void)
+remains in Sprint 6.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -117,6 +125,7 @@ ADRs listed.
 | T26   | Daily job robustness: `ABANDONED` status + V13, stale-row/loop-escape finalization, keyset batching, retry backoff                                   | DONE   | ADR-013 A-9 note T26 (CR-07/08/09) |
 | T29   | Fix contract statement query on PostgreSQL: `cast(...)`-typed nullable binds in `findContractStatement`/`countQuery`, clearing `42P18`                | DONE   | X-13 (bug task)                |
 | T11   | Phase-1 test hardening + exit verification: child-table immutability tests, specific-exception assertions, PRD §7 scenarios over HTTP, PII log guard | DONE   | commit `a8fa1a6`               |
+| T14   | E3 Excess → `contract_credit` + credit-apply/read endpoints: `ContractCreditPort`, `CreditApplicationEngine`, V14 cap/status triggers, RBAC rows     | DONE   | ADR-009, Addendum §2 (branch `t14-contract-credit`) |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -173,7 +182,20 @@ read natively by the V3 cap trigger and `InstallmentRepository`. `LedgerRefType`
 `PENDAPATAN_ADMIN`, `DISKON_PELUNASAN`). So Sprint 5 adds **behaviour + Java modules**, not tables; its
 migrations are thin.
 
-### T14 — E3 Excess → `contract_credit` + credit-apply endpoint (5 pts)
+### T14 — E3 Excess → `contract_credit` + credit-apply endpoint (5 pts) — DONE
+
+**Status: DONE** (branch `t14-contract-credit`). Implementation note: `ContractCreditPort` (new
+`payment → contract` edge) books one AVAILABLE `contract_credit` per EXCESS allocation (sub-ledger, not a
+second journal); `POST /api/v1/contracts/{id}/credit/apply` (ADMIN_OPERASIONAL) applies available credit
+via the new pure `CreditApplicationEngine` (PENALTY → INTEREST → PRINCIPAL, oldest due first), reducing
+only recognized receivable through `InstallmentReceivablePort.applyPaymentResolution` and posting one
+`Dr TITIPAN_NASABAH / Cr PIUTANG_*` entry (`ref_type=CREDIT_APPLICATION`, `ref_id` = first application id;
+service guard, ADR-008 d5); `GET /api/v1/contracts/{id}/credit` (ADMIN_OPERASIONAL + FINANCE) returns
+balance + history. Status flips AVAILABLE → APPLIED only at balance 0. Migration V14 adds the deferred
+`Σ applications ≤ amount` cap (invariant 11) + the status guard (no `CREATE TABLE`, `uq_journal_entry_event`
+untouched). Optimistic-lock retry `ContractCreditRetryingService` (3 attempts, 50/150 ms). Verification
+(Docker available): `CreditApplicationEngineTest` (16) + `ContractCreditIT` (10) + `EndpointRoleMatrixIT` +
+`OpenApiSmokeIT` pass; full `./gradlew test` = **665 tests, 0 failures**; `./gradlew check` green.
 
 **Dependencies:** none open (C2/C3 EXCESS path DONE; tables exist). First task of Sprint 5.
 

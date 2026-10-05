@@ -1,9 +1,11 @@
 package com.serfira.payment.application;
 
+import com.serfira.contract.application.ContractCreditPort;
 import com.serfira.contract.application.ContractReceivableSnapshot;
 import com.serfira.contract.application.InstallmentBillingPort;
 import com.serfira.contract.application.InstallmentReceivable;
 import com.serfira.contract.application.InstallmentReceivablePort;
+import com.serfira.contract.application.RecordExcessCreditCommand;
 import com.serfira.contract.domain.ContractStateException;
 import com.serfira.contract.domain.ContractStatus;
 import com.serfira.ledger.application.LedgerPostingService;
@@ -110,6 +112,7 @@ public class PaymentApplicationService {
 	private final InstallmentReceivablePort receivables;
 	private final InstallmentBillingPort billing;
 	private final PenaltyAccrualPort penalty;
+	private final ContractCreditPort contractCredit;
 	private final DocumentNumberGenerator documentNumbers;
 	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
@@ -117,13 +120,14 @@ public class PaymentApplicationService {
 
 	public PaymentApplicationService(PaymentRepository payments, PaymentAllocationRepository allocations,
 			InstallmentReceivablePort receivables, InstallmentBillingPort billing, PenaltyAccrualPort penalty,
-			DocumentNumberGenerator documentNumbers, IdempotencyService idempotency, LedgerPostingService ledger,
-			Clock clock) {
+			ContractCreditPort contractCredit, DocumentNumberGenerator documentNumbers,
+			IdempotencyService idempotency, LedgerPostingService ledger, Clock clock) {
 		this.payments = payments;
 		this.allocations = allocations;
 		this.receivables = receivables;
 		this.billing = billing;
 		this.penalty = penalty;
+		this.contractCredit = contractCredit;
 		this.documentNumbers = documentNumbers;
 		this.idempotency = idempotency;
 		this.ledger = ledger;
@@ -179,7 +183,7 @@ public class PaymentApplicationService {
 		} catch (DataIntegrityViolationException ex) {
 			throw translatePaymentViolation(ex);
 		}
-		allocations.saveAll(allocation.lines().stream()
+		List<PaymentAllocation> savedAllocations = allocations.saveAll(allocation.lines().stream()
 				.map(line -> PaymentAllocation.of(payment, line))
 				.toList());
 		allocations.flush();
@@ -188,10 +192,33 @@ public class PaymentApplicationService {
 		ledger.post(LedgerPosting.of(LedgerRefType.PAYMENT, payment.getId(), paidAt,
 				"Payment " + payment.getPaymentNo() + " for contract " + snapshot.contractNo(),
 				journalLines(payment, snapshot, allocation)));
+		recordExcessCredit(snapshot.contractId(), savedAllocations, allocation.excessAmount());
 
 		LOGGER.info("Received payment {} (id={}, contract={}, amount={}, excess={})", payment.getPaymentNo(),
 				payment.getId(), snapshot.contractNo(), amount, allocation.excessAmount());
 		return PaymentResponse.from(payment, allocation);
+	}
+
+	/**
+	 * Books the EXCESS as a durable {@code contract_credit} row (E3, task T14) when the payment overpaid.
+	 * The money was already accounted for by the EXCESS → {@code TITIPAN_NASABAH} journal line above; this
+	 * only records the reusable liability sub-ledger through the {@code contract}-owned
+	 * {@link ContractCreditPort}, keyed to the persisted EXCESS {@code payment_allocation} row so a retried
+	 * payment can never book the same excess twice ({@code uk_contract_credit_source}). It joins this
+	 * transaction, so the credit row and the journal commit or roll back together.
+	 */
+	private void recordExcessCredit(UUID contractId, List<PaymentAllocation> savedAllocations,
+			BigDecimal excessAmount) {
+		if (excessAmount.signum() <= 0) {
+			return;
+		}
+		PaymentAllocation excessAllocation = savedAllocations.stream()
+				.filter(allocation -> allocation.getType() == AllocationType.EXCESS)
+				.findFirst()
+				.orElseThrow(() -> new IllegalStateException(
+						"payment has an excess amount " + excessAmount + " but no EXCESS allocation row"));
+		contractCredit.recordExcessCredit(
+				new RecordExcessCreditCommand(contractId, excessAllocation.getId(), excessAmount));
 	}
 
 	/**

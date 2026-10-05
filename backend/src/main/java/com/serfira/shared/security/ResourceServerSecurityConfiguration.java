@@ -159,6 +159,13 @@ public class ResourceServerSecurityConfiguration {
 						// A single-segment "*" means "/api/v1/contracts/*" above does not match "/*/statement".
 						.requestMatchers(HttpMethod.GET, "/api/v1/contracts/*/statement")
 								.hasAnyRole(ADMIN, FINANCE)
+						// Credit apply is ADMIN_OPERASIONAL only; credit read is ADMIN_OPERASIONAL/FINANCE
+						// (Addendum §3.4, T14). Single-segment "*" means "/api/v1/contracts/*" above does not
+						// match "/*/credit" or "/*/credit/apply".
+						.requestMatchers(HttpMethod.POST, "/api/v1/contracts/*/credit/apply")
+								.hasRole(ADMIN)
+						.requestMatchers(HttpMethod.GET, "/api/v1/contracts/*/credit")
+								.hasAnyRole(ADMIN, FINANCE)
 						.anyRequest().denyAll())
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(authenticationEntryPoint)
