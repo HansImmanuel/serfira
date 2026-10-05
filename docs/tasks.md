@@ -15,9 +15,12 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 **Snapshot:** `main` @ `0b282c0` plus the T7 implementation (ADR-015: RBAC matrix, roles-claim converter,
 fail-closed JWT identity, `support/TestJwts`, retired audit probe), the T8 implementation (new read-only
 `reporting` module with the aging report), the T9 implementation (contract statement read through a new
-`ledger` statement port, V11 index), and the T24 implementation (ADR-017: idempotency keys are single-use
+`ledger` statement port, V11 index), the T24 implementation (ADR-017: idempotency keys are single-use
 forever, 409 `IDEMPOTENCY_KEY_EXPIRED`, the payment classifier no longer retries `uq_payment_idempotency`,
-`BACKOFF_MILLIS` tidied).
+`BACKOFF_MILLIS` tidied), T25 (V12 accounting backstops), T26 (V13 `ABANDONED` + daily job robustness),
+T29 (statement query `cast` fix), and the T11 implementation (Phase-1 test hardening: child-table
+immutability tests, specific-exception assertions, `Phase1ExitScenariosIT`, `PiiLoggingIT`) — all on branch
+`t11-phase1-exit-verification` @ `a8fa1a6`, pending merge.
 
 **Verified on 2026-10-02 (through T8):**
 
@@ -64,6 +67,15 @@ not run:**
 - Full `.\gradlew test`: **621 tests, 0 failed** (the 5 pre-existing `ContractStatementIT` failures are
   cleared by the T29 cast fix; no new failures).
 - `.\gradlew check`: pass.
+
+**Verified on 2026-10-05 (T11) — Docker available, so the Testcontainers `*IT` suites ran:**
+
+- `.\gradlew check`: pass.
+- Forced full `.\gradlew test --rerun-tasks` (all tasks executed, not cached): **80 suites / 632 tests /
+  0 failures / 0 errors / 0 skipped** (621 before T11 + 11 new tests: 4 child-table immutability, the
+  `Phase1ExitScenariosIT` scenarios, and `PiiLoggingIT`).
+- Diff is test-only: `AccountingInvariantsIT`, `Phase1ExitScenariosIT` (new), `PiiLoggingIT` (new),
+  `ContractIdempotencyIT`, `PaymentIdempotencyIT`. No production code, migration, or unrelated file changed.
 
 **Implemented (verified in source):**
 
@@ -135,10 +147,12 @@ not run:**
   → 403). A token's `sub` must be a UUID and it must carry `exp`. There is still no login/refresh/logout and
   no `iss`/`aud` validation (ADR-005; T21).
 
-**Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is partly done. C4/D1 and re-planned
-T1–T6 are DONE, so Sprint 4b is complete. Sprint 4c (T23, T7, T8, T9) is complete. **Sprint 4d** is in
-progress: T24 (idempotency key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness) and
-T29 (fix the pre-existing statement query, X-13) are DONE; T11 (exit verification) remains.
+**Current sprint:** Sprint 4 ("Penalty, Aging & Phase-1 Close") is complete. C4/D1 and re-planned T1–T6 are
+DONE (Sprint 4b), Sprint 4c (T23, T7, T8, T9) is complete, and **Sprint 4d is complete**: T24 (idempotency
+key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness), T29 (fix the pre-existing
+statement query, X-13) and T11 (Phase-1 test hardening + exit verification) are all DONE. T10 stays
+DEFERRED (T1.a kept ADR-012 decision 2; no code change required). Next: Sprint 5 (T12–T15 settlement,
+credit, waivers).
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -194,6 +208,7 @@ ADRs listed.
 | T25   | DB accounting backstops: V12 parent-side deferred checks, scoped `uq_journal_entry_event`, `system_parameter` append-only                            | DONE   | ADR-008 d5 note (CR-05/06/12)  |
 | T26   | Daily job robustness: `ABANDONED` status + V13, stale-row/loop-escape finalization, keyset batching, retry backoff                                   | DONE   | ADR-013 A-9 note T26 (CR-07/08/09) |
 | T29   | Fix contract statement query on PostgreSQL: `cast(...)`-typed nullable binds in `findContractStatement`/`countQuery`, clearing `42P18`                | DONE   | X-13 (bug task)                |
+| T11   | Phase-1 test hardening + exit verification: child-table immutability tests, specific-exception assertions, PRD §7 scenarios over HTTP, PII log guard | DONE   | commit `a8fa1a6`               |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -1296,8 +1311,38 @@ Risks: If T1.a keeps ADR-012 decision 2, this task becomes DEFERRED with no code
 
 ### T11 — Phase-1 test hardening and exit verification
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-10-05): Test-only hardening on branch `t11-phase1-exit-verification` (commit
+`a8fa1a6`); no production code, no migration, no unrelated file changed. (1) **Immutability** —
+`AccountingInvariantsIT` gains a `V1 — append-only child tables` section with four tests for `journal_line`,
+`payment_allocation`, `settlement_allocation` and `penalty_adjustment`. Each asserts both UPDATE and DELETE
+are rejected with the `block_modification()` SQLSTATE `P0001` (not a bare `RuntimeException`) and that the
+row survives. Parents+children are seeded through valid write paths that pass the V12 parent-side deferred
+checks; `settlement_allocation` is seeded directly via `settlement_quote → settlement → settlement_allocation`
+(the E2 write path is unbuilt but the V1/V5 schema exists, documented in the helper Javadoc);
+`penalty_adjustment` seeds an active approver and cleans it up without weakening the trigger. `penalty_accrual`
+is deliberately not duplicated (already covered by the V9 section). (2)/(3) **Weak assertions** — the two
+`assertThat(cause).isNotNull()` losing-retry asserts in `ContractIdempotencyIT`/`PaymentIdempotencyIT` now
+assert `isInstanceOf(ConflictException.class)` (pins `ErrorCode.CONFLICT`, consistent with ADR-017 D1 /
+TS §2.5); the two bare-`RuntimeException` asserts in `AccountingInvariantsIT` become `P0001` SQLSTATE checks.
+(4) **PRD §7 scenarios 1–4 and 8–9** — new `Phase1ExitScenariosIT` drives them entirely over HTTP
+(`POST /contracts`, `/activate`, `/payments`; `GET /installments`) with `TestJwts` + a `@Primary FixedClock`,
+no SQL seeding of the behaviour under test. Asserts the PENALTY→INTEREST→PRINCIPAL waterfall oldest-due-first,
+overpayment booked as `TITIPAN_NASABAH` and never auto-applied, partial-payment state, month-end/leap-year
+due-date clamping, Σ allocations = amount, and per-entry ledger balance. Money constants are reused from
+`PaymentApiIT`'s engine derivations; the two new ones are arithmetic over those (`LATE_PAYMENT_TOTAL =
+1,573,333.33 + 44,053.24 = 1,617,386.57`; scenario-4 excess `= 12,000,000.00 − 1,573,333.33 = 10,426,666.67`).
+(5) **PII log guard** — new `PiiLoggingIT` attaches a Logback `ListAppender` across contract create+activate,
+a payment, and the daily job, and asserts the raw NIK, the raw phone, and the normalized `628…` phone never
+appear in any captured line, with a non-vacuous `>= 1 event` check. Scoped to the `com.serfira` logger rather
+than ROOT (documented in the test Javadoc: ROOT-at-DEBUG would capture Spring MVC request-body tracing, a
+framework behaviour off at production levels). (6) The optional shared TRUNCATE-cleanup extension was a NO-GO
+(deferred) to keep the change behaviour-neutral. Verification (Docker up, independently re-run by the
+orchestrator with `--rerun-tasks`): `.\gradlew check` and a forced full `.\gradlew test` → **80 suites /
+632 tests / 0 failures / 0 errors / 0 skipped**. Semantic review verdict APPROVED (two non-blocking
+observations: the tasks.md status-claim line in the diff, and the PII logger scope — both accepted).
 
 Goal: Prove the Phase-1 exit criteria and close the test gaps found in the 2026-09-29 review.
 
