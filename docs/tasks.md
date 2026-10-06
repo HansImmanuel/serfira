@@ -328,6 +328,40 @@ optionally extending `uq_journal_entry_event` to `PENALTY_WAIVER`. (No `CREATE T
 pay (cap reflects it); reduce; over-waive rejected; adjustment immutability (SQLSTATE P0001); journal
 balances; role matrix. Port parity test: `EffectivePenaltyService` equals the V3 trigger's subtraction.
 
+### T30 — Route schedule response + aging report through the adjustment-and-paid-aware effective penalty (2 pts)
+
+Status: TODO (follow-up from the PR #7 review of T15, finding F1; ADR-019 D4).
+
+**Dependencies:** T15 (`EffectivePenaltyPort` + the paid-aware remaining definition exist).
+
+**Scope.** Close the last read/write inconsistency from ADR-019 D4: the payment-receivable snapshot already
+reads effective penalty through `EffectivePenaltyPort`, but two `contract` read paths still show **gross**
+penalty, so a waived-but-otherwise-paid installment still appears to owe penalty and can land in an aging
+bucket. Route them through the adjustment-aware (and, with F2, paid-aware) effective penalty. Owner module:
+`contract` (reads), feeding the per-installment `Σ adjustment` already available via `EffectivePenaltyPort`.
+
+**Business rules (ADR-019 D4; PR #7 review finding F1).**
+- `contract.api.InstallmentResponse.from(...)` currently builds the balance with the zero-adjustment
+  `InstallmentBalance.of(installment)` and returns `installment.getPenaltyAmount()` (gross) directly; it
+  must use the adjustment-aware overload `InstallmentBalance.of(installment, Σ adjustment)` and report the
+  effective (remaining) penalty, matching the receivable path.
+- `contract.application.AgingReportSourceService.findOutstandingInstallments(...)` likewise computes
+  `InstallmentBalance.of(installment).outstanding()` (zero-adjustment); it must feed the per-installment
+  `Σ adjustment` so a fully-waived installment no longer shows positive outstanding / an aging bucket.
+- Because the adjustment total is `penalty`-owned, `contract` reads it through `EffectivePenaltyPort`
+  (the same source as the write-time cap) — no second formula, no native `penalty_adjustment` read.
+
+**Acceptance criteria.**
+- The schedule response and the aging report show the same effective (remaining) penalty as the
+  payment-receivable snapshot after a waiver; a fully-waived-but-paid installment shows zero outstanding and
+  no aging bucket.
+- No second effective-penalty formula is introduced; the adjustment total still flows through
+  `EffectivePenaltyPort`.
+
+**Tests.** IT: after a clearing waiver, assert the `GET /contracts/{id}/installments` row and the aging
+report agree with the receivable snapshot (zero remaining penalty, no bucket). Reuse `TestJwts`,
+`FixedClock`.
+
 ### T12 — E1 Settlement quote (5 pts)
 
 **Dependencies:** T15 (effective penalty via port). New `settlement` module starts here. Decisions in

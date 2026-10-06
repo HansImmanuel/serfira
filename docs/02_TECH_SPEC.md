@@ -61,9 +61,17 @@ Aturan dependency:
   (seam sementara ADR-010, kini **dipensiunkan**). Akibatnya hubungan `contract` ↔ `penalty` menjadi
   dua arah tetapi **hanya lewat port** (`penalty → contract` via `InstallmentPenaltyPort`, `contract → penalty`
   via `EffectivePenaltyPort`), tetap patuh ADR-001 (port, bukan entity/tabel). `EffectivePenaltyService`
-  membaca gross `penalty_amount` lewat `InstallmentPenaltyPort` yang sudah ada, jadi tidak ada edge
-  `penalty → contract` baru. Catatan: agregat per-kontrak `ContractInstallmentTotals` masih mengabaikan
-  adjustment (follow-up ADR-019; dicatat di T15).
+  membaca gross `penalty_amount` lewat `InstallmentPenaltyPort` yang sudah ada. Catatan: agregat per-kontrak
+  `ContractInstallmentTotals` masih mengabaikan adjustment (follow-up ADR-019; dicatat di T15).
+- Sejak T15 (E5, ADR-019, review PR #7) `penalty` menambah dua edge satu arah, keduanya `MANDATORY`
+  (join transaksi caller), lewat port milik modul pemilik data:
+  - `penalty → payment` lewat `payment.application.PenaltyAllocationPort`: `penalty` membaca Σ alokasi
+    `PENALTY` yang POSTED per installment untuk melengkapi formula effective penalty
+    (`gross − Σ adjustment − Σ paid penalty`, ADR-019 Context); `payment` tetap pemilik `payment_allocation`
+    dan `penalty` dilarang membaca tabel/entity itu langsung.
+  - `penalty → contract` lewat `contract.application.InstallmentStatusRecomputePort`: setelah waiver,
+    `penalty` meminta `contract` me-recompute status resolusi installment dan menutup kontrak `MATURITY`
+    bila sudah lunas; `contract` tetap pemilik `installment` dan melakukan penulisan baris ter-version itu.
 - `ledger` tidak boleh bergantung ke module lain (paling dasar).
 - `reporting` boleh baca semua (read-only). Sejak T8, laporan aging membaca receivable angsuran kontrak
   ACTIVE hanya lewat `contract.application.AgingReportSourcePort` (satu arah, `reporting` → port `contract`),

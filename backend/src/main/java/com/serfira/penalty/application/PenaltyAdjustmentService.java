@@ -34,9 +34,11 @@ import java.util.UUID;
  *
  * <p><b>One transaction per use case</b> (TS §2.3, write-path order validate → compute → write aggregate →
  * post journal): the adjustment row and the one {@code PENALTY_WAIVER} journal entry either both commit or
- * neither does. {@code flush} forces the V15 cap trigger (and the V3 journal-balance trigger) to fire inside
- * this transaction, so an over-waive that slips past the pre-check is still rolled back here rather than at
- * an opaque commit.
+ * neither does. The mapped 409 for a normal over-waive comes from the in-memory pre-check <em>before</em>
+ * any save or flush. The V16 cap trigger and the V3 journal-balance trigger are {@code DEFERRABLE INITIALLY
+ * DEFERRED}, so they fire at COMMIT, not on {@code flush}; they are the DB backstop that fails the commit if
+ * an over-waive ever slips past the pre-check (e.g. a raw INSERT or a concurrent writer). {@code flush} here
+ * only surfaces IMMEDIATE constraint failures earlier and is otherwise a no-op for these deferred triggers.
  *
  * <p><b>Module boundaries</b> (02_TECH_SPEC.md §1, ADR-001): this service lives in {@code penalty}, which
  * owns {@code penalty_adjustment}. It reads the contract's effective penalty through its own
@@ -135,8 +137,11 @@ public class PenaltyAdjustmentService {
 		// boundary retries the resulting OptimisticLockException.
 		statusRecompute.recomputeAfterPenaltyAdjustment(contractId, installmentId);
 
-		// Flush now (not at COMMIT) so the V15 cap trigger and V3 journal-balance trigger fail inside this
-		// use case, rolling the adjustment and its journal back together.
+		// Flush the pending writes (the adjustment, its journal, and the versioned installment update from the
+		// recompute above) so any IMMEDIATE constraint failure surfaces here. The V16 cap trigger and the V3
+		// journal-balance trigger are DEFERRABLE INITIALLY DEFERRED and still fire at COMMIT, not on this
+		// flush; the normal over-waive is already rejected by the in-memory pre-check above, so those deferred
+		// triggers only act as the DB backstop for a bypass or a concurrent over-waive at commit time.
 		adjustments.flush();
 
 		BigDecimal effectiveAfter = installment.effective().subtract(normalizedAmount)

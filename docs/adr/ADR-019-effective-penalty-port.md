@@ -135,3 +135,28 @@ payment cap (via the trigger), and reporting all agree by construction. This clo
 - Review finding CR-14 (one outstanding penalty formula across consumers)
 - Investigation: `.agents/tasks/sprint5-settlement/ledger-conventions.md`
 - Tasks: `docs/tasks.md` T15 (E5 waive/reduce)
+
+---
+
+## Implementation note (PR #7 review fixes)
+
+The initial T15 implementation shipped effective penalty as `max(0, gross − adjustment)`, dropping the
+`− activePenaltyAllocation` term from the Context formula. The PR #7 review (findings 2–5) corrected it:
+
+- **F2 (money-balances):** `EffectivePenaltyService.effective(...)` now subtracts Σ POSTED `PENALTY`
+  payment allocations too, so the remaining-penalty cap is `max(0, gross − Σ adjustment − Σ paid penalty)`.
+  `penalty` reads the paid term through the new `payment.application.PenaltyAllocationPort`
+  (`payment` owns `payment_allocation`). Migration **V16** replaces `assert_penalty_adjustment_cap()` so the
+  DB cap subtracts the same `Σ PENALTY payment_allocation` term and stays numerically identical to the V3
+  PENALTY cap; V16 supersedes V15's gross-only cap (V15 is left applied/unedited, forward-only).
+- **F3/F4:** a waiver now recomputes the installment's resolution status from the adjustment-aware balance
+  and applies the "all installments PAID → close MATURITY" rule, through the new
+  `contract.application.InstallmentStatusRecomputePort`. That versioned installment write serializes
+  concurrent waivers (optimistic lock), and `PenaltyAdjustmentRetryingService` retries the collision outside
+  the transaction (mirroring `ContractCreditRetryingService`), so exactly one of two racing over-remaining
+  waivers commits.
+- **F5 (doc):** the `PenaltyAdjustmentService` Javadoc/flush comment were corrected — the deferred cap and
+  journal-balance triggers fire at COMMIT, not on `flush`; the mapped 409 comes from the in-memory pre-check.
+- **D4 follow-up still open:** the schedule response (`InstallmentResponse`) and the aging report
+  (`AgingReportSourceService`) still read gross penalty via the zero-adjustment `InstallmentBalance.of(...)`;
+  routing them through the port is tracked as **T30** (not implemented in PR #7).

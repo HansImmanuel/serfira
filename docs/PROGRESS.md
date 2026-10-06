@@ -137,3 +137,17 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       (5) + `PenaltyAdjustmentIT` (7, termasuk port-parity) + `EndpointRoleMatrixIT` + `LedgerPostingIT` +
       `LedgerAccountNameIT` pass; full `.\gradlew test` = **680 tests / 84 suites / 0 gagal / 0 error**;
       `.\gradlew check` hijau. Branch `t15-penalty-waive-effective-port`.
+
+- [x] T15 fix-pass 2026-10-06 (review PR #7, temuan F2/F3/F4/F5). **F2** (money-balances): formula effective
+      penalty kini `max(0, gross − Σ adjustment − Σ paid penalty)`; term bayar dibaca lewat port baru
+      `payment.application.PenaltyAllocationPort` (Σ alokasi `PENALTY` POSTED per installment), dan migrasi
+      **V16** menggantikan `assert_penalty_adjustment_cap()` agar cap DB ikut mengurangi Σ `PENALTY`
+      `payment_allocation` (identik dengan cap PENALTY V3; V15 dibiarkan apa adanya, forward-only). **F3/F4**:
+      waiver kini me-recompute status resolusi installment + aturan tutup `MATURITY` lewat port baru
+      `contract.application.InstallmentStatusRecomputePort` (penulisan baris installment ter-version), dan
+      `PenaltyAdjustmentRetryingService` (3 percobaan, 50/150 ms) men-serialize waiver konkuren di luar
+      transaksi → tepat satu commit, sisanya 409 `CONCURRENT_MODIFICATION`. **F5** (doc): Javadoc/komentar
+      `flush()` di `PenaltyAdjustmentService` dikoreksi — trigger cap V16 & balance V3 `DEFERRABLE INITIALLY
+      DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal dari pre-check in-memory.
+      **F6** invalid (tanpa aturan WAIVE==full). **F1** di-defer ke T30 (read-path schedule/aging). Dua edge
+      lintas-modul baru dicatat TS §1 + ADR-019 (implementation note). Verifikasi: lihat ringkasan FEAT-003.
