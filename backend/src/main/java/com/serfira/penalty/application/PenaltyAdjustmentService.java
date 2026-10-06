@@ -83,8 +83,9 @@ public class PenaltyAdjustmentService {
 	 * @throws com.serfira.contract.application.ContractNotFoundException if no contract has that id (404)
 	 * @throws com.serfira.contract.domain.ContractStateException        if the contract is not ACTIVE (409)
 	 * @throws NotFoundException   if the installment is not part of the contract's schedule (404)
-	 * @throws ConflictException   if the amount exceeds the installment's current effective penalty (409),
-	 *                             which would drive effective penalty negative (invariant 9) — writes nothing
+	 * @throws ConflictException   if the amount exceeds the installment's remaining effective penalty
+	 *                             (gross − adjustments − paid penalty, 409), which would drive effective
+	 *                             penalty negative (invariant 9) — writes nothing
 	 */
 	@Transactional
 	public PenaltyAdjustmentResult adjust(UUID contractId, UUID installmentId, PenaltyAdjustmentType type,
@@ -101,9 +102,12 @@ public class PenaltyAdjustmentService {
 
 		InstallmentEffectivePenalty installment = effectiveFor(contractId, installmentId);
 		if (normalizedAmount.compareTo(installment.effective()) > 0) {
-			// Over-waive: valid request, conflicts with current state (effective would go negative,
-			// invariant 9). 409, nothing written (ADR-019; mirrors the credit over-apply precedent).
-			throw new ConflictException("amount " + normalizedAmount + " exceeds the effective penalty "
+			// Over-waive: valid request, conflicts with current state. installment.effective() is the
+			// remaining effective penalty (gross − adjustments − paid penalty, ADR-019 Context), so the
+			// cap already excludes penalty the customer has paid; waiving past it would drive the
+			// receivable negative (invariant 9). 409, nothing written (mirrors the credit over-apply
+			// precedent).
+			throw new ConflictException("amount " + normalizedAmount + " exceeds the remaining effective penalty "
 					+ installment.effective() + " of installment " + installmentId);
 		}
 
@@ -123,7 +127,8 @@ public class PenaltyAdjustmentService {
 
 		BigDecimal effectiveAfter = installment.effective().subtract(normalizedAmount)
 				.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
-		LOGGER.info("Recorded penalty {} adjustment {} of {} on installment {} (effective {} -> {})",
+		LOGGER.info("Recorded penalty {} adjustment {} of {} on installment {} "
+				+ "(remaining effective (gross − adjustments − paid penalty) {} -> {})",
 				type, adjustment.getId(), normalizedAmount, installmentId, installment.effective(), effectiveAfter);
 		return new PenaltyAdjustmentResult(adjustment.getId(), installmentId, type, normalizedAmount, reason,
 				approvedBy, adjustment.getCreatedAt(), effectiveAfter);

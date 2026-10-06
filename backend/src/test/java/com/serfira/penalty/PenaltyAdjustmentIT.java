@@ -224,7 +224,7 @@ class PenaltyAdjustmentIT {
 	}
 
 	@Test
-	void theEffectivePenaltyPortEqualsTheV3TriggerSubtraction() throws Exception {
+	void theEffectivePenaltyPortEqualsTheV3TriggerSubtractionIncludingPaidPenalty() throws Exception {
 		adjust("REDUCE", "1200.00", "parity reduction");
 
 		UUID installmentId = installmentId(1);
@@ -234,16 +234,63 @@ class PenaltyAdjustmentIT {
 				.findFirst()
 				.orElseThrow();
 
-		// The V3 cap uses penalty_amount − Σ penalty_adjustment; the port must agree row-for-row.
+		// The V16 cap uses penalty_amount − Σ penalty_adjustment − Σ PENALTY payment_allocation (same FILTER
+		// as V3's PENALTY cap); the port must agree row-for-row. This fixture pays no penalty, so the paid
+		// term is 0 and the numeric expectation is unchanged — the point is the expression now matches the
+		// paid-aware definition (ADR-019 Context, F2).
 		BigDecimal triggerValue = jdbc.queryForObject("""
-				select i.penalty_amount - coalesce((select sum(a.amount) from penalty_adjustment a
-						where a.installment_id = i.id), 0)
+				select i.penalty_amount
+						- coalesce((select sum(a.amount) from penalty_adjustment a
+							where a.installment_id = i.id), 0)
+						- coalesce((select sum(pa.amount) from payment_allocation pa
+							where pa.installment_id = i.id and pa.allocation_type = 'PENALTY'), 0)
 				from installment i where i.id = ?
 				""", BigDecimal.class, installmentId);
 		assertThat(effective.effective()).isEqualByComparingTo(triggerValue);
 		assertThat(effective.grossAccrued()).isEqualByComparingTo(GROSS_PENALTY);
 		assertThat(effective.adjustment()).isEqualByComparingTo("1200.00");
+		assertThat(effective.paidPenalty()).isEqualByComparingTo("0.00");
 		assertThat(triggerValue).isEqualByComparingTo("1946.66");
+	}
+
+	@Test
+	void partialPenaltyPaymentThenWaiverRespectsTheRemainingCapAndKeepsTheReceivableNonNegative()
+			throws Exception {
+		// F2 (ADR-019 Context, invariant 9): the waiver cap must subtract penalty already PAID. Pay 2,000.00
+		// of the 3,146.66 gross penalty (penalty is first in the waterfall, so the whole payment is PENALTY),
+		// leaving a remaining effective penalty of 1,146.66 = gross 3,146.66 − adjustments 0 − paid 2,000.00.
+		MvcResult payment = pay("partial-penalty-payment", "2000.00");
+		assertThat(payment.getResponse().getStatus()).isEqualTo(201);
+		assertThat(allocationTypesOf(payment)).containsExactly("PENALTY");
+		assertThat(penaltyAllocatedOf(1)).isEqualByComparingTo("2000.00");
+		// The port already reflects the paid term: remaining effective is 1,146.66, not the gross.
+		assertThat(effectiveOf(1)).isEqualByComparingTo("1146.66");
+
+		// (a) A waiver that exceeds the REMAINING penalty (1,200.00 > 1,146.66) is rejected 409, writes
+		// nothing — the old gross-only cap would have allowed it (1,200.00 <= 3,146.66).
+		long adjustmentsBefore = tableCount("penalty_adjustment");
+		long waiverEntriesBefore = journalEntryCount("PENALTY_WAIVER");
+		MvcResult overRemaining = adjust("WAIVE", "1200.00", "exceeds the remaining penalty");
+		assertThat(overRemaining.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(overRemaining)).isEqualTo("CONFLICT");
+		assertThat(tableCount("penalty_adjustment")).isEqualTo(adjustmentsBefore);
+		assertThat(journalEntryCount("PENALTY_WAIVER")).isEqualTo(waiverEntriesBefore);
+
+		// (b) A legal waiver (<= remaining) commits and leaves net PIUTANG_DENDA for the contract >= 0.
+		MvcResult legal = adjust("REDUCE", "500.00", "within the remaining penalty");
+		assertThat(legal.getResponse().getStatus()).isEqualTo(200);
+		assertThat(netPiutangDenda()).isGreaterThanOrEqualTo(BigDecimal.ZERO);
+		// Remaining effective now 1,146.66 − 500.00 = 646.66; the port and V16 cap agree.
+		assertThat(effectiveOf(1)).isEqualByComparingTo("646.66");
+
+		// (c) A subsequent small PENALTY allocation still commits: the V3 cap is not poisoned, because the
+		// adjustment cap already excluded the paid 2,000.00. V3 PENALTY cap = 3,146.66 − 500.00 = 2,646.66,
+		// and Σ PENALTY allocation 2,000.00 + 400.00 = 2,400.00 <= 2,646.66.
+		MvcResult secondPayment = pay("second-penalty-payment", "400.00");
+		assertThat(secondPayment.getResponse().getStatus()).isEqualTo(201);
+		assertThat(allocationTypesOf(secondPayment)).containsExactly("PENALTY");
+		assertThat(penaltyAllocatedOf(1)).isEqualByComparingTo("2400.00");
+		assertThat(netPiutangDenda()).isGreaterThanOrEqualTo(BigDecimal.ZERO);
 	}
 
 	@Test
@@ -269,6 +316,44 @@ class PenaltyAdjustmentIT {
 						.contentType(MediaType.APPLICATION_JSON)
 						.content(requestBody(type, amount, reason)))
 				.andReturn();
+	}
+
+	/** Posts a real CASH payment on the fixture business date (penalty is first in the waterfall). */
+	private MvcResult pay(String idempotencyKey, String amount) throws Exception {
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("contract_id", contractId.toString());
+		body.put("amount", new BigDecimal(amount));
+		body.put("channel", "CASH");
+		return mockMvc.perform(post("/api/v1/payments")
+						.header("Authorization", "Bearer " + token)
+						.header("Idempotency-Key", idempotencyKey)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(objectMapper.writeValueAsString(body)))
+				.andReturn();
+	}
+
+	private List<String> allocationTypesOf(MvcResult paymentResult) throws Exception {
+		List<String> types = new java.util.ArrayList<>();
+		for (JsonNode allocation : data(paymentResult).get("allocations")) {
+			types.add(allocation.get("allocation_type").asText());
+		}
+		return types;
+	}
+
+	/** Σ PENALTY payment allocation for period {@code periodNo}, read straight from the table. */
+	private BigDecimal penaltyAllocatedOf(int periodNo) {
+		return jdbc.queryForObject("""
+				select coalesce(sum(amount), 0) from payment_allocation
+				where installment_id = ? and allocation_type = 'PENALTY'
+				""", BigDecimal.class, installmentId(periodNo));
+	}
+
+	/** Net PIUTANG_DENDA (Σ debit − Σ credit) across every journal line of this contract. */
+	private BigDecimal netPiutangDenda() {
+		return jdbc.queryForObject("""
+				select coalesce(sum(debit - credit), 0) from journal_line
+				where contract_id = ? and account_code = 'PIUTANG_DENDA'
+				""", BigDecimal.class, contractId);
 	}
 
 	private String requestBody(String type, String amount, String reason) {

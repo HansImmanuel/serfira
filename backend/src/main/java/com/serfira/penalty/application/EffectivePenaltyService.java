@@ -3,6 +3,7 @@ package com.serfira.penalty.application;
 import com.serfira.contract.application.InstallmentPenalty;
 import com.serfira.contract.application.InstallmentPenaltyPort;
 import com.serfira.contract.application.InstallmentPenaltySnapshot;
+import com.serfira.payment.application.PenaltyAllocationPort;
 import com.serfira.penalty.infrastructure.InstallmentAdjustmentTotal;
 import com.serfira.penalty.infrastructure.PenaltyAdjustmentRepository;
 import org.springframework.stereotype.Service;
@@ -19,8 +20,9 @@ import java.util.UUID;
 
 /**
  * Implementation of {@link EffectivePenaltyPort} (ADR-019 D1): reads each installment's gross penalty
- * through the {@code contract} seam ({@link InstallmentPenaltyPort}) and {@code Σ adjustment} from the
- * {@code penalty}-owned {@code penalty_adjustment} table, and returns the clamped effective penalty.
+ * through the {@code contract} seam ({@link InstallmentPenaltyPort}), {@code Σ adjustment} from the
+ * {@code penalty}-owned {@code penalty_adjustment} table, and {@code Σ} active PENALTY allocation through
+ * the {@code payment} seam ({@link PenaltyAllocationPort}), and returns the clamped effective penalty.
  *
  * <p>Read-only: {@code @Transactional(readOnly = true)}. The clamp lives in the pure {@link #effective}
  * helper so the invariant-9 formula can be golden-tested without Spring (same convention as
@@ -36,10 +38,13 @@ public class EffectivePenaltyService implements EffectivePenaltyPort {
 
 	private final InstallmentPenaltyPort contracts;
 	private final PenaltyAdjustmentRepository adjustments;
+	private final PenaltyAllocationPort paidPenalties;
 
-	public EffectivePenaltyService(InstallmentPenaltyPort contracts, PenaltyAdjustmentRepository adjustments) {
+	public EffectivePenaltyService(InstallmentPenaltyPort contracts, PenaltyAdjustmentRepository adjustments,
+			PenaltyAllocationPort paidPenalties) {
 		this.contracts = contracts;
 		this.adjustments = adjustments;
+		this.paidPenalties = paidPenalties;
 	}
 
 	@Override
@@ -50,10 +55,12 @@ public class EffectivePenaltyService implements EffectivePenaltyPort {
 		List<UUID> installmentIds = snapshot.installments().stream().map(InstallmentPenalty::installmentId).toList();
 
 		Map<UUID, BigDecimal> adjustmentByInstallment = new HashMap<>();
+		Map<UUID, BigDecimal> paidPenaltyByInstallment = new HashMap<>();
 		if (!installmentIds.isEmpty()) {
 			for (InstallmentAdjustmentTotal total : adjustments.sumAdjustmentsByInstallmentIds(installmentIds)) {
 				adjustmentByInstallment.put(total.installmentId(), total.adjustment());
 			}
+			paidPenaltyByInstallment.putAll(paidPenalties.penaltyAllocationsByInstallment(installmentIds));
 		}
 
 		List<InstallmentEffectivePenalty> effectives = new ArrayList<>(snapshot.installments().size());
@@ -61,23 +68,26 @@ public class EffectivePenaltyService implements EffectivePenaltyPort {
 			BigDecimal gross = normalize(installment.penaltyAmount());
 			BigDecimal adjustment = normalize(adjustmentByInstallment.getOrDefault(installment.installmentId(),
 					ZERO_MONEY));
+			BigDecimal paidPenalty = normalize(paidPenaltyByInstallment.getOrDefault(installment.installmentId(),
+					ZERO_MONEY));
 			effectives.add(new InstallmentEffectivePenalty(installment.installmentId(), gross, adjustment,
-					effective(gross, adjustment)));
+					paidPenalty, effective(gross, adjustment, paidPenalty)));
 		}
 		return new EffectivePenaltySnapshot(contractId, effectives);
 	}
 
 	/**
-	 * The invariant-9 formula: {@code effective = max(0, grossAccrued − adjustment)}, clamped so a waiver can
-	 * never drive effective penalty negative (ADR-019 D1; the V3/V15 caps enforce the same bound in the DB).
-	 * Pure and {@code static} so the golden/negative-guard unit test needs no Spring.
+	 * The invariant-9 formula: {@code effective = max(0, grossAccrued − adjustment − paidPenalty)}, clamped
+	 * so a waiver can never drive effective penalty negative (ADR-019 Context; the V3/V16 caps enforce the
+	 * same bound in the DB). Pure and {@code static} so the golden/negative-guard unit test needs no Spring.
 	 *
 	 * @param grossAccrued gross cumulative recognized penalty, scale-2, {@code >= 0}
 	 * @param adjustment   Σ waive/reduce for the installment, scale-2, {@code >= 0}
+	 * @param paidPenalty  Σ active PENALTY payment allocation for the installment, scale-2, {@code >= 0}
 	 * @return the clamped effective penalty, scale-2, {@code >= 0}
 	 */
-	public static BigDecimal effective(BigDecimal grossAccrued, BigDecimal adjustment) {
-		BigDecimal difference = grossAccrued.subtract(adjustment);
+	public static BigDecimal effective(BigDecimal grossAccrued, BigDecimal adjustment, BigDecimal paidPenalty) {
+		BigDecimal difference = grossAccrued.subtract(adjustment).subtract(paidPenalty);
 		return difference.signum() < 0 ? ZERO_MONEY : difference.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
 	}
 
