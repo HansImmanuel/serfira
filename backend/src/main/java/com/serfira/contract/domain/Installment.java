@@ -123,10 +123,10 @@ public class Installment extends Auditable {
 	 * leaves the {@code OVERDUE} aging state for {@code PARTIALLY_PAID} (PRD P-3); the aging job
 	 * re-marks it if it is still overdue.
 	 *
-	 * <p><b>Extension point for E5:</b> the derived state ignores penalty adjustments, exactly like
-	 * {@link InstallmentBalance#of(Installment)}. When the waiver flow exists, it must pass the
-	 * adjustment sum ({@link InstallmentBalance#of(Installment, BigDecimal)}) so a waived penalty does
-	 * not keep a resolved installment in {@code PARTIALLY_PAID}.
+	 * <p>This derivation ignores penalty adjustments (it reads {@link InstallmentBalance#of(Installment)}),
+	 * which is correct for a payment: a payment never changes the recognized penalty. The waiver flow (E5)
+	 * re-derives the status from the adjustment-aware balance through {@link #recomputeResolutionStatus},
+	 * so a waived penalty does not keep an otherwise-resolved installment in {@code PARTIALLY_PAID}.
 	 *
 	 * @param amount scale-2 money, {@code > 0}
 	 * @param paidAt business instant of the payment; kept from the first resolving payment
@@ -151,6 +151,50 @@ public class Installment extends Auditable {
 					? InstallmentStatus.PAID
 					: InstallmentStatus.PARTIALLY_PAID;
 		}
+	}
+
+	/**
+	 * Re-derives the resolution status after a penalty waiver/reduce (E5, task T15, ADR-019 D3): a waiver
+	 * lowers the recognized penalty but never touches the installment's amounts, so without this the status
+	 * stays {@code OVERDUE}/{@code PARTIALLY_PAID} even when the write-down clears the last amount owed,
+	 * which would block the maturity close (DM §3 invariant 17).
+	 *
+	 * <p>The status is derived from the adjustment-aware balance ({@link InstallmentBalance#of(Installment,
+	 * BigDecimal)}): {@code outstanding == 0} means {@code PAID}, otherwise {@code PARTIALLY_PAID}. The same
+	 * guards as {@link #applyPayment} apply — {@code SETTLED}/{@code WRITTEN_OFF} are terminal and never
+	 * downgraded, and a {@code PENDING} installment with nothing resolved is left as it is rather than being
+	 * moved to {@code PARTIALLY_PAID}. Unlike {@link #applyPayment} this method deliberately does <b>not</b>
+	 * stamp {@code paid_at}: a waiver is not cash received, so re-stamping would misrecord when the customer
+	 * paid (invariant: {@code paid_at} is the first resolving payment's instant).
+	 *
+	 * <p>Returns {@code true} when the status field actually changed, which dirties the row and bumps
+	 * {@code @Version} on flush. That versioned write is what serializes concurrent waivers on the same
+	 * installment (F4): two racing waivers collide on {@code @Version} so exactly one commits.
+	 *
+	 * @param penaltyAdjustments Σ active penalty adjustment for this installment, scale-2, {@code >= 0}
+	 * @return {@code true} if the status changed
+	 */
+	public boolean recomputeResolutionStatus(BigDecimal penaltyAdjustments) {
+		Objects.requireNonNull(penaltyAdjustments, "penaltyAdjustments");
+		if (status == InstallmentStatus.SETTLED || status == InstallmentStatus.WRITTEN_OFF) {
+			return false;
+		}
+		boolean resolved = InstallmentBalance.of(this, penaltyAdjustments).outstanding().signum() == 0;
+		InstallmentStatus recomputed;
+		if (resolved) {
+			recomputed = InstallmentStatus.PAID;
+		} else if (status == InstallmentStatus.PENDING && paidAmount.signum() == 0) {
+			// Nothing has resolved against a never-touched installment: a partial waiver that leaves it
+			// outstanding keeps it PENDING; promoting to PARTIALLY_PAID would misreport that money arrived.
+			recomputed = InstallmentStatus.PENDING;
+		} else {
+			recomputed = InstallmentStatus.PARTIALLY_PAID;
+		}
+		if (recomputed == status) {
+			return false;
+		}
+		this.status = recomputed;
+		return true;
 	}
 
 	/**
@@ -238,9 +282,11 @@ public class Installment extends Auditable {
 	 * {@code SETTLED} and {@code WRITTEN_OFF} are never changed by aging. Aging only ever moves an installment
 	 * <b>into</b> {@code OVERDUE}; leaving it is the payment path's decision ({@link #applyPayment}).
 	 *
-	 * <p><b>Extension point for E5:</b> like {@link #applyPayment}, the outstanding check ignores penalty
-	 * adjustments ({@link InstallmentBalance#of(Installment)}). When the waiver flow exists it must pass the
-	 * adjustment sum, so an installment whose only remainder is a waived penalty is not aged.
+	 * <p>Like {@link #applyPayment}, the outstanding check reads the zero-adjustment balance
+	 * ({@link InstallmentBalance#of(Installment)}). A waiver that clears the only remaining amount runs
+	 * {@link #recomputeResolutionStatus} and flips the installment to {@code PAID} first, so aging then
+	 * finds a terminal status and leaves it alone — an installment whose only remainder is a waived penalty
+	 * is never aged.
 	 *
 	 * @param businessDate    business date the aging step runs for
 	 * @param gracePeriodDays the contract's activation-snapshot grace period, {@code >= 0}

@@ -4,6 +4,7 @@ import com.serfira.ledger.application.LedgerPostingService;
 import com.serfira.ledger.domain.LedgerAccount;
 import com.serfira.ledger.domain.LedgerPosting;
 import com.serfira.ledger.domain.LedgerPostingLine;
+import com.serfira.contract.application.InstallmentStatusRecomputePort;
 import com.serfira.ledger.domain.LedgerRefType;
 import com.serfira.penalty.domain.PenaltyAdjustment;
 import com.serfira.penalty.domain.PenaltyAdjustmentType;
@@ -42,7 +43,10 @@ import java.util.UUID;
  * {@link EffectivePenaltyPort} (which in turn reads {@code contract}-owned gross penalty through
  * {@link com.serfira.contract.application.InstallmentPenaltyPort}), keying everything on {@code contractId}
  * so no new {@code installment → contract} lookup edge is invented. The installment is confirmed to belong
- * to the request's contract via that snapshot.
+ * to the request's contract via that snapshot. After writing the adjustment it asks {@code contract} to
+ * re-derive the installment's resolution status and close the contract if it has matured, through the
+ * {@code contract}-owned {@link InstallmentStatusRecomputePort} ({@code penalty → contract}, 02_TECH_SPEC.md
+ * §1): {@code penalty} never touches the {@code installment} table itself.
  *
  * <p><b>Actor</b>: {@code approved_by} is the authenticated JWT {@code sub} bound in {@link AuditContext}
  * (Addendum §3.3/§3.4), never a request field. No PII or token is logged — only ids and safe metadata.
@@ -57,14 +61,17 @@ public class PenaltyAdjustmentService {
 
 	private final PenaltyAdjustmentRepository adjustments;
 	private final EffectivePenaltyPort effectivePenalty;
+	private final InstallmentStatusRecomputePort statusRecompute;
 	private final LedgerPostingService ledger;
 	private final AuditContext auditContext;
 	private final Clock clock;
 
 	public PenaltyAdjustmentService(PenaltyAdjustmentRepository adjustments, EffectivePenaltyPort effectivePenalty,
-			LedgerPostingService ledger, AuditContext auditContext, Clock clock) {
+			InstallmentStatusRecomputePort statusRecompute, LedgerPostingService ledger, AuditContext auditContext,
+			Clock clock) {
 		this.adjustments = adjustments;
 		this.effectivePenalty = effectivePenalty;
+		this.statusRecompute = statusRecompute;
 		this.ledger = ledger;
 		this.auditContext = auditContext;
 		this.clock = clock;
@@ -120,6 +127,13 @@ public class PenaltyAdjustmentService {
 				type + " penalty of installment " + installmentId,
 				List.of(LedgerPostingLine.debit(LedgerAccount.BEBAN_WAIVER_DENDA, normalizedAmount, contractId),
 						LedgerPostingLine.credit(LedgerAccount.PIUTANG_DENDA, normalizedAmount, contractId))));
+
+		// Re-derive the installment's resolution status from the adjustment-aware balance and close the
+		// contract as MATURITY when the waiver clears the last amount owed (F3, DM §3 invariant 17). The
+		// contract module owns installment status, so this goes through its port. The versioned installment
+		// write it performs is also what serializes concurrent waivers (F4): the retrying service above this
+		// boundary retries the resulting OptimisticLockException.
+		statusRecompute.recomputeAfterPenaltyAdjustment(contractId, installmentId);
 
 		// Flush now (not at COMMIT) so the V15 cap trigger and V3 journal-balance trigger fail inside this
 		// use case, rolling the adjustment and its journal back together.

@@ -124,8 +124,12 @@ public class InstallmentReceivableService implements InstallmentReceivablePort {
 	 * <p>{@code SETTLED} / {@code WRITTEN_OFF} installments deliberately do <b>not</b> count here: those
 	 * flows own their own closing reason ({@code SETTLEMENT} in E2), and this step must never rewrite
 	 * their decision. A contract that is no longer ACTIVE is left untouched for the same reason.
+	 *
+	 * <p>Package-private and reused by {@link InstallmentStatusRecomputeService}: a penalty waiver that
+	 * clears the last amount owed must close the contract by the identical rule the payment path uses, so
+	 * the MATURITY decision stays in one place.
 	 */
-	private void closeWhenEveryInstallmentIsPaid(UUID contractId, List<Installment> schedule,
+	void closeWhenEveryInstallmentIsPaid(UUID contractId, List<Installment> schedule,
 			OffsetDateTime resolvedAt) {
 		if (schedule.isEmpty() || !allPaid(schedule)) {
 			return;

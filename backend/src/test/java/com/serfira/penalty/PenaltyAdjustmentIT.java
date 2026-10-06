@@ -294,6 +294,36 @@ class PenaltyAdjustmentIT {
 	}
 
 	@Test
+	void aWaiverRecomputesInstallmentStatusWithoutCorruptingItOrClosingTheContract() throws Exception {
+		// F3 (ADR-019 D3, DM §3 invariant 17): the waiver path recomputes the affected installment's
+		// resolution status from the adjustment-aware balance. Period 1 still owes its full principal +
+		// interest (nothing paid), so clearing the penalty leaves it outstanding — the recompute must NOT
+		// flip it to PAID and must NOT close the contract.
+		//
+		// NOTE on reachability: a waiver can only flip an installment to PAID when the penalty is the sole
+		// remaining amount, but the allocation waterfall pays PENALTY first, so a real payment can never
+		// leave principal/interest unpaid while penalty stands. The status-flip-to-PAID transition is
+		// therefore proven directly on the aggregate in InstallmentStatusRecomputeTest; here we assert the
+		// end-to-end integration contract: the recompute runs, keeps a still-owed installment correct, bumps
+		// the installment @Version (the forced increment that serializes concurrent waivers, F4), and never
+		// wrongly closes an ACTIVE contract.
+		long versionBefore = installmentVersion(1);
+
+		MvcResult waive = adjust("WAIVE", GROSS_PENALTY, "clear the accrued penalty");
+
+		assertThat(waive.getResponse().getStatus()).isEqualTo(200);
+		assertThat(decimal(data(waive), "effective_penalty")).isEqualByComparingTo("0.00");
+		// Principal + interest are still owed, so the installment is not resolved; the recompute left its
+		// status alone (no wrongful flip to PAID).
+		assertThat(installmentStatus(1)).isIn("PENDING", "PARTIALLY_PAID", "OVERDUE");
+		// The waiver forces a version increment so concurrent waivers serialize (F4).
+		assertThat(installmentVersion(1)).isEqualTo(versionBefore + 1);
+		// The contract stays ACTIVE: a waiver that does not resolve the schedule never triggers MATURITY.
+		assertThat(contractStatus()).isEqualTo("ACTIVE");
+		assertThat(contractClosedReason()).isNull();
+	}
+
+	@Test
 	void financeAndManajemenAreForbiddenAndWriteNothing() throws Exception {
 		long adjustmentsBefore = tableCount("penalty_adjustment");
 		for (String role : List.of(AppRole.FINANCE.name(), AppRole.MANAJEMEN.name())) {
@@ -384,6 +414,24 @@ class PenaltyAdjustmentIT {
 	private BigDecimal penaltyAmountOf(int periodNo) {
 		return jdbc.queryForObject("select penalty_amount from installment where id = ?", BigDecimal.class,
 				installmentId(periodNo));
+	}
+
+	private String installmentStatus(int periodNo) {
+		return jdbc.queryForObject("select status from installment where id = ?", String.class,
+				installmentId(periodNo));
+	}
+
+	private long installmentVersion(int periodNo) {
+		return jdbc.queryForObject("select version from installment where id = ?", Long.class,
+				installmentId(periodNo));
+	}
+
+	private String contractStatus() {
+		return jdbc.queryForObject("select status from contract where id = ?", String.class, contractId);
+	}
+
+	private String contractClosedReason() {
+		return jdbc.queryForObject("select closed_reason from contract where id = ?", String.class, contractId);
 	}
 
 	private int accrualCount(int periodNo) {
