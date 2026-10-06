@@ -57,7 +57,7 @@ public class InstallmentPenaltyService implements InstallmentPenaltyPort {
 		List<InstallmentPenalty> penaltyView = schedule.stream()
 				.map(installment -> new InstallmentPenalty(installment.getId(), installment.getPeriodNo(),
 						installment.getDueDate(), InstallmentBalance.penaltyBase(installment),
-						installment.getStatus()))
+						installment.getPenaltyAmount(), installment.getStatus()))
 				.toList();
 		return new InstallmentPenaltySnapshot(contract.getId(), contract.getContractNo(),
 				contract.getGracePeriodDays(), contract.getPenaltyRateDaily(), penaltyView);

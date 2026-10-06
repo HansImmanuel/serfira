@@ -19,8 +19,10 @@ import java.util.UUID;
  * @param periodNo      1-based period number, used in the accrual journal description
  * @param dueDate       due date; lateness and the grace window are measured from here
  * @param penaltyBase   unpaid principal + unpaid recognized interest, {@code >= 0}
+ * @param penaltyAmount gross cumulative recognized penalty ({@code installment.penalty_amount}), the
+ *                      {@code grossAccrued} term of the effective-penalty formula (invariant 9, ADR-019 D1)
  * @param status        resolution state; {@code SETTLED}/{@code WRITTEN_OFF} are never charged
  */
 public record InstallmentPenalty(UUID installmentId, int periodNo, LocalDate dueDate, BigDecimal penaltyBase,
-		InstallmentStatus status) {
+		BigDecimal penaltyAmount, InstallmentStatus status) {
 }

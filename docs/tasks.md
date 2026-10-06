@@ -42,12 +42,13 @@ Older per-task verification snapshots (T8, T9, T24, T25, T29) live in `tasks-arc
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist;
   `frontend/` is empty.
-- Migrations V1–V14. Baseline + accounting triggers (V3), state coherence (V4), settlement immutability (V5),
+- Migrations V1–V15. Baseline + accounting triggers (V3), state coherence (V4), settlement immutability (V5),
   contract-create safety (V6/V7), SYSTEM hardening (V8), ShedLock + penalty-accrual integrity (V9),
   `job_run.business_date` (V10), the `journal_line (contract_id, entry_date)` statement index (V11, T9), the
   parent-side accounting backstops + `uq_journal_entry_event` + `system_parameter` append-only (V12, T25),
-  the `ck_job_run_status` widen for `ABANDONED` (V13, T26), and the `contract_credit_application` cap +
-  status-guard deferred triggers (V14, T14).
+  the `ck_job_run_status` widen for `ABANDONED` (V13, T26), the `contract_credit_application` cap +
+  status-guard deferred triggers (V14, T14), and the `BEBAN_WAIVER_DENDA` COA seed + `penalty_adjustment`
+  deferred cap trigger (V15, T15).
 - Daily servicing (T3, hardened by T26): one renewable ShedLock for cron + backfill; every ACTIVE contract
   processed atomically billing → penalty → aging with five-attempt backoff retry, failure isolation, SYSTEM
   audit, three `job_run` rows; crashed `RUNNING` rows closed `ABANDONED`; keyset paging by
@@ -65,13 +66,20 @@ Older per-task verification snapshots (T8, T9, T24, T25, T29) live in `tasks-arc
   applies it to recognized receivable (pure `CreditApplicationEngine`, one `CREDIT_APPLICATION` journal per
   call), `GET /api/v1/contracts/{id}/credit` reads balance + history. V14 enforces the Σ-applications cap
   and the AVAILABLE→APPLIED status rule.
-- Endpoints (10): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
+- Penalty waive/reduce (T15, E5): `POST /api/v1/penalty-adjustments` (ADMIN_OPERASIONAL) records an
+  append-only `PenaltyAdjustment` and posts one `Dr BEBAN_WAIVER_DENDA / Cr PIUTANG_DENDA` entry
+  (`PENALTY_WAIVER`). Effective penalty (`max(0, penalty_amount − Σ adjustment)`, invariant 9) is now owned
+  by `penalty` and exposed through `EffectivePenaltyPort`; the former native `penalty_adjustment` read in
+  `contract` is retired and both call sites read through the port (new `contract → penalty` edge, CR-14
+  closed). V15 seeds `BEBAN_WAIVER_DENDA` and adds the deferred Σ-adjustment cap trigger.
+- Endpoints (11): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
   `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, `GET /api/v1/reports/aging`,
-  `POST /api/v1/contracts/{id}/credit/apply`, `GET /api/v1/contracts/{id}/credit`.
-- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all ten
-  endpoints (T7, ADR-015; the two credit rows added by T14). `sub` must be a UUID with `exp`. No
-  login/refresh/logout, no `iss`/`aud` validation yet (ADR-005; T21).
+  `POST /api/v1/contracts/{id}/credit/apply`, `GET /api/v1/contracts/{id}/credit`,
+  `POST /api/v1/penalty-adjustments`.
+- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all eleven
+  endpoints (T7, ADR-015; the two credit rows added by T14, the penalty-adjustment row by T15). `sub` must
+  be a UUID with `exp`. No login/refresh/logout, no `iss`/`aud` validation yet (ADR-005; T21).
 
 Full per-task implementation notes for all DONE work are archived in `tasks-archive.md`.
 
@@ -81,7 +89,8 @@ key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness), T29 (
 statement query, X-13) and T11 (Phase-1 test hardening + exit verification) are all DONE. T10 stays
 DEFERRED (T1.a kept ADR-012 decision 2; no code change required). **Sprint 5 (Settlement, Credit & Waiver,
 T12–T15) is planned** (2026-10-05, ADR-018 + ADR-019; see the Sprint 5 section) and ready to implement in
-order T14 → T15 → T12 → T13. **T14 (E3 credit) is DONE** (branch `t14-contract-credit`); T15 → T12 → T13 remain. T16 (void)
+order T14 → T15 → T12 → T13. **T14 (E3 credit) and T15 (E5 waive/reduce + `EffectivePenaltyPort`) are DONE**
+(branches `t14-contract-credit`, `t15-penalty-waive-effective-port`); T12 → T13 remain. T16 (void)
 remains in Sprint 6.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
@@ -126,6 +135,7 @@ ADRs listed.
 | T29   | Fix contract statement query on PostgreSQL: `cast(...)`-typed nullable binds in `findContractStatement`/`countQuery`, clearing `42P18`                | DONE   | X-13 (bug task)                |
 | T11   | Phase-1 test hardening + exit verification: child-table immutability tests, specific-exception assertions, PRD §7 scenarios over HTTP, PII log guard | DONE   | commit `a8fa1a6`               |
 | T14   | E3 Excess → `contract_credit` + credit-apply/read endpoints: `ContractCreditPort`, `CreditApplicationEngine`, V14 cap/status triggers, RBAC rows     | DONE   | ADR-009, Addendum §2 (branch `t14-contract-credit`) |
+| T15   | E5 Penalty waive/reduce + `EffectivePenaltyPort`: `PenaltyAdjustment` entity, `POST /penalty-adjustments`, `BEBAN_WAIVER_DENDA`/V15 cap, retired contract native read (CR-14) | DONE   | ADR-019, Addendum §16.4 (branch `t15-penalty-waive-effective-port`) |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -250,6 +260,32 @@ installments; over-apply rejected; apply-with-no-recognized-receivable rejected;
 Σ allocations rule; raw-SQL cap violation; role matrix cells. Reuse `TestJwts`, `FixedClock`.
 
 ### T15 — E5 Penalty waive/reduce + `EffectivePenaltyPort` (2 pts → ~3 with the seam)
+
+**Status: DONE** (branch `t15-penalty-waive-effective-port`). Implementation note: new `PenaltyAdjustment`
+JPA entity (`penalty.domain`, extends `Auditable`; append-only, V1 immutability trigger) + repository;
+`PenaltyAdjustmentService` (`@Transactional`) records a WAIVE/REDUCE and posts one correcting entry
+**`Dr BEBAN_WAIVER_DENDA / Cr PIUTANG_DENDA`** (`ref_type=PENALTY_WAIVER`, `ref_id=penalty_adjustment.id`),
+with `approved_by` from the JWT `sub` via `AuditContext` (never the body); `POST /api/v1/penalty-adjustments`
+(ADMIN_OPERASIONAL only). **Expense account = new `BEBAN_WAIVER_DENDA` (EXPENSE), seeded in V15** — not a
+reuse of `DISKON_PELUNASAN`, which ADR-018 D3 reserves for the settlement rebate (reusing it would conflate
+two economic events). New `penalty.application.EffectivePenaltyPort` /`EffectivePenaltyService`
+(`effective = max(0, penalty_amount − Σ adjustment)`, invariant 9, clamped ≥ 0) is now the single
+application source; the native `InstallmentRepository.sumPenaltyAdjustmentsByInstallmentIds` read is
+**removed** and both call sites (`InstallmentReceivableService`, `ContractCreditCommandService`) route through
+the port — new `contract → penalty` port edge, closes CR-14. Over-waive → 409 `CONFLICT`, writes nothing.
+Migration **V15** (no `CREATE TABLE`): seeds `BEBAN_WAIVER_DENDA` + adds the deferred cap trigger
+`assert_penalty_adjustment_cap` (`Σ penalty_adjustment.amount ≤ installment.penalty_amount`, standalone
+because V3's cap only fires on `payment_allocation`); **`uq_journal_entry_event` was NOT extended** — the
+`LedgerPostingService` service guard already enforces one entry per `(ref_type, ref_id)` (ADR-008 d5,
+mirrors T14). `ContractInstallmentTotals` still omits adjustments (known follow-up, ADR-019). Test change:
+`PaymentApiIT.anUnusableReceivableSnapshotIsRejectedAndRollsTheWholePaymentBack` was repurposed to
+`anOverWaiverExceedingAccruedPenaltyIsRejectedByTheDbCap` — the old corrupt-snapshot premise is now
+unreachable because the V15 cap rejects the over-waive seed at commit (P0001); the test now asserts that
+cap directly (invariant 9 genuinely changed, so this is a spec-driven expected-value change, not a
+weakened test). Verification (Docker available): `EffectivePenaltyFormulaTest` (5, no Docker) +
+`PenaltyAdjustmentIT` (7, incl. port-parity) + `EndpointRoleMatrixIT` + `LedgerPostingIT` +
+`LedgerAccountNameIT` pass; full `./gradlew test` = **680 tests across 84 suites, 0 failures / 0 errors**
+(up from 665 after T14); `./gradlew check` green.
 
 **Dependencies:** none open (`penalty_adjustment` table + V3 cap exist). Do after T14, before T12.
 
@@ -449,8 +485,9 @@ This is why T10 is conditional rather than planned.
 
 The 2026-09-29 code review and the 2026-09-30 external review (16 findings, CR-01…CR-16) are both resolved
 or mapped to tasks. The full CR verdict table and the review corrections are in `tasks-archive.md`. The CR
-findings that remain **open** map to still-TODO tasks: CR-10/CR-16 → T21, CR-11 → T28, CR-14 → T15,
-CR-15 → T27. All others are DONE (T7, T23, T24, T25, T26).
+findings that remain **open** map to still-TODO tasks: CR-10/CR-16 → T21, CR-11 → T28,
+CR-15 → T27. **CR-14 is closed by T15** (one effective-penalty formula behind `EffectivePenaltyPort`).
+All others are DONE (T7, T23, T24, T25, T26).
 
 <!-- The CR-01…CR-16 verdict table and the 2026-09-29 correction notes moved to tasks-archive.md on 2026-10-05. -->
 

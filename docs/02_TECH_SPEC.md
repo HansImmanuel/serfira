@@ -52,11 +52,18 @@ Aturan dependency:
   memperoleh halaman keyset id/status kontrak ACTIVE hanya lewat `ActiveContractListingPort` (sejak T26
   keyset paging, bukan satu list penuh), dan step aging T6
   menandai `OVERDUE` hanya lewat `InstallmentAgingPort` (transisi tetap diputuskan `contract`); repository/entity
-  `contract` tidak pernah keluar dari modul pemiliknya. Arahnya satu arah (`penalty` → port `contract`);
-  `contract` tidak tahu modul `penalty`, dan `penalty` dilarang menyentuh tabel/entity
-  `contract`/`installment` langsung. `penalty_accrual` (D1) dan `penalty_adjustment` (E5) adalah
-  tabel modul `penalty`; pembacaan `penalty_adjustment` native di `contract` (ADR-010) tetap seam sementara
-  sampai E5 menggantinya dengan interface modul `penalty`.
+  `contract` tidak pernah keluar dari modul pemiliknya. `penalty_accrual` (D1) dan `penalty_adjustment` (E5)
+  adalah tabel modul `penalty`; `penalty` dilarang menyentuh tabel/entity `contract`/`installment` langsung.
+- `contract` boleh bergantung ke `penalty` lewat **application interface** `EffectivePenaltyPort`
+  (`penalty.application`, ADR-019 D1, T15): satu-satunya sumber effective penalty
+  (`effective = max(0, penalty_amount − Σ penalty_adjustment)`, invariant 9) untuk `InstallmentReceivableService`
+  dan `ContractCreditCommandService`. Ini **menggantikan** pembacaan native `penalty_adjustment` di `contract`
+  (seam sementara ADR-010, kini **dipensiunkan**). Akibatnya hubungan `contract` ↔ `penalty` menjadi
+  dua arah tetapi **hanya lewat port** (`penalty → contract` via `InstallmentPenaltyPort`, `contract → penalty`
+  via `EffectivePenaltyPort`), tetap patuh ADR-001 (port, bukan entity/tabel). `EffectivePenaltyService`
+  membaca gross `penalty_amount` lewat `InstallmentPenaltyPort` yang sudah ada, jadi tidak ada edge
+  `penalty → contract` baru. Catatan: agregat per-kontrak `ContractInstallmentTotals` masih mengabaikan
+  adjustment (follow-up ADR-019; dicatat di T15).
 - `ledger` tidak boleh bergantung ke module lain (paling dasar).
 - `reporting` boleh baca semua (read-only). Sejak T8, laporan aging membaca receivable angsuran kontrak
   ACTIVE hanya lewat `contract.application.AgingReportSourcePort` (satu arah, `reporting` → port `contract`),
@@ -228,7 +235,7 @@ Posting rules (contoh):
 | Penalty accrual harian | PIUTANG_DENDA | PENDAPATAN_DENDA |
 | Penalty catch-up setelah void | PIUTANG_DENDA | PENDAPATAN_DENDA |
 | Terima payment regular | KAS | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA / TITIPAN_NASABAH |
-| Waive/reduce denda | PENDAPATAN_DENDA | PIUTANG_DENDA |
+| Waive/reduce denda (E5, ADR-019 D3) | BEBAN_WAIVER_DENDA | PIUTANG_DENDA |
 | Settlement - recognize accrued current interest | PIUTANG_BUNGA | PENDAPATAN_BUNGA |
 | Settlement - cash for principal | KAS | PIUTANG_POKOK |
 | Settlement - cash for billed/accrued interest | KAS | PIUTANG_BUNGA |
@@ -265,6 +272,16 @@ dan `days_late = max(0, x − due_date − grace)` (TS §4.3). Kelayakan bersifa
 re-run dan backfill gratis, base yang turun karena pembayaran sebagian tidak menekan accrual hari berikutnya, dan
 hari yang belum tertagih tetap bisa ditagih setelah void (Addendum §6). Installment `SETTLED`/`WRITTEN_OFF` dan
 hari di dalam grace tidak pernah ditagih; denda tidak berbunga di atas denda.
+
+**E5 (ADR-019 D2/D3, T15):** "Waive/reduce denda" lewat `POST /api/v1/penalty-adjustments` (ADMIN_OPERASIONAL)
+menambah satu baris append-only `penalty_adjustment` (WAIVE/REDUCE, immutable via trigger V1) dan **satu**
+`journal_entry` koreksi — `ref_type = PENALTY_WAIVER`, `ref_id = penalty_adjustment.id` — debit
+`BEBAN_WAIVER_DENDA` = kredit `PIUTANG_DENDA` sebesar amount, dengan `contract_id` di kedua baris. Koreksi ini
+membalik **receivable** denda, bukan histori accrual (baris `penalty_accrual` tetap append-only). Effective
+penalty tidak pernah < 0 (invariant 9): service menolak over-waive dengan 409 `CONFLICT` sebelum menulis apa pun,
+dan cap trigger V15 (`Σ penalty_adjustment.amount ≤ installment.penalty_amount`) adalah backstop DB-nya. Approver
+(`approved_by`) berasal dari JWT `sub`, bukan body. `BEBAN_WAIVER_DENDA` adalah akun EXPENSE baru (di-seed V15),
+dipilih alih-alih `DISKON_PELUNASAN` yang punya makna settlement-rebate berbeda (ADR-018 D3).
 
 | Write-off piutang | BIAYA_PENGHAPUSAN_PIUTANG | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
 

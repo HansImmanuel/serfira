@@ -114,3 +114,26 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       50/150 ms) mencerminkan jalur payment. Verifikasi (Docker aktif): `CreditApplicationEngineTest` (16) +
       `ContractCreditIT` (10) + `EndpointRoleMatrixIT` + `OpenApiSmokeIT` pass; full `.\gradlew test` = **665
       tests, 0 gagal**; `.\gradlew check` hijau. Branch `t14-contract-credit`.
+
+- [x] T15 — E5 Penalty waive/reduce + `EffectivePenaltyPort` (ADR-019, Addendum §16.4). Writer pertama
+      `penalty_adjustment`: entity `PenaltyAdjustment` baru di `penalty.domain` (extends `Auditable`,
+      append-only via trigger V1). `PenaltyAdjustmentService` (`@Transactional`) mencatat WAIVE/REDUCE dan
+      memposting satu jurnal koreksi **`Dr BEBAN_WAIVER_DENDA / Cr PIUTANG_DENDA`**
+      (`ref_type=PENALTY_WAIVER`, `ref_id=penalty_adjustment.id`); `approved_by` dari JWT `sub` (bukan body).
+      `POST /api/v1/penalty-adjustments` (ADMIN_OPERASIONAL). Akun ekspense = `BEBAN_WAIVER_DENDA` baru
+      (di-seed V15), bukan reuse `DISKON_PELUNASAN` (makna settlement-rebate berbeda, ADR-018 D3).
+      `EffectivePenaltyPort`/`EffectivePenaltyService` baru = satu-satunya sumber effective penalty
+      (`max(0, penalty_amount − Σ adjustment)`, invariant 9, clamp ≥ 0); pembacaan native
+      `InstallmentRepository.sumPenaltyAdjustmentsByInstallmentIds` di `contract` **dihapus**, dua call site
+      (`InstallmentReceivableService`, `ContractCreditCommandService`) lewat port (edge `contract → penalty`,
+      menutup CR-14). Over-waive → 409 `CONFLICT`, tidak menulis apa pun. Migrasi V15 (tanpa `CREATE TABLE`):
+      seed `BEBAN_WAIVER_DENDA` + trigger deferred `assert_penalty_adjustment_cap`
+      (`Σ penalty_adjustment.amount ≤ installment.penalty_amount`); `uq_journal_entry_event` **tidak** diperluas
+      (service guard `LedgerPostingService` cukup, ADR-008 d5, seperti T14). `ContractInstallmentTotals` masih
+      mengabaikan adjustment (follow-up ADR-019). Perubahan test: `PaymentApiIT`
+      `anUnusableReceivableSnapshotIsRejectedAndRollsTheWholePaymentBack` → `anOverWaiverExceedingAccruedPenaltyIsRejectedByTheDbCap`
+      (premis korupsi lama kini tak terjangkau karena cap V15 menolak seed over-waive saat commit; invariant 9
+      berubah, jadi ini perubahan nilai harapan sesuai spec). Verifikasi (Docker aktif): `EffectivePenaltyFormulaTest`
+      (5) + `PenaltyAdjustmentIT` (7, termasuk port-parity) + `EndpointRoleMatrixIT` + `LedgerPostingIT` +
+      `LedgerAccountNameIT` pass; full `.\gradlew test` = **680 tests / 84 suites / 0 gagal / 0 error**;
+      `.\gradlew check` hijau. Branch `t15-penalty-waive-effective-port`.

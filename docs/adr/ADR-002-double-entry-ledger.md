@@ -41,6 +41,7 @@ journal_lines   (id, journal_entry_id, account_code, debit, credit, contract_id)
 | PENDAPATAN_ADMIN | INCOME | Admin fee settlement |
 | DISKON_PELUNASAN | EXPENSE | Rebate settlement (contra-receivable) |
 | BIAYA_PENGHAPUSAN_PIUTANG | EXPENSE | Write-off |
+| BEBAN_WAIVER_DENDA | EXPENSE | Penalty waive/reduce (E5, ADR-019 D3; seeded V15) |
 
 **Invariant yang dienforce:**
 1. `Σ debit = Σ kredit` per `journal_entry` — diperiksa via DB constraint/trigger + service layer + test.
