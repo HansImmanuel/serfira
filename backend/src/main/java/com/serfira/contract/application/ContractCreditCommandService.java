@@ -23,6 +23,8 @@ import com.serfira.ledger.domain.LedgerAccount;
 import com.serfira.ledger.domain.LedgerPosting;
 import com.serfira.ledger.domain.LedgerPostingLine;
 import com.serfira.ledger.domain.LedgerRefType;
+import com.serfira.penalty.application.EffectivePenaltyPort;
+import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
@@ -80,17 +82,20 @@ public class ContractCreditCommandService {
 	private final ContractCreditRepository credits;
 	private final ContractCreditApplicationRepository applications;
 	private final InstallmentReceivablePort receivables;
+	private final EffectivePenaltyPort effectivePenalty;
 	private final LedgerPostingService ledger;
 	private final Clock clock;
 
 	public ContractCreditCommandService(ContractRepository contracts, InstallmentRepository installments,
 			ContractCreditRepository credits, ContractCreditApplicationRepository applications,
-			InstallmentReceivablePort receivables, LedgerPostingService ledger, Clock clock) {
+			InstallmentReceivablePort receivables, EffectivePenaltyPort effectivePenalty,
+			LedgerPostingService ledger, Clock clock) {
 		this.contracts = contracts;
 		this.installments = installments;
 		this.credits = credits;
 		this.applications = applications;
 		this.receivables = receivables;
+		this.effectivePenalty = effectivePenalty;
 		this.ledger = ledger;
 		this.clock = clock;
 	}
@@ -130,7 +135,7 @@ public class ContractCreditCommandService {
 
 		List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
 		CreditAllocationResult allocation = CreditApplicationEngine.allocate(amountToApply, clock.today(),
-				toAllocationInputs(schedule));
+				toAllocationInputs(contractId, schedule));
 		if (allocation.appliedTotal().signum() == 0) {
 			throw new CreditNotApplicableException("contract " + contract.getContractNo()
 					+ " has no due installment with recognized receivable to apply credit against");
@@ -196,9 +201,9 @@ public class ContractCreditCommandService {
 		return balances;
 	}
 
-	/** Maps the contract's installments into the engine's input, all from {@code contract}-owned columns. */
-	private List<CreditAllocationInput> toAllocationInputs(List<Installment> schedule) {
-		Map<UUID, BigDecimal> adjustments = penaltyAdjustmentsByInstallment(schedule);
+	/** Maps the contract's installments into the engine's input, with effective-penalty adjustments via the port. */
+	private List<CreditAllocationInput> toAllocationInputs(UUID contractId, List<Installment> schedule) {
+		Map<UUID, BigDecimal> adjustments = penaltyAdjustmentsByInstallment(contractId);
 		List<CreditAllocationInput> inputs = new ArrayList<>(schedule.size());
 		for (Installment installment : schedule) {
 			BigDecimal resolved = installment.getPaidAmount()
@@ -293,14 +298,15 @@ public class ContractCreditCommandService {
 		};
 	}
 
-	private Map<UUID, BigDecimal> penaltyAdjustmentsByInstallment(List<Installment> schedule) {
-		List<UUID> installmentIds = schedule.stream().map(Installment::getId).toList();
+	/**
+	 * Σ penalty adjustments per installment, sourced through the {@code penalty}-owned
+	 * {@link EffectivePenaltyPort} (ADR-019 D1, edge {@code contract → penalty}). Replaces the former native
+	 * read of {@code penalty_adjustment} (ADR-010 temporary seam, retired by T15).
+	 */
+	private Map<UUID, BigDecimal> penaltyAdjustmentsByInstallment(UUID contractId) {
 		Map<UUID, BigDecimal> totals = new HashMap<>();
-		if (installmentIds.isEmpty()) {
-			return totals;
-		}
-		for (Object[] row : installments.sumPenaltyAdjustmentsByInstallmentIds(installmentIds)) {
-			totals.put((UUID) row[0], (BigDecimal) row[1]);
+		for (InstallmentEffectivePenalty installment : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
+			totals.put(installment.installmentId(), installment.adjustment());
 		}
 		return totals;
 	}

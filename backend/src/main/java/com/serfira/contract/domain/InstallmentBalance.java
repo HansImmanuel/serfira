@@ -61,8 +61,16 @@ public record InstallmentBalance(BigDecimal recognizedTotal, BigDecimal resolved
 	}
 
 	/**
-	 * Balance net of penalty adjustments. This overload is the documented E5 extension point; today
-	 * it is exercised by unit tests only, because no waiver flow exists yet.
+	 * Balance net of penalty adjustments. This overload is the E5 resolution view the waiver recompute
+	 * uses ({@code Installment.recomputeResolutionStatus}, ADR-019 D3): it nets the active waiver/reduce
+	 * sum out of the recognized penalty, while {@code paidAmount} already nets the penalty the customer
+	 * paid.
+	 *
+	 * <p>No separate paid-penalty parameter is needed: with the F2 cap holding
+	 * ({@code Σ adjustments ≤ gross − Σ paid penalty}, invariant 9, V16), the recognized penalty net of
+	 * adjustments and the resolved amount net of the paid penalty together give the correct remaining
+	 * outstanding, so an installment whose principal + interest are paid and whose remaining penalty is
+	 * fully waived reaches {@code outstanding == 0} exactly.
 	 *
 	 * @param penaltyAdjustments total active penalty adjustment for the installment, subtracted from
 	 *                           the recognized penalty (invariant 9)

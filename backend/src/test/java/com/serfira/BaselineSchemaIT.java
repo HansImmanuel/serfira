@@ -51,7 +51,8 @@ class BaselineSchemaIT {
 	@Test
 	void baselineSeedsArePresent() {
 		assertThat(count("app_user", "username = 'SYSTEM'")).isEqualTo(1L);
-		assertThat(count("accounts", null)).isEqualTo(10L);
+		// 10 from V1 + BEBAN_WAIVER_DENDA seeded by V15 (ADR-019 D3, penalty waiver expense).
+		assertThat(count("accounts", null)).isEqualTo(11L);
 		assertThat(count("system_parameter", null)).isEqualTo(6L);
 	}
 

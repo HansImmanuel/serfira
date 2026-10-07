@@ -7,13 +7,14 @@ import com.serfira.contract.domain.Installment;
 import com.serfira.contract.domain.InstallmentStatus;
 import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.InstallmentRepository;
+import com.serfira.penalty.application.EffectivePenaltyPort;
+import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,10 +44,13 @@ public class InstallmentReceivableService implements InstallmentReceivablePort {
 
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
+	private final EffectivePenaltyPort effectivePenalty;
 
-	public InstallmentReceivableService(ContractRepository contracts, InstallmentRepository installments) {
+	public InstallmentReceivableService(ContractRepository contracts, InstallmentRepository installments,
+			EffectivePenaltyPort effectivePenalty) {
 		this.contracts = contracts;
 		this.installments = installments;
+		this.effectivePenalty = effectivePenalty;
 	}
 
 	@Override
@@ -63,7 +67,7 @@ public class InstallmentReceivableService implements InstallmentReceivablePort {
 			throw new ContractStateException("contract " + contract.getContractNo()
 					+ " is ACTIVE but has no schedule, so it has no receivable to resolve");
 		}
-		Map<UUID, BigDecimal> adjustments = penaltyAdjustmentsByInstallment(schedule);
+		Map<UUID, BigDecimal> adjustments = penaltyAdjustmentsByInstallment(contractId);
 
 		List<InstallmentReceivable> receivables = schedule.stream()
 				.map(installment -> new InstallmentReceivable(installment.getId(), installment.getPeriodNo(),
@@ -120,8 +124,12 @@ public class InstallmentReceivableService implements InstallmentReceivablePort {
 	 * <p>{@code SETTLED} / {@code WRITTEN_OFF} installments deliberately do <b>not</b> count here: those
 	 * flows own their own closing reason ({@code SETTLEMENT} in E2), and this step must never rewrite
 	 * their decision. A contract that is no longer ACTIVE is left untouched for the same reason.
+	 *
+	 * <p>Package-private and reused by {@link InstallmentStatusRecomputeService}: a penalty waiver that
+	 * clears the last amount owed must close the contract by the identical rule the payment path uses, so
+	 * the MATURITY decision stays in one place.
 	 */
-	private void closeWhenEveryInstallmentIsPaid(UUID contractId, List<Installment> schedule,
+	void closeWhenEveryInstallmentIsPaid(UUID contractId, List<Installment> schedule,
 			OffsetDateTime resolvedAt) {
 		if (schedule.isEmpty() || !allPaid(schedule)) {
 			return;
@@ -141,11 +149,16 @@ public class InstallmentReceivableService implements InstallmentReceivablePort {
 		return schedule.stream().allMatch(installment -> installment.getStatus() == InstallmentStatus.PAID);
 	}
 
-	private Map<UUID, BigDecimal> penaltyAdjustmentsByInstallment(List<Installment> schedule) {
-		Collection<UUID> installmentIds = schedule.stream().map(Installment::getId).toList();
+	/**
+	 * Σ penalty adjustments per installment, sourced through the {@code penalty}-owned
+	 * {@link EffectivePenaltyPort} (ADR-019 D1, edge {@code contract → penalty}). This replaces the former
+	 * native read of the {@code penalty_adjustment} table (ADR-010 temporary seam, retired by T15). The
+	 * receivable snapshot's {@code penaltyAdjustments} semantics are unchanged.
+	 */
+	private Map<UUID, BigDecimal> penaltyAdjustmentsByInstallment(UUID contractId) {
 		Map<UUID, BigDecimal> totals = new HashMap<>();
-		for (Object[] row : installments.sumPenaltyAdjustmentsByInstallmentIds(installmentIds)) {
-			totals.put((UUID) row[0], (BigDecimal) row[1]);
+		for (InstallmentEffectivePenalty installment : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
+			totals.put(installment.installmentId(), installment.adjustment());
 		}
 		return totals;
 	}

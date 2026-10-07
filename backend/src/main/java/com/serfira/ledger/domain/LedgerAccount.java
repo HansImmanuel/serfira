@@ -40,7 +40,10 @@ public enum LedgerAccount {
 	DISKON_PELUNASAN("Expense — settlement rebate"),
 
 	/** Expense — receivable write-off. */
-	BIAYA_PENGHAPUSAN_PIUTANG("Expense — receivable write-off");
+	BIAYA_PENGHAPUSAN_PIUTANG("Expense — receivable write-off"),
+
+	/** Expense — penalty waiver / reduction (E5, ADR-019 D3; seeded by V15). */
+	BEBAN_WAIVER_DENDA("Expense — penalty waiver");
 
 	private final String displayName;
 

@@ -28,6 +28,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -37,6 +38,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
@@ -580,35 +582,26 @@ class PaymentApiIT {
 	}
 
 	@Test
-	void anUnusableReceivableSnapshotIsRejectedAndRollsTheWholePaymentBack() throws Exception {
-		fixedClock().setDate(FIRST_CHARGEABLE_DATE);
-		// Data the engine cannot allocate against: a waiver bigger than the penalty it reduces. The
-		// receivable snapshot is at fault, so the request must fail loudly and write nothing at all.
-		jdbc.update("""
+	void anOverWaiverExceedingAccruedPenaltyIsRejectedByTheDbCap() {
+		// WHY this changed (T15, ADR-019 invariant 9): this test used to seed a corrupt over-waiver
+		// (WAIVE 999999.00 against penalty_amount 0) and assert the payment path detected the unusable
+		// receivable snapshot and rolled the whole payment back. The new V15 deferred constraint trigger
+		// assert_penalty_adjustment_cap (Σ penalty_adjustment.amount <= installment.penalty_amount) now
+		// rejects that corruption at the INSERT's commit, so the old payment-rollback premise is
+		// unreachable — the database prevents the corrupt state the old test only simulated. The strongest
+		// honest replacement is to assert the cap itself: effective penalty can never go negative, so no
+		// committed adjustment can corrupt the snapshot. (PenaltyAdjustmentIT exercises the same cap through
+		// the adjustment write path; this keeps the guarantee asserted from the payment-path suite too.)
+		Throwable thrown = catchThrowable(() -> jdbc.update("""
 				insert into penalty_adjustment (installment_id, adjustment_type, amount, reason, approved_by,
 					created_at, updated_at)
 					values (?, 'WAIVE', 999999.00, 'IT seeded corruption', ?, clock_timestamp(), clock_timestamp())
-				""", installmentId(1), actorId);
+				""", installmentId(1), actorId));
 
-		MvcResult result = pay("corrupt-snapshot", "100000.00");
-
-		assertThat(result.getResponse().getStatus()).isEqualTo(500);
-		assertThat(errorCode(result)).isEqualTo("INTERNAL_ERROR");
-		// No half-written payment: the row, its allocations, the installment resolution, the journal entry
-		// and the idempotency claim all rolled back together (TS §2.3) — including billing and the one
-		// penalty day recognized before the corrupt snapshot failed.
-		assertThat(count("payment")).isZero();
-		assertThat(count("payment_allocation")).isZero();
-		assertThat(countPaymentClaims()).isZero();
-		assertThat(count("journal_entry")).isEqualTo(1L);
-		assertThat(journalEntryCount("BILLING")).isZero();
-		assertThat(journalEntryCount("PENALTY_ACCRUAL")).isZero();
-		assertThat(count("penalty_accrual")).isZero();
-		assertThat(jdbc.queryForObject("select recognized_interest_amount from installment where id = ?",
-				BigDecimal.class, installmentId(1))).isEqualByComparingTo("0.00");
+		// Deferred constraint trigger raises raise_exception (SQLSTATE P0001) at commit; nothing persists.
+		assertThat(sqlStateOf(thrown)).isEqualTo("P0001");
+		assertThat(count("penalty_adjustment")).isZero();
 		assertThat(penaltyAmountOf(1)).isEqualByComparingTo("0.00");
-		assertThat(decimalOf(installmentRow(1), "paid_amount")).isEqualByComparingTo("0.00");
-		assertThat(installmentRow(1).get("status")).isEqualTo("PENDING");
 	}
 
 	@Test
@@ -825,6 +818,17 @@ class PaymentApiIT {
 
 	private long count(String table) {
 		return jdbc.queryForObject("select count(*) from " + table, Long.class);
+	}
+
+	/** Walk the cause chain to the originating {@link SQLException} and return its SQLSTATE. */
+	private static String sqlStateOf(Throwable thrown) {
+		assertThat(thrown).as("an exception was expected").isNotNull();
+		for (Throwable cause = thrown; cause != null; cause = cause.getCause()) {
+			if (cause instanceof SQLException sqlException) {
+				return sqlException.getSQLState();
+			}
+		}
+		throw new AssertionError("no SQLException in the cause chain of " + thrown, thrown);
 	}
 
 	/** Claims left behind by the payment endpoint; a rolled-back request must leave none. */

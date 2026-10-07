@@ -112,6 +112,8 @@ class EndpointRoleMatrixIT {
 		// Credit (T14): apply is ADMIN_OPERASIONAL only; read is ADMIN_OPERASIONAL + FINANCE (Addendum §3.4).
 		allowedRoles.put("POST /api/v1/contracts/" + RANDOM_ID + "/credit/apply", List.of(ADMIN));
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/credit", List.of(ADMIN, FINANCE));
+		// Penalty waive/reduce (T15): ADMIN_OPERASIONAL only (Addendum §3.4, ADR-019 D2).
+		allowedRoles.put("POST /api/v1/penalty-adjustments", List.of(ADMIN));
 		// Not registered: denied for every role (C-5 deferred, no payment reads).
 		allowedRoles.put("PUT /api/v1/contracts/" + RANDOM_ID, List.of());
 		allowedRoles.put("DELETE /api/v1/contracts/" + RANDOM_ID, List.of());
@@ -182,8 +184,13 @@ class EndpointRoleMatrixIT {
 			MvcResult activate = mockMvc.perform(post("/api/v1/contracts/" + draft.id() + "/activate")
 							.header("Authorization", bearer))
 					.andReturn();
+			MvcResult waiver = mockMvc.perform(post("/api/v1/penalty-adjustments")
+							.header("Authorization", bearer)
+							.contentType(MediaType.APPLICATION_JSON)
+							.content(objectMapper.writeValueAsString(penaltyAdjustmentRequest(active.id()))))
+					.andReturn();
 
-			for (MvcResult denied : List.of(payment, create, activate)) {
+			for (MvcResult denied : List.of(payment, create, activate, waiver)) {
 				assertThat(denied.getResponse().getStatus()).isEqualTo(403);
 				assertThat(errorCode(denied)).isEqualTo("FORBIDDEN");
 			}
@@ -197,7 +204,7 @@ class EndpointRoleMatrixIT {
 	private Map<String, Long> rowCounts() {
 		Map<String, Long> counts = new LinkedHashMap<>();
 		for (String table : List.of("contract", "installment", "payment", "payment_allocation",
-				"idempotency_keys", "journal_entry", "penalty_accrual")) {
+				"idempotency_keys", "journal_entry", "penalty_accrual", "penalty_adjustment")) {
 			counts.put(table, jdbc.queryForObject("select count(*) from " + table, Long.class));
 		}
 		return counts;
@@ -206,6 +213,19 @@ class EndpointRoleMatrixIT {
 	private String errorCode(MvcResult result) throws Exception {
 		JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
 		return body.get("error").get("code").asText();
+	}
+
+	/** A fully valid penalty-adjustment body for the given contract; the denial fires before validation. */
+	private Map<String, Object> penaltyAdjustmentRequest(UUID contractId) {
+		UUID installmentId = jdbc.queryForObject(
+				"select id from installment where contract_id = ? and period_no = 1", UUID.class, contractId);
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("contract_id", contractId.toString());
+		body.put("installment_id", installmentId.toString());
+		body.put("adjustment_type", "WAIVE");
+		body.put("amount", new BigDecimal("1000.00"));
+		body.put("reason", "denied role should write nothing");
+		return body;
 	}
 
 	private static CreateContractRequest contractRequest(String plateNo) {

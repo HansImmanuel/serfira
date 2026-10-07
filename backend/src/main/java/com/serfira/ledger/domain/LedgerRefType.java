@@ -26,7 +26,7 @@ public enum LedgerRefType {
 	/** Daily penalty accrual (D1/D2) — {@code PIUTANG_DENDA} debit, {@code PENDAPATAN_DENDA} credit. */
 	PENALTY_ACCRUAL,
 
-	/** Penalty waive/reduction (E5) — {@code PENDAPATAN_DENDA} debit, {@code PIUTANG_DENDA} credit. */
+	/** Penalty waive/reduction (E5, ADR-019 D3) — {@code BEBAN_WAIVER_DENDA} debit, {@code PIUTANG_DENDA} credit. */
 	PENALTY_WAIVER,
 
 	/** Customer credit applied to an installment (E3) — {@code TITIPAN_NASABAH} debit, receivable credits. */

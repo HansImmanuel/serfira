@@ -190,8 +190,14 @@ class AccountingInvariantsIT {
 					returning id""", UUID.class, "it-approver-" + UUID.randomUUID());
 	}
 
-	/** Insert a minimal valid WAIVE adjustment (amount > 0) against the fixture installment. */
+	/**
+	 * Insert a minimal valid WAIVE adjustment (amount &gt; 0) against the fixture installment. The fixture
+	 * installment starts with {@code penalty_amount = 0}, so the V15 cap trigger
+	 * ({@code Σ adjustment <= penalty_amount}, invariant 9) would reject the adjustment; raise the gross
+	 * penalty to the adjustment amount first so this fixture exercises immutability, not the cap.
+	 */
 	private UUID insertPenaltyAdjustment(UUID approverId) {
+		jdbc.update("update installment set penalty_amount = 10.00 where id = ?", installmentId);
 		return jdbc.queryForObject("""
 				insert into penalty_adjustment (installment_id, adjustment_type, amount, reason, approved_by,
 					created_at, updated_at)

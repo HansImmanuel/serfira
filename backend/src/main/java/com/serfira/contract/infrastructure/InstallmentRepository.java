@@ -40,7 +40,9 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 	 *
 	 * <p>Kept in step with {@code InstallmentBalance}: principal + recognized interest + penalty
 	 * (no future unrecognized interest) minus paid + settled + written-off. Penalty adjustments are
-	 * intentionally absent until the waiver flow (story E5) exists.
+	 * deliberately omitted here: this per-contract aggregate predates the waiver flow and is not one of
+	 * the receivable snapshot / credit-apply call sites that T15 routed through {@code EffectivePenaltyPort}.
+	 * Netting adjustments into per-contract totals is a known follow-up (ADR-019; recorded in the T15 note).
 	 */
 	@Query("""
 			select new com.serfira.contract.infrastructure.ContractInstallmentTotals(
@@ -67,30 +69,4 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 			group by i.contract.id
 			""")
 	Optional<ContractInstallmentTotals> sumTotalsByContractId(@Param("contractId") UUID contractId);
-
-	/**
-	 * Σ penalty adjustments per installment, for the receivable snapshot handed to other modules
-	 * (DM §1.4 invariant 9: effective penalty = {@code penalty_amount − Σ adjustments}).
-	 *
-	 * <p><b>Temporary read seam (ADR-010):</b> {@code penalty_adjustment} is written by the penalty
-	 * module (story E5; the module itself now exists — D1 owns {@code penalty_accrual}), while the
-	 * effective penalty is part of the receivable this module exposes — and V3's
-	 * {@code assert_payment_allocation_component_caps} computes the very same sum for the very same cap.
-	 * Only rows that exist are returned, so the caller treats a missing installment as "no adjustments".
-	 * E5 replaces this with the penalty module's own interface.
-	 *
-	 * <p>Native and mapped explicitly because there is deliberately no {@code PenaltyAdjustment} entity
-	 * in this module: the projection is two columns and nothing here is ever written.
-	 *
-	 * @return rows of {@code [installment_id (UUID), total (BigDecimal)]}, one per installment that has
-	 *         adjustments
-	 */
-	@Query(value = """
-			select installment_id, sum(amount)
-			from penalty_adjustment
-			where installment_id in (:installmentIds)
-			group by installment_id
-			""", nativeQuery = true)
-	List<Object[]> sumPenaltyAdjustmentsByInstallmentIds(
-			@Param("installmentIds") Collection<UUID> installmentIds);
 }

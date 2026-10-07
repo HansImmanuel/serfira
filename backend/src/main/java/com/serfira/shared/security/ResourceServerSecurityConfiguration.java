@@ -166,6 +166,9 @@ public class ResourceServerSecurityConfiguration {
 								.hasRole(ADMIN)
 						.requestMatchers(HttpMethod.GET, "/api/v1/contracts/*/credit")
 								.hasAnyRole(ADMIN, FINANCE)
+						// Penalty waive/reduce is ADMIN_OPERASIONAL only (Addendum §3.4, T15, ADR-019 D2).
+						.requestMatchers(HttpMethod.POST, "/api/v1/penalty-adjustments")
+								.hasRole(ADMIN)
 						.anyRequest().denyAll())
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(authenticationEntryPoint)
