@@ -13,6 +13,8 @@ import com.serfira.contract.infrastructure.InstallmentRepository;
 import com.serfira.ledger.application.ContractStatementLine;
 import com.serfira.ledger.application.ContractStatementPort;
 import com.serfira.ledger.domain.LedgerRefType;
+import com.serfira.penalty.application.EffectivePenaltyPort;
+import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import com.serfira.shared.api.PageResponse;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.error.BadRequestException;
@@ -27,6 +29,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -66,13 +69,15 @@ public class ContractQueryService {
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
 	private final ContractStatementPort statementPort;
+	private final EffectivePenaltyPort effectivePenalty;
 	private final Clock clock;
 
 	public ContractQueryService(ContractRepository contracts, InstallmentRepository installments,
-			ContractStatementPort statementPort, Clock clock) {
+			ContractStatementPort statementPort, EffectivePenaltyPort effectivePenalty, Clock clock) {
 		this.contracts = contracts;
 		this.installments = installments;
 		this.statementPort = statementPort;
+		this.effectivePenalty = effectivePenalty;
 		this.clock = clock;
 	}
 
@@ -103,14 +108,44 @@ public class ContractQueryService {
 		return ContractResponse.from(contract, outstandingOf(contractId));
 	}
 
-	/** Schedule of one contract, oldest period first. An unknown contract is a 404, not an empty list. */
+	/**
+	 * Schedule of one contract, oldest period first. An unknown contract is a 404, not an empty list.
+	 *
+	 * <p>Each row's penalty and outstanding are net of active penalty adjustments (ADR-019 D4): the Σ
+	 * waive/reduce comes from the {@code penalty}-owned {@link EffectivePenaltyPort} (edge
+	 * {@code contract → penalty}, 02_TECH_SPEC.md §1), so the schedule agrees with the payment-receivable
+	 * snapshot instead of reporting gross penalty.
+	 *
+	 * <p>The port only answers for an ACTIVE contract (it throws 409 otherwise), so it is consulted only
+	 * when the contract is ACTIVE. A non-ACTIVE contract accrues no new penalty and can carry no active
+	 * adjustment, so gross equals effective there and an empty adjustment map is correct — this preserves
+	 * the endpoint's 200 for DRAFT (empty schedule) and closed contracts rather than turning a valid read
+	 * into a 409.
+	 */
 	public List<InstallmentResponse> installments(UUID contractId) {
-		if (!contracts.existsById(contractId)) {
-			throw new ContractNotFoundException(contractId);
-		}
+		Contract contract = contracts.findById(contractId)
+				.orElseThrow(() -> new ContractNotFoundException(contractId));
+		Map<UUID, BigDecimal> adjustments = contract.isActive()
+				? penaltyAdjustmentsByInstallment(contractId)
+				: Map.of();
 		return installments.findByContractIdOrderByPeriodNo(contractId).stream()
-				.map(InstallmentResponse::from)
+				.map(installment -> InstallmentResponse.from(installment,
+						adjustments.getOrDefault(installment.getId(), BigDecimal.ZERO)))
 				.toList();
+	}
+
+	/**
+	 * Σ penalty adjustments per installment, sourced through the {@code penalty}-owned
+	 * {@link EffectivePenaltyPort} (ADR-019 D1/D4, edge {@code contract → penalty}). Mirrors
+	 * {@link InstallmentReceivableService}'s read so the schedule row and the receivable snapshot net the
+	 * identical adjustment total.
+	 */
+	private Map<UUID, BigDecimal> penaltyAdjustmentsByInstallment(UUID contractId) {
+		Map<UUID, BigDecimal> totals = new HashMap<>();
+		for (InstallmentEffectivePenalty installment : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
+			totals.put(installment.installmentId(), installment.adjustment());
+		}
+		return totals;
 	}
 
 	/**

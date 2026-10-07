@@ -16,9 +16,14 @@ import java.util.UUID;
  *
  * @param recognizedInterestAmount interest actually billed/re-recognized — the only interest that is
  *                                 receivable yet (future scheduled interest is not)
+ * @param penaltyAmount            the <b>effective</b> (remaining) penalty: the gross recognized penalty
+ *                                 net of active waivers/reductions (ADR-019 D4). The Σ adjustment comes
+ *                                 from the {@code penalty}-owned {@link com.serfira.penalty.application.EffectivePenaltyPort}
+ *                                 at the query-service layer, so the schedule row agrees by construction
+ *                                 with the payment-receivable snapshot instead of reporting gross
  * @param outstanding              recognized receivable not yet resolved, from
- *                                 {@link InstallmentBalance} so the API and the allocation logic
- *                                 share one definition
+ *                                 {@link InstallmentBalance} netting the same Σ adjustment, so the API
+ *                                 and the allocation logic share one definition
  */
 public record InstallmentResponse(
 		UUID id,
@@ -34,8 +39,26 @@ public record InstallmentResponse(
 		InstallmentStatus status,
 		BigDecimal outstanding) {
 
+	/** Convenience for a row with no penalty adjustments, mirroring {@link InstallmentBalance#of(Installment)}. */
 	public static InstallmentResponse from(Installment installment) {
-		InstallmentBalance balance = InstallmentBalance.of(installment);
+		return from(installment, BigDecimal.ZERO);
+	}
+
+	/**
+	 * Row whose {@code penaltyAmount} and {@code outstanding} are net of the installment's active penalty
+	 * adjustments (ADR-019 D4). {@code penaltyAdjustments} is the Σ waive/reduce the caller read from
+	 * {@link com.serfira.penalty.application.EffectivePenaltyPort}; both the reported penalty and the
+	 * outstanding subtract it through the same {@link InstallmentBalance#of(Installment, BigDecimal)}
+	 * definition, so no second effective-penalty formula is introduced.
+	 *
+	 * @param penaltyAdjustments total active penalty adjustment for the installment, scale-2, {@code >= 0}
+	 */
+	public static InstallmentResponse from(Installment installment, BigDecimal penaltyAdjustments) {
+		InstallmentBalance balance = InstallmentBalance.of(installment, penaltyAdjustments);
+		BigDecimal effectivePenalty = installment.getPenaltyAmount().subtract(penaltyAdjustments);
+		if (effectivePenalty.signum() < 0) {
+			effectivePenalty = BigDecimal.ZERO.setScale(2);
+		}
 		return new InstallmentResponse(
 				installment.getId(),
 				installment.getPeriodNo(),
@@ -43,7 +66,7 @@ public record InstallmentResponse(
 				installment.getPrincipalAmount(),
 				installment.getInterestAmount(),
 				installment.getRecognizedInterestAmount(),
-				installment.getPenaltyAmount(),
+				effectivePenalty,
 				installment.getPaidAmount(),
 				installment.getSettledAmount(),
 				installment.getWrittenOffAmount(),

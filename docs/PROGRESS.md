@@ -151,3 +151,24 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal dari pre-check in-memory.
       **F6** invalid (tanpa aturan WAIVE==full). **F1** di-defer ke T30 (read-path schedule/aging). Dua edge
       lintas-modul baru dicatat TS §1 + ADR-019 (implementation note). Verifikasi: lihat ringkasan FEAT-003.
+
+- [x] T30 — Route schedule response + aging report lewat effective penalty via `EffectivePenaltyPort`
+      (menutup ADR-019 D4 / temuan F1 PR #7). Dua read-path `contract` yang masih melaporkan denda **gross**
+      kini mengurangi Σ adjustment per-installment lewat port yang sama dengan snapshot payment-receivable
+      (bukan formula kedua, tanpa baca native `penalty_adjustment` di `contract`): `InstallmentResponse`
+      dapat overload `from(Installment, BigDecimal Σ adjustment)` yang memakai
+      `InstallmentBalance.of(installment, Σ adjustment)` dan melaporkan denda efektif (sisa) pada field
+      `penalty_amount` (bentuk wire tetap, maknanya menjadi sisa-setelah-adjustment);
+      `ContractQueryService.installments(...)` menyuntik `EffectivePenaltyPort`, memuat `Contract` sekali, dan
+      hanya memanggil port untuk kontrak ACTIVE (port melempar 409 untuk non-ACTIVE), sehingga DRAFT (jadwal
+      kosong) dan kontrak closed tetap 200; `AgingReportSourceService` menyuntik port, memanggilnya sekali per
+      kontrak ACTIVE, dan menghitung `InstallmentBalance.of(installment, Σ adjustment).outstanding()` sehingga
+      installment yang di-waive penuh tapi sudah terbayar bersih tidak lagi muncul di bucket aging. Edge
+      `contract → penalty` sudah ada (TS §1); T30 hanya menambah konsumen in-module, jadi tanpa migrasi dan
+      tanpa perubahan aturan dependency di TS §1. Test baru IT `contract.EffectivePenaltyReadConsistencyIT`
+      (2): setelah waiver yang membersihkan denda, baris jadwal period 1 menunjukkan denda sisa 0 + outstanding
+      0, bucket aging 1-30 kontrak jadi 0, dan ketiganya sepakat dengan snapshot payment-receivable; endpoint
+      jadwal tetap 200 untuk kontrak DRAFT dan CLOSED. Verifikasi (Docker aktif): narrowest
+      `EffectivePenaltyReadConsistencyIT` + `PenaltyAdjustmentIT` + `AgingReportIT` + `ContractApiIT` pass;
+      full `.\gradlew test` = **87 suites / 695 tests / 0 gagal / 0 error**; `.\gradlew check` hijau. Branch
+      `t30-effective-penalty-reads`.

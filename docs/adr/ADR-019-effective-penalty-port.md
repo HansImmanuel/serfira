@@ -91,7 +91,9 @@ the DB level (decided in T15 alongside the ADR-018 `SETTLEMENT` extension).
 
 After T15 the effective-penalty formula exists in exactly one application-level place
 (`EffectivePenaltyService`) plus the DB backstop trigger. `contract` totals, the `settlement` quote, the
-payment cap (via the trigger), and reporting all agree by construction. This closes CR-14.
+payment cap (via the trigger), and reporting all agree by construction. This closes CR-14. **T30** completed
+D4 by routing the last two `contract` read paths (the schedule response and the aging report) through the
+port, so every consumer now reports the same effective penalty (see the implementation note below).
 
 ---
 
@@ -157,6 +159,13 @@ The initial T15 implementation shipped effective penalty as `max(0, gross − ad
   waivers commits.
 - **F5 (doc):** the `PenaltyAdjustmentService` Javadoc/flush comment were corrected — the deferred cap and
   journal-balance triggers fire at COMMIT, not on `flush`; the mapped 409 comes from the in-memory pre-check.
-- **D4 follow-up still open:** the schedule response (`InstallmentResponse`) and the aging report
-  (`AgingReportSourceService`) still read gross penalty via the zero-adjustment `InstallmentBalance.of(...)`;
-  routing them through the port is tracked as **T30** (not implemented in PR #7).
+- **F1 (D4 follow-up), resolved by T30:** the schedule response (`InstallmentResponse`) and the aging report
+  (`AgingReportSourceService`) had still read gross penalty via the zero-adjustment
+  `InstallmentBalance.of(...)`. T30 routed both through `EffectivePenaltyPort`: `InstallmentResponse` gained
+  an adjustment-aware overload `from(Installment, Σ adjustment)` and reports the effective (remaining)
+  penalty on `penalty_amount` (wire shape unchanged); `ContractQueryService.installments(...)` threads the
+  per-installment Σ adjustment for ACTIVE contracts (and uses an empty map for non-ACTIVE ones, since the
+  port answers only for ACTIVE contracts, keeping the schedule endpoint 200 for DRAFT/closed contracts); and
+  `AgingReportSourceService` nets the Σ adjustment into `outstanding`, querying the port once per ACTIVE
+  contract. No second formula and no native `penalty_adjustment` read were introduced, and the `contract →
+  penalty` edge is unchanged (T30 only added in-module consumers). This completes D4.

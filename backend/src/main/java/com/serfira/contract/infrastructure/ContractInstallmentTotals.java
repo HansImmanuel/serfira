@@ -7,10 +7,13 @@ import java.util.UUID;
  * Read-model aggregate of a contract's installments (PRD §5A "Outstanding"): principal residual +
  * recognized interest residual + effective penalty residual.
  *
- * <p>This JPQL constructor projection mirrors {@code InstallmentBalance} — keep both in step. It
- * deliberately omits {@code penalty_adjustment} rows, because no waiver flow exists yet (story E5);
- * when E5 lands, this aggregate must subtract active adjustments exactly like
- * {@code InstallmentBalance.of(installment, adjustments)} does.
+ * <p>This JPQL constructor projection mirrors {@code InstallmentBalance} — keep both in step. It still
+ * sums <b>gross</b> penalty and omits {@code penalty_adjustment} rows. The waiver flow now exists (E5/T15)
+ * and the schedule row and aging report net active adjustments through {@code EffectivePenaltyPort} (T30),
+ * but this per-contract SQL aggregate (the contract list/detail "Outstanding") was deliberately left out of
+ * T30's scope and still reports gross; netting active adjustments here — exactly like
+ * {@code InstallmentBalance.of(installment, adjustments)} does — remains a follow-up (ADR-019 D4). A SQL
+ * aggregate cannot call the port, so it needs its own adjustment-sum subquery or projection.
  *
  * @param contractId      contract the amounts belong to
  * @param recognizedTotal Σ principal + recognized interest + penalty
