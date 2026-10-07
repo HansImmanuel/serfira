@@ -15,8 +15,8 @@ inclusion: always
 
 ## Session rules
 
-- One task per session and one branch per task. Claim it (`Status: IN PROGRESS`) before the first code change.
+- One task per session and one branch per task. Claim it (`Status: IN PROGRESS`) before the first code change. A task delegated to a workflow is checked out on its own branch off `main` before any edit (see `95-delegation.md`).
 - Respect `Dependencies:`. Never start a task whose dependencies are not `DONE` or resolved. Say which one blocks it.
 - Before declaring done: narrowest tests, then the full `./gradlew test`, then `./gradlew check`. Close the task per `issue-tracker.md`: implementation note with the verification counts, Completed Work, Current Project State, and `PROGRESS.md`.
-- Before merge: `/code-review` against `main`, with the task section as the spec. Then `/pr` for the PR body.
+- Finish on the branch, not on `main`: commit the verified work to the task branch, then open a pull request against `main` (`/pr` for the body) rather than merging directly. For a delegated workflow the branch-and-PR flow is mandatory and owned by the workflow (`95-delegation.md`). `/code-review` against `main` with the task section as the spec may run before the PR, unless a workflow's own review loop already gated the change.
 - New domain terms go in `GLOSSARY.md`. Significant decisions go in a new ADR.
