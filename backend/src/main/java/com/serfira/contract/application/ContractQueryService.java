@@ -5,6 +5,7 @@ import com.serfira.contract.api.ContractResponse;
 import com.serfira.contract.api.InstallmentResponse;
 import com.serfira.contract.domain.Contract;
 import com.serfira.contract.domain.ContractStatus;
+import com.serfira.contract.domain.Installment;
 import com.serfira.contract.infrastructure.ContractInstallmentTotals;
 import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.ContractSpecifications;
@@ -13,6 +14,9 @@ import com.serfira.contract.infrastructure.InstallmentRepository;
 import com.serfira.ledger.application.ContractStatementLine;
 import com.serfira.ledger.application.ContractStatementPort;
 import com.serfira.ledger.domain.LedgerRefType;
+import com.serfira.penalty.application.EffectivePenaltyPort;
+import com.serfira.penalty.application.EffectivePenaltySnapshot;
+import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import com.serfira.shared.api.PageResponse;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.error.BadRequestException;
@@ -27,6 +31,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -66,13 +71,15 @@ public class ContractQueryService {
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
 	private final ContractStatementPort statementPort;
+	private final EffectivePenaltyPort effectivePenalty;
 	private final Clock clock;
 
 	public ContractQueryService(ContractRepository contracts, InstallmentRepository installments,
-			ContractStatementPort statementPort, Clock clock) {
+			ContractStatementPort statementPort, EffectivePenaltyPort effectivePenalty, Clock clock) {
 		this.contracts = contracts;
 		this.installments = installments;
 		this.statementPort = statementPort;
+		this.effectivePenalty = effectivePenalty;
 		this.clock = clock;
 	}
 
@@ -103,14 +110,67 @@ public class ContractQueryService {
 		return ContractResponse.from(contract, outstandingOf(contractId));
 	}
 
-	/** Schedule of one contract, oldest period first. An unknown contract is a 404, not an empty list. */
+	/**
+	 * Schedule of one contract, oldest period first. An unknown contract is a 404, not an empty list.
+	 *
+	 * <p>Each row's {@code penalty_amount} is the effective (remaining) penalty — {@code max(0, gross − Σ
+	 * adjustment − Σ paid penalty)} — read verbatim from the {@code penalty}-owned {@link EffectivePenaltyPort}
+	 * (edge {@code contract → penalty}, 02_TECH_SPEC.md §1), and each row's {@code outstanding} nets the same
+	 * Σ adjustment through {@link InstallmentResponse}. The schedule therefore agrees by construction with the
+	 * payment-receivable path instead of reporting gross penalty.
+	 *
+	 * <p>The read path depends on status, because the two gross-reading ports gate differently:
+	 * <ul>
+	 *   <li>DRAFT — no schedule yet; no port call, an empty effective map, and the row's effective equals its
+	 *       (zero) gross.</li>
+	 *   <li>ACTIVE — {@link EffectivePenaltyPort#loadEffectivePenalty(UUID)} (the 409-guarded read a daily
+	 *       accrual uses).</li>
+	 *   <li>closed (SETTLEMENT / MATURITY / WRITTEN_OFF) — {@link EffectivePenaltyPort#loadEffectivePenaltyAnyStatus(UUID)},
+	 *       the status-agnostic read, so a previously-waived installment still reports its net penalty rather
+	 *       than gross (ADR-019 D4). {@code penalty_adjustment} and {@code payment_allocation} are append-only
+	 *       and still present after close, so no new read source is needed.</li>
+	 * </ul>
+	 * Every status returns 200: routing a closed contract through the any-status read never leaks a 409.
+	 */
 	public List<InstallmentResponse> installments(UUID contractId) {
-		if (!contracts.existsById(contractId)) {
-			throw new ContractNotFoundException(contractId);
-		}
+		Contract contract = contracts.findById(contractId)
+				.orElseThrow(() -> new ContractNotFoundException(contractId));
+		Map<UUID, InstallmentEffectivePenalty> effectives = effectiveByInstallment(contract);
 		return installments.findByContractIdOrderByPeriodNo(contractId).stream()
-				.map(InstallmentResponse::from)
+				.map(installment -> toResponse(installment, effectives.get(installment.getId())))
 				.toList();
+	}
+
+	/**
+	 * The port's effective-penalty record per installment, keyed by installment id. DRAFT (no schedule) gets
+	 * an empty map; an ACTIVE contract uses the 409-guarded read; a closed contract uses the status-agnostic
+	 * read so a prior waiver still nets out of the reported penalty (F2, ADR-019 D4).
+	 */
+	private Map<UUID, InstallmentEffectivePenalty> effectiveByInstallment(Contract contract) {
+		if (contract.getStatus() == ContractStatus.DRAFT) {
+			return Map.of();
+		}
+		EffectivePenaltySnapshot snapshot = contract.isActive()
+				? effectivePenalty.loadEffectivePenalty(contract.getId())
+				: effectivePenalty.loadEffectivePenaltyAnyStatus(contract.getId());
+		Map<UUID, InstallmentEffectivePenalty> byInstallment = new HashMap<>();
+		for (InstallmentEffectivePenalty installment : snapshot.installments()) {
+			byInstallment.put(installment.installmentId(), installment);
+		}
+		return byInstallment;
+	}
+
+	/**
+	 * Builds a schedule row from the installment and its effective-penalty record. A null record (e.g. a
+	 * DRAFT contract that reached here with no schedule) falls back to the gross value, so the zero-arg
+	 * {@link InstallmentResponse#from(com.serfira.contract.domain.Installment)} contract still holds.
+	 */
+	private static InstallmentResponse toResponse(Installment installment,
+			InstallmentEffectivePenalty effective) {
+		if (effective == null) {
+			return InstallmentResponse.from(installment);
+		}
+		return InstallmentResponse.from(installment, effective.adjustment(), effective.effective());
 	}
 
 	/**

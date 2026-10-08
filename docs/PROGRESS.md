@@ -151,3 +151,28 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal dari pre-check in-memory.
       **F6** invalid (tanpa aturan WAIVE==full). **F1** di-defer ke T30 (read-path schedule/aging). Dua edge
       lintas-modul baru dicatat TS §1 + ADR-019 (implementation note). Verifikasi: lihat ringkasan FEAT-003.
+
+- [x] T30 — Route schedule response + aging report lewat effective penalty via `EffectivePenaltyPort`
+      (menutup ADR-019 D4 / temuan F1 PR #7, dan temuan F1–F4 review PR #8). Dua read-path `contract` yang
+      masih melaporkan denda **gross** kini melaporkan denda efektif (sisa) per-installment lewat port yang
+      sama dengan snapshot payment-receivable (bukan formula kedua, tanpa baca native `penalty_adjustment` di
+      `contract`): `InstallmentResponse.from(Installment, Σ adjustment, effectivePenalty)` melaporkan nilai
+      `effective` dari port apa adanya pada field `penalty_amount` (bentuk wire tetap; maknanya sisa denda
+      setelah adjustment **dan** denda terbayar) sementara `outstanding` hanya mengurangi Σ adjustment via
+      `InstallmentBalance.of(installment, Σ adjustment)` (paidAmount sudah mengurangi denda terbayar);
+      `ContractQueryService.installments(...)` menyuntik `EffectivePenaltyPort` dan mengalirkan `effective`
+      per-installment dengan cabang status — DRAFT → kosong, ACTIVE → `loadEffectivePenalty`, closed →
+      `loadEffectivePenaltyAnyStatus` — sehingga semua status tetap 200 dan kontrak closed yang pernah di-waive
+      tidak lagi menampilkan denda gross; `AgingReportSourceService` menyuntik port dan memanggilnya **sekali
+      secara batch** (`loadEffectivePenalty(Collection<UUID>)`) untuk semua kontrak ACTIVE, bukan sekali per
+      kontrak. Read status-agnostic dan batch adalah method baru pada interface port yang sudah ada
+      (`EffectivePenaltyPort` / `InstallmentPenaltyPort`), tanpa edge cross-module baru dan satu helper
+      `EffectivePenaltyService` berbagi formula tunggal. Edge `contract → penalty` sudah ada (TS §1); tanpa
+      migrasi dan tanpa perubahan aturan dependency. IT `contract.EffectivePenaltyReadConsistencyIT`: waiver
+      yang membersihkan denda menghapus period 1 dari jadwal/aging dan sepakat dengan receivable; pembayaran
+      denda **parsial tanpa waiver** membuat `penalty_amount` jadwal = `gross − denda terbayar` (bukan gross);
+      kontrak closed (SETTLEMENT) dengan waiver sebelumnya melaporkan denda net; endpoint tetap 200 untuk DRAFT
+      dan CLOSED. Verifikasi (Docker aktif): narrowest `EffectivePenaltyReadConsistencyIT` +
+      `PenaltyAdjustmentIT` + `AgingReportIT` + `ContractApiIT` + `EffectivePenaltyServiceTest` pass; full
+      `.\gradlew test` = **87 suites / 697 tests / 0 gagal / 0 error**; `.\gradlew check` hijau. Branch
+      `t30-effective-penalty-reads`.

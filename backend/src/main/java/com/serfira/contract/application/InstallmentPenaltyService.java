@@ -9,6 +9,8 @@ import com.serfira.contract.infrastructure.InstallmentRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,7 +55,50 @@ public class InstallmentPenaltyService implements InstallmentPenaltyPort {
 			throw new ContractStateException("contract " + contract.getContractNo()
 					+ " is ACTIVE but has no schedule, so it has no penalty to accrue");
 		}
+		return toSnapshot(contract, schedule);
+	}
 
+	@Override
+	public InstallmentPenaltySnapshot loadPenaltySnapshotAnyStatus(UUID contractId) {
+		Objects.requireNonNull(contractId, "contractId");
+		Contract contract = contracts.findById(contractId).orElseThrow(() -> new ContractNotFoundException(contractId));
+		List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
+		if (schedule.isEmpty()) {
+			// Reading effective penalty of a contract with no schedule is a caller bug: a DRAFT is branched
+			// out before this call, and any contract with a schedule keeps it after close.
+			throw new ContractStateException("contract " + contract.getContractNo()
+					+ " has no schedule, so it has no penalty to report");
+		}
+		return toSnapshot(contract, schedule);
+	}
+
+	@Override
+	public List<InstallmentPenaltySnapshot> loadPenaltySnapshots(Collection<UUID> contractIds) {
+		Objects.requireNonNull(contractIds, "contractIds");
+		if (contractIds.isEmpty()) {
+			return List.of();
+		}
+		Map<UUID, Contract> contractsById = new HashMap<>();
+		for (Contract contract : contracts.findAllById(contractIds)) {
+			contractsById.put(contract.getId(), contract);
+		}
+		Map<UUID, List<Installment>> scheduleByContract = new HashMap<>();
+		for (Installment installment : installments.findByContractIdInOrderByContractIdAscPeriodNoAsc(contractIds)) {
+			scheduleByContract.computeIfAbsent(installment.getContract().getId(), id -> new ArrayList<>())
+					.add(installment);
+		}
+		List<InstallmentPenaltySnapshot> snapshots = new ArrayList<>(scheduleByContract.size());
+		for (Map.Entry<UUID, List<Installment>> entry : scheduleByContract.entrySet()) {
+			Contract contract = contractsById.get(entry.getKey());
+			if (contract != null) {
+				snapshots.add(toSnapshot(contract, entry.getValue()));
+			}
+		}
+		return snapshots;
+	}
+
+	/** Maps a contract and its loaded schedule to the penalty snapshot, the shared body of all read methods. */
+	private static InstallmentPenaltySnapshot toSnapshot(Contract contract, List<Installment> schedule) {
 		List<InstallmentPenalty> penaltyView = schedule.stream()
 				.map(installment -> new InstallmentPenalty(installment.getId(), installment.getPeriodNo(),
 						installment.getDueDate(), InstallmentBalance.penaltyBase(installment),

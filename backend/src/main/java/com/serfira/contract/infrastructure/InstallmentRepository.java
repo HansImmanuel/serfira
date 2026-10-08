@@ -22,6 +22,22 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 	List<Installment> findByContractIdOrderByPeriodNo(UUID contractId);
 
 	/**
+	 * Every installment of a set of contracts, in one query, with its contract fetched so a bulk read can
+	 * group by contract without a per-row lazy load (ADR-019 F3 batch). Ordered deterministically by
+	 * contract then period.
+	 *
+	 * @param contractIds contracts to load; an empty input yields an empty list
+	 */
+	@Query("""
+			select i from Installment i
+			join fetch i.contract c
+			where c.id in :contractIds
+			order by c.id, i.periodNo
+			""")
+	List<Installment> findByContractIdInOrderByContractIdAscPeriodNoAsc(
+			@Param("contractIds") Collection<UUID> contractIds);
+
+	/**
 	 * Every installment of every ACTIVE contract, ordered deterministically (contract number, then period),
 	 * with its contract fetched so the aging report can read {@code contract_no} and {@code grace_period_days}
 	 * without a per-row lazy load (T8). Scope is ACTIVE contracts only (ADR-013 A-7); the caller drops rows
@@ -40,9 +56,11 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 	 *
 	 * <p>Kept in step with {@code InstallmentBalance}: principal + recognized interest + penalty
 	 * (no future unrecognized interest) minus paid + settled + written-off. Penalty adjustments are
-	 * deliberately omitted here: this per-contract aggregate predates the waiver flow and is not one of
-	 * the receivable snapshot / credit-apply call sites that T15 routed through {@code EffectivePenaltyPort}.
-	 * Netting adjustments into per-contract totals is a known follow-up (ADR-019; recorded in the T15 note).
+	 * deliberately omitted here: this per-contract aggregate (the contract list/detail "Outstanding") is not
+	 * one of the call sites that T15 (receivable snapshot, credit-apply) or T30 (schedule row, aging report)
+	 * routed through {@code EffectivePenaltyPort}, so it still reports <b>gross</b> penalty. Netting adjustments
+	 * into these per-contract totals is a known remaining follow-up (ADR-019 D4): a SQL aggregate cannot call
+	 * the port, so it needs its own {@code penalty_adjustment} sum subquery.
 	 */
 	@Query("""
 			select new com.serfira.contract.infrastructure.ContractInstallmentTotals(

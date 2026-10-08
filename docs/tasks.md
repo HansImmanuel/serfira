@@ -70,8 +70,13 @@ Older per-task verification snapshots (T8, T9, T24, T25, T29) live in `tasks-arc
   append-only `PenaltyAdjustment` and posts one `Dr BEBAN_WAIVER_DENDA / Cr PIUTANG_DENDA` entry
   (`PENALTY_WAIVER`). Effective penalty (`max(0, penalty_amount − Σ adjustment)`, invariant 9) is now owned
   by `penalty` and exposed through `EffectivePenaltyPort`; the former native `penalty_adjustment` read in
-  `contract` is retired and both call sites read through the port (new `contract → penalty` edge, CR-14
+  `contract` is retired and all read paths go through the port (new `contract → penalty` edge, CR-14
   closed). V15 seeds `BEBAN_WAIVER_DENDA` and adds the deferred Σ-adjustment cap trigger.
+- Effective-penalty read consistency (T30, ADR-019 D4, closes PR #7 F1): the schedule response
+  (`GET /api/v1/contracts/{id}/installments`) and the aging report (`GET /api/v1/reports/aging`) now net
+  active penalty adjustments through `EffectivePenaltyPort` instead of reporting gross, so a
+  waived-but-otherwise-paid installment shows zero remaining penalty and no aging bucket, agreeing with the
+  payment-receivable snapshot.
 - Endpoints (11): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
   `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, `GET /api/v1/reports/aging`,
@@ -90,8 +95,9 @@ statement query, X-13) and T11 (Phase-1 test hardening + exit verification) are 
 DEFERRED (T1.a kept ADR-012 decision 2; no code change required). **Sprint 5 (Settlement, Credit & Waiver,
 T12–T15) is planned** (2026-10-05, ADR-018 + ADR-019; see the Sprint 5 section) and ready to implement in
 order T14 → T15 → T12 → T13. **T14 (E3 credit) and T15 (E5 waive/reduce + `EffectivePenaltyPort`) are DONE**
-(branches `t14-contract-credit`, `t15-penalty-waive-effective-port`); T12 → T13 remain. T16 (void)
-remains in Sprint 6.
+(branches `t14-contract-credit`, `t15-penalty-waive-effective-port`); T12 → T13 remain. **T30 (route the
+schedule response + aging report through `EffectivePenaltyPort`, closing the ADR-019 D4 / PR #7 F1
+follow-up) is DONE** (branch `t30-effective-penalty-reads`). T16 (void) remains in Sprint 6.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -136,6 +142,7 @@ ADRs listed.
 | T11   | Phase-1 test hardening + exit verification: child-table immutability tests, specific-exception assertions, PRD §7 scenarios over HTTP, PII log guard | DONE   | commit `a8fa1a6`               |
 | T14   | E3 Excess → `contract_credit` + credit-apply/read endpoints: `ContractCreditPort`, `CreditApplicationEngine`, V14 cap/status triggers, RBAC rows     | DONE   | ADR-009, Addendum §2 (branch `t14-contract-credit`) |
 | T15   | E5 Penalty waive/reduce + `EffectivePenaltyPort`: `PenaltyAdjustment` entity, `POST /penalty-adjustments`, `BEBAN_WAIVER_DENDA`/V15 cap, retired contract native read (CR-14) | DONE   | ADR-019, Addendum §16.4 (branch `t15-penalty-waive-effective-port`) |
+| T30   | Route schedule response + aging report through the adjustment-aware effective penalty via `EffectivePenaltyPort` (closes ADR-019 D4 / PR #7 F1); schedule `penalty_amount` + aging outstanding now net active waivers | DONE   | ADR-019 D4 (branch `t30-effective-penalty-reads`) |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
 
 ---
@@ -330,7 +337,8 @@ balances; role matrix. Port parity test: `EffectivePenaltyService` equals the V3
 
 ### T30 — Route schedule response + aging report through the adjustment-and-paid-aware effective penalty (2 pts)
 
-Status: TODO (follow-up from the PR #7 review of T15, finding F1; ADR-019 D4).
+Status: DONE (branch `t30-effective-penalty-reads`; closes the PR #7 review finding F1 and the PR #8 review
+findings F1–F4; ADR-019 D4).
 
 **Dependencies:** T15 (`EffectivePenaltyPort` + the paid-aware remaining definition exist).
 
@@ -343,8 +351,9 @@ bucket. Route them through the adjustment-aware (and, with F2, paid-aware) effec
 **Business rules (ADR-019 D4; PR #7 review finding F1).**
 - `contract.api.InstallmentResponse.from(...)` currently builds the balance with the zero-adjustment
   `InstallmentBalance.of(installment)` and returns `installment.getPenaltyAmount()` (gross) directly; it
-  must use the adjustment-aware overload `InstallmentBalance.of(installment, Σ adjustment)` and report the
-  effective (remaining) penalty, matching the receivable path.
+  must report the port's effective (remaining) penalty — `max(0, gross − Σ adjustment − Σ paid penalty)` —
+  on `penalty_amount`, matching the receivable path, while `outstanding` nets only the Σ adjustment through
+  `InstallmentBalance.of(installment, Σ adjustment)` (paidAmount already nets the paid penalty).
 - `contract.application.AgingReportSourceService.findOutstandingInstallments(...)` likewise computes
   `InstallmentBalance.of(installment).outstanding()` (zero-adjustment); it must feed the per-installment
   `Σ adjustment` so a fully-waived installment no longer shows positive outstanding / an aging bucket.
@@ -361,6 +370,56 @@ bucket. Route them through the adjustment-aware (and, with F2, paid-aware) effec
 **Tests.** IT: after a clearing waiver, assert the `GET /contracts/{id}/installments` row and the aging
 report agree with the receivable snapshot (zero remaining penalty, no bucket). Reuse `TestJwts`,
 `FixedClock`.
+
+**Implementation note (2026-10-07, branch `t30-effective-penalty-reads`).** Both `contract` read paths now
+net the per-installment `Σ adjustment` sourced through `EffectivePenaltyPort` — the same source as the
+receivable snapshot and the write-time cap. No second effective-penalty formula and no native
+`penalty_adjustment` read were introduced; the `contract → penalty` edge already documented in
+02_TECH_SPEC.md §1 is unchanged (T30 only widens its in-module consumers), so no spec/ADR dependency-rule
+edit was needed.
+
+- `contract.api.InstallmentResponse`: adjustment-and-paid-aware overload `from(Installment, BigDecimal Σ
+  adjustment, BigDecimal effectivePenalty)` reports the port's effective (remaining) penalty verbatim on
+  `penalty_amount` and nets only the Σ adjustment into `outstanding` via
+  `InstallmentBalance.of(installment, Σ adjustment)`; the zero-arg `from(Installment)` delegates with the
+  gross value. The wire field `penalty_amount` is unchanged in shape; its meaning is the remaining penalty
+  after both adjustments and paid penalty.
+- `contract.application.ContractQueryService.installments(...)`: injects `EffectivePenaltyPort`, loads the
+  `Contract` once, and threads the port's per-installment `effective` into each row, branching on status —
+  DRAFT → empty (no schedule), ACTIVE → `loadEffectivePenalty` (409-guarded), closed →
+  `loadEffectivePenaltyAnyStatus`. Every status returns 200.
+- `contract.application.AgingReportSourceService`: injects `EffectivePenaltyPort` and nets the Σ adjustment
+  into `outstanding` with a single batch call `loadEffectivePenalty(Collection<UUID>)` across all ACTIVE
+  contracts, so a fully-waived-but-paid installment nets to zero and leaves no bucket.
+- IT `contract.EffectivePenaltyReadConsistencyIT`: a clearing waiver drops period 1 from the schedule row,
+  its 1-30 aging bucket, and matches the receivable snapshot; a PARTIAL penalty payment with no waiver makes
+  the schedule `penalty_amount` equal the port's `gross − paid penalty` (not gross); a closed (SETTLEMENT)
+  contract with a prior waiver still reports the net penalty; and the schedule endpoint stays 200 for DRAFT
+  and CLOSED contracts.
+
+**PR #8 review fixes (branch `t30-effective-penalty-reads`).** The PR #8 review raised four findings; all
+four were validated against the code and fixed:
+- **F1** — `InstallmentResponse` recomputed a second formula `gross − Σ adjustment` and dropped the
+  `− Σ paid penalty` term, so a partially-paid penalty with no waiver reported gross. Fixed by reporting the
+  port's `effective` verbatim (see above); the IT gained the partial-paid case the clearing-waiver test hid.
+- **F2** — a closed contract defaulted adjustments to zero, so its schedule reported gross penalty for a
+  previously-waived installment (gross `penalty_amount` is not zeroed on close). Fixed with status-agnostic
+  port reads (`EffectivePenaltyPort.loadEffectivePenaltyAnyStatus`, `InstallmentPenaltyPort
+  .loadPenaltySnapshotAnyStatus`) and a closed branch in `ContractQueryService`.
+- **F3** — the aging report called the port once per ACTIVE contract. Fixed with a batch port method
+  (`loadEffectivePenalty(Collection<UUID>)`, backed by `InstallmentPenaltyPort.loadPenaltySnapshots`) called
+  once, reusing one shared `EffectivePenaltyService` helper.
+- **F4** — doc/OpenAPI drift: the aging `@Operation` description, the TECH_SPEC §1 effective-penalty formula
+  (added the paid-penalty term), this note, and the ADR-019 D4 "every consumer" wording (now names the
+  completed read paths and retains the `ContractInstallmentTotals` gross-penalty exception).
+
+**Verification (Docker available so the `*IT` suites ran).** Narrowest
+`.\gradlew test --tests "*EffectivePenaltyReadConsistencyIT" --tests "*PenaltyAdjustmentIT" --tests
+"*AgingReportIT" --tests "*ContractApiIT"`: pass. Full `.\gradlew test`: **87 suites / 697 tests / 0 failures / 0 errors** (the PR #8 baseline was 87 suites / 695
+tests; this adds the two new `EffectivePenaltyReadConsistencyIT` cases to the existing suite). `.\gradlew
+check`: pass. Diff is scoped to the two read paths, the response DTO, the two ports and their
+implementations, the installment repository (one batch query), the IT, and docs; no migration, no API-shape
+change.
 
 ### T12 — E1 Settlement quote (5 pts)
 
