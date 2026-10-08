@@ -56,7 +56,8 @@ Aturan dependency:
   adalah tabel modul `penalty`; `penalty` dilarang menyentuh tabel/entity `contract`/`installment` langsung.
 - `contract` boleh bergantung ke `penalty` lewat **application interface** `EffectivePenaltyPort`
   (`penalty.application`, ADR-019 D1, T15): satu-satunya sumber effective penalty
-  (`effective = max(0, penalty_amount − Σ penalty_adjustment)`, invariant 9) untuk `InstallmentReceivableService`,
+  (`effective = max(0, penalty_amount − Σ penalty_adjustment − Σ paid penalty)`, invariant 9) untuk
+  `InstallmentReceivableService`,
   `ContractCreditCommandService`, `InstallmentStatusRecomputeService`, dan — sejak T30 — read-path jadwal
   `ContractQueryService` serta laporan aging `AgingReportSourceService`. Ini **menggantikan** pembacaan native `penalty_adjustment` di `contract`
   (seam sementara ADR-010, kini **dipensiunkan**). Akibatnya hubungan `contract` ↔ `penalty` menjadi

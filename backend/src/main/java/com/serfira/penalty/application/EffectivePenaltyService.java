@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,8 +52,49 @@ public class EffectivePenaltyService implements EffectivePenaltyPort {
 	@Transactional(readOnly = true)
 	public EffectivePenaltySnapshot loadEffectivePenalty(UUID contractId) {
 		Objects.requireNonNull(contractId, "contractId");
-		InstallmentPenaltySnapshot snapshot = contracts.loadPenaltySnapshot(contractId);
-		List<UUID> installmentIds = snapshot.installments().stream().map(InstallmentPenalty::installmentId).toList();
+		return toSnapshot(contractId, contracts.loadPenaltySnapshot(contractId));
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public EffectivePenaltySnapshot loadEffectivePenaltyAnyStatus(UUID contractId) {
+		Objects.requireNonNull(contractId, "contractId");
+		return toSnapshot(contractId, contracts.loadPenaltySnapshotAnyStatus(contractId));
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public Map<UUID, InstallmentEffectivePenalty> loadEffectivePenalty(Collection<UUID> contractIds) {
+		Objects.requireNonNull(contractIds, "contractIds");
+		if (contractIds.isEmpty()) {
+			return Map.of();
+		}
+		List<InstallmentPenaltySnapshot> snapshots = contracts.loadPenaltySnapshots(contractIds);
+		List<InstallmentPenalty> allInstallments = snapshots.stream()
+				.flatMap(snapshot -> snapshot.installments().stream())
+				.toList();
+		Map<UUID, InstallmentEffectivePenalty> byInstallment = new HashMap<>();
+		for (InstallmentEffectivePenalty effective : effectivesOf(allInstallments)) {
+			byInstallment.put(effective.installmentId(), effective);
+		}
+		return byInstallment;
+	}
+
+	/**
+	 * Builds a single contract's snapshot from its gross penalty view, reusing {@link #effectivesOf} so the
+	 * invariant-9 formula and the Σ adjustment / Σ paid penalty reads have one implementation shared by the
+	 * single-contract, any-status and bulk port methods.
+	 */
+	private EffectivePenaltySnapshot toSnapshot(UUID contractId, InstallmentPenaltySnapshot snapshot) {
+		return new EffectivePenaltySnapshot(contractId, effectivesOf(snapshot.installments()));
+	}
+
+	/**
+	 * Computes the effective penalty of each given installment: one Σ adjustment query and one Σ paid
+	 * penalty read across the whole set, then the clamped formula per installment. Order follows the input.
+	 */
+	private List<InstallmentEffectivePenalty> effectivesOf(List<InstallmentPenalty> installments) {
+		List<UUID> installmentIds = installments.stream().map(InstallmentPenalty::installmentId).toList();
 
 		Map<UUID, BigDecimal> adjustmentByInstallment = new HashMap<>();
 		Map<UUID, BigDecimal> paidPenaltyByInstallment = new HashMap<>();
@@ -63,8 +105,8 @@ public class EffectivePenaltyService implements EffectivePenaltyPort {
 			paidPenaltyByInstallment.putAll(paidPenalties.penaltyAllocationsByInstallment(installmentIds));
 		}
 
-		List<InstallmentEffectivePenalty> effectives = new ArrayList<>(snapshot.installments().size());
-		for (InstallmentPenalty installment : snapshot.installments()) {
+		List<InstallmentEffectivePenalty> effectives = new ArrayList<>(installments.size());
+		for (InstallmentPenalty installment : installments) {
 			BigDecimal gross = normalize(installment.penaltyAmount());
 			BigDecimal adjustment = normalize(adjustmentByInstallment.getOrDefault(installment.installmentId(),
 					ZERO_MONEY));
@@ -73,7 +115,7 @@ public class EffectivePenaltyService implements EffectivePenaltyPort {
 			effectives.add(new InstallmentEffectivePenalty(installment.installmentId(), gross, adjustment,
 					paidPenalty, effective(gross, adjustment, paidPenalty)));
 		}
-		return new EffectivePenaltySnapshot(contractId, effectives);
+		return effectives;
 	}
 
 	/**

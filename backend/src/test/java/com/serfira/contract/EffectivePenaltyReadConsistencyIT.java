@@ -12,6 +12,8 @@ import com.serfira.contract.application.InstallmentReceivable;
 import com.serfira.contract.application.InstallmentReceivablePort;
 import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
+import com.serfira.penalty.application.EffectivePenaltyPort;
+import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import com.serfira.penalty.application.PenaltyAccrualPort;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
@@ -46,15 +48,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /**
  * T30 — the two {@code contract} read paths (schedule row and aging report) report the effective
- * (adjustment-aware) penalty, not gross, so a cleared waiver removes an installment from both views and all
- * three contract reads agree with the payment-receivable snapshot (ADR-019 D4, closes the F1 follow-up).
+ * (adjustment-and-paid-aware) penalty, not gross, so a cleared waiver removes an installment from both views
+ * and all three contract reads agree with the payment-receivable snapshot (ADR-019 D1/D4). The suite covers
+ * three distinct cases: a clearing waiver on an ACTIVE contract, a PARTIAL penalty payment with no waiver
+ * (the F1 regression — the schedule must report {@code gross − paid penalty}, not gross), and a closed
+ * contract with a prior waiver (the F2 regression — a closed contract's schedule must still net the
+ * adjustment, not report gross).
  *
  * <p>Every request commits for real (MockMvc, no test transaction) so the deferred V3/V16 triggers run as in
  * production. Penalty is accrued through the real D1 path (bill then accrue), never by seeding
- * {@code penalty_amount}. Period 1 is made otherwise-paid with test-only SQL (the allocation waterfall pays
- * PENALTY first, so a real payment cannot leave principal/interest unpaid while penalty stands — the same
- * reachability caveat {@code PenaltyAdjustmentIT} documents), leaving the penalty as the sole outstanding
- * amount, so a full waiver clears the installment entirely.
+ * {@code penalty_amount}. Period 1 is made otherwise-paid with test-only SQL (principal + interest covered),
+ * leaving the penalty as the sole outstanding amount; a subsequent real {@code POST /api/v1/payments} then
+ * allocates to PENALTY first, so a partial payment leaves a reachable penalty remainder with no waiver.
  */
 @Import({TestcontainersConfiguration.class, EffectivePenaltyReadConsistencyIT.FixedClockConfig.class})
 @SpringBootTest
@@ -99,6 +104,9 @@ class EffectivePenaltyReadConsistencyIT {
 
 	@Autowired
 	InstallmentReceivablePort receivable;
+
+	@Autowired
+	EffectivePenaltyPort effectivePenalty;
 
 	private UUID actorId;
 	private String token;
@@ -184,6 +192,61 @@ class EffectivePenaltyReadConsistencyIT {
 
 		// (c) The receivable snapshot agrees: period 1's effective remaining penalty is zero.
 		assertThat(snapshotEffectivePenalty(1)).isEqualByComparingTo("0.00");
+	}
+
+	@Test
+	void aPartialPenaltyPaymentWithNoWaiverLeavesTheScheduleReportingTheRemainingPenaltyNotGross() throws Exception {
+		// Period 1: otherwise-paid (principal + recognized interest covered), leaving only the gross penalty
+		// outstanding. No waiver is applied, so Σ adjustment stays zero — the F1 bug (gross − adjustment)
+		// would therefore keep reporting GROSS even though a payment has partly cleared the penalty.
+		seedPeriodOnePaidExceptPenalty();
+
+		// A real payment of less than the gross penalty: the waterfall (PENALTY first) applies it entirely to
+		// the penalty, leaving gross − paid still owed, with no waiver.
+		String partialPenaltyPayment = "1000.00";
+		MvcResult payment = pay("f1-partial-penalty", partialPenaltyPayment);
+		assertThat(payment.getResponse().getStatus()).isEqualTo(201);
+		JsonNode paymentData = objectMapper.readTree(payment.getResponse().getContentAsString()).get("data");
+		assertThat(allocationTypes(paymentData)).containsExactly("PENALTY");
+		assertThat(paymentData.get("allocations").get(0).get("amount").decimalValue())
+				.isEqualByComparingTo(partialPenaltyPayment);
+
+		// The port is the single source of the remaining penalty: effective = gross − 0 − paidPenalty.
+		BigDecimal portEffective = portEffectivePenalty(1);
+		BigDecimal gross = new BigDecimal(GROSS_PENALTY);
+		assertThat(portEffective).isEqualByComparingTo(gross.subtract(new BigDecimal(partialPenaltyPayment)));
+		// Guard the test's own premise: this is strictly less than gross and the adjustment is zero, so the
+		// old gross − adjustment formula would have reported gross and hidden the bug.
+		assertThat(portEffective).isLessThan(gross);
+
+		// The schedule row's penalty_amount must equal the port's remaining penalty, NOT gross and NOT
+		// gross − adjustment (which both equal gross here).
+		JsonNode row = scheduleRow(1);
+		assertThat(row.get("penalty_amount").decimalValue()).isEqualByComparingTo(portEffective);
+		assertThat(row.get("penalty_amount").decimalValue()).isNotEqualByComparingTo(gross);
+	}
+
+	@Test
+	void aClosedContractWithAPriorWaiverReportsTheNetPenaltyNotGross() throws Exception {
+		// Period 1: otherwise-paid, only the gross penalty outstanding. Apply a partial WAIVE, then close the
+		// contract. The F2 bug defaulted a non-ACTIVE contract's adjustments to zero, so a closed contract's
+		// schedule reported GROSS penalty again for the previously-waived installment.
+		seedPeriodOnePaidExceptPenalty();
+		String waived = "1000.00";
+		MvcResult waive = adjust("WAIVE", waived, "partial waiver before close");
+		assertThat(waive.getResponse().getStatus()).isEqualTo(200);
+
+		BigDecimal expectedNet = new BigDecimal(GROSS_PENALTY).subtract(new BigDecimal(waived));
+
+		// Close the contract (SETTLEMENT), the same test-only status write the 200-stays test uses.
+		jdbc.update("update contract set status = 'CLOSED', closed_at = clock_timestamp(), "
+				+ "closed_reason = 'SETTLEMENT' where id = ?", contractId);
+		assertThat(contractStatus()).isEqualTo("CLOSED");
+
+		// The schedule still returns 200 (no 409 leak) and reports the net remaining penalty, not gross.
+		JsonNode row = scheduleRow(1);
+		assertThat(row.get("penalty_amount").decimalValue()).isEqualByComparingTo(expectedNet);
+		assertThat(row.get("penalty_amount").decimalValue()).isNotEqualByComparingTo(GROSS_PENALTY);
 	}
 
 	@Test
@@ -277,6 +340,33 @@ class EffectivePenaltyReadConsistencyIT {
 				.header("Authorization", "Bearer " + token)).andReturn();
 		assertThat(result.getResponse().getStatus()).isEqualTo(200);
 		return data(result);
+	}
+
+	/** Posts a real CASH payment through the HTTP path, so billing, accrual and allocation all run. */
+	private MvcResult pay(String idempotencyKey, String amount) throws Exception {
+		String body = "{\"contract_id\":\"" + contractId + "\",\"amount\":" + amount + ",\"channel\":\"CASH\"}";
+		return mockMvc.perform(post("/api/v1/payments")
+						.header("Authorization", "Bearer " + token)
+						.header("Idempotency-Key", idempotencyKey)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content(body))
+				.andReturn();
+	}
+
+	private java.util.List<String> allocationTypes(JsonNode payment) {
+		java.util.List<String> types = new java.util.ArrayList<>();
+		payment.get("allocations").forEach(allocation -> types.add(allocation.get("allocation_type").asText()));
+		return types;
+	}
+
+	/** The authoritative remaining penalty of the period from the {@code penalty}-owned port. */
+	private BigDecimal portEffectivePenalty(int periodNo) {
+		UUID installmentId = installmentId(periodNo);
+		return effectivePenalty.loadEffectivePenalty(contractId).installments().stream()
+				.filter(installment -> installment.installmentId().equals(installmentId))
+				.map(InstallmentEffectivePenalty::effective)
+				.findFirst()
+				.orElseThrow();
 	}
 
 	/** Effective remaining penalty of the period from the payment-receivable snapshot: max(0, gross − Σ adj). */

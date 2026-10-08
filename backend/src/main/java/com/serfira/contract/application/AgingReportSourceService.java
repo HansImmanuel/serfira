@@ -15,10 +15,13 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * {@code contract}-module implementation of {@link AgingReportSourcePort}: reads every ACTIVE contract's
@@ -33,9 +36,9 @@ import java.util.UUID;
  *
  * <p>{@code outstanding} is netted against active penalty adjustments (ADR-019 D4): the Σ waive/reduce per
  * installment comes from the {@code penalty}-owned {@link EffectivePenaltyPort} (edge {@code contract →
- * penalty}, 02_TECH_SPEC.md §1), queried once per distinct ACTIVE contract. A fully-waived-but-otherwise-paid
- * installment therefore nets to zero outstanding and no longer lands in an aging bucket, agreeing with the
- * payment-receivable snapshot instead of reporting gross penalty.
+ * penalty}, 02_TECH_SPEC.md §1) in one batch call for all ACTIVE contracts (ADR-019 F3). A
+ * fully-waived-but-otherwise-paid installment therefore nets to zero outstanding and no longer lands in an
+ * aging bucket, agreeing with the payment-receivable snapshot instead of reporting gross penalty.
  */
 @Service
 @Transactional(readOnly = true)
@@ -84,21 +87,19 @@ public class AgingReportSourceService implements AgingReportSourcePort {
 
 	/**
 	 * Σ penalty adjustments per installment across the given ACTIVE installments, sourced through the
-	 * {@code penalty}-owned {@link EffectivePenaltyPort} (ADR-019 D1/D4, edge {@code contract → penalty}).
-	 * The port is queried once per distinct contract — every contract here is ACTIVE
-	 * ({@code findActiveContractInstallments}), so each is a legal {@code loadEffectivePenalty} argument.
+	 * {@code penalty}-owned {@link EffectivePenaltyPort} (ADR-019 D1/D4, edge {@code contract → penalty}) in
+	 * ONE batch call (ADR-019 F3) rather than once per contract: the bulk method resolves the effective
+	 * penalty of every ACTIVE contract at once. Only {@code adjustment} is needed here — {@code outstanding}
+	 * nets it through {@link InstallmentBalance#of(Installment, BigDecimal)}, and the paid penalty is already
+	 * in {@code paidAmount}, so subtracting it again would double-count.
 	 */
 	private Map<UUID, BigDecimal> penaltyAdjustmentsByInstallment(List<Installment> active) {
+		Set<UUID> contractIds = active.stream()
+				.map(installment -> installment.getContract().getId())
+				.collect(Collectors.toCollection(LinkedHashSet::new));
 		Map<UUID, BigDecimal> totals = new HashMap<>();
-		Map<UUID, Boolean> loaded = new HashMap<>();
-		for (Installment installment : active) {
-			UUID contractId = installment.getContract().getId();
-			if (loaded.putIfAbsent(contractId, Boolean.TRUE) != null) {
-				continue;
-			}
-			for (InstallmentEffectivePenalty effective : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
-				totals.put(effective.installmentId(), effective.adjustment());
-			}
+		for (InstallmentEffectivePenalty effective : effectivePenalty.loadEffectivePenalty(contractIds).values()) {
+			totals.put(effective.installmentId(), effective.adjustment());
 		}
 		return totals;
 	}

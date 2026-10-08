@@ -3,6 +3,8 @@ package com.serfira.penalty.application;
 import com.serfira.contract.application.ContractNotFoundException;
 import com.serfira.contract.domain.ContractStateException;
 
+import java.util.Collection;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -35,4 +37,30 @@ public interface EffectivePenaltyPort {
 	 *                                   is ACTIVE without a schedule
 	 */
 	EffectivePenaltySnapshot loadEffectivePenalty(UUID contractId);
+
+	/**
+	 * Effective penalty for every installment of the contract regardless of its status, so a read path can
+	 * report the net penalty of a closed (SETTLEMENT / MATURITY / WRITTEN_OFF) contract whose gross
+	 * {@code penalty_amount} is not zeroed on close (ADR-019 D4). Unlike {@link #loadEffectivePenalty(UUID)}
+	 * it does not reject a non-ACTIVE contract; {@code penalty_adjustment} and the paid-penalty allocation
+	 * are append-only and still readable after close.
+	 *
+	 * @param contractId contract whose effective penalty is needed
+	 * @return the per-installment snapshot
+	 * @throws ContractNotFoundException if no contract has that id (404 {@code CONTRACT_NOT_FOUND})
+	 * @throws ContractStateException    if the contract has no schedule
+	 */
+	EffectivePenaltySnapshot loadEffectivePenaltyAnyStatus(UUID contractId);
+
+	/**
+	 * Effective penalty for every installment of a set of contracts, in one batch, so a portfolio read (the
+	 * aging report) resolves it for all contracts at once instead of once per contract (ADR-019 F3). The
+	 * single formula and the three underlying reads (gross snapshot, Σ adjustment, Σ paid penalty) are each
+	 * done once across the union of installments.
+	 *
+	 * @param contractIds contracts whose effective penalty is needed; an empty input yields an empty map
+	 * @return a map from installment id to its effective-penalty record, across all input contracts that
+	 *         have a schedule
+	 */
+	Map<UUID, InstallmentEffectivePenalty> loadEffectivePenalty(Collection<UUID> contractIds);
 }

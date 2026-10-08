@@ -90,10 +90,19 @@ the DB level (decided in T15 alongside the ADR-018 `SETTLEMENT` extension).
 ### D4 — One formula, four consumers
 
 After T15 the effective-penalty formula exists in exactly one application-level place
-(`EffectivePenaltyService`) plus the DB backstop trigger. `contract` totals, the `settlement` quote, the
-payment cap (via the trigger), and reporting all agree by construction. This closes CR-14. **T30** completed
-D4 by routing the last two `contract` read paths (the schedule response and the aging report) through the
-port, so every consumer now reports the same effective penalty (see the implementation note below).
+(`EffectivePenaltyService`) plus the DB backstop trigger. The named read paths that resolve a per-installment
+remaining penalty — the receivable snapshot (`InstallmentReceivableService`), credit-apply
+(`ContractCreditCommandService`), the status recompute (`InstallmentStatusRecomputeService`), the schedule
+response (`InstallmentResponse` / `ContractQueryService`) and the aging report
+(`AgingReportSourceService`) — plus the `settlement` quote and the payment cap (via the trigger), all agree
+by construction. This closes CR-14. **T30** routed the last two `contract` read paths (the schedule response
+and the aging report) through the port.
+
+One deliberate exception remains: the per-contract aggregate `ContractInstallmentTotals` (the contract
+list/detail "Outstanding") still sums **gross** penalty, because a SQL aggregate cannot call the port; netting
+adjustments there needs its own `penalty_adjustment` sum subquery and is a tracked follow-up. So D4 holds for
+every per-installment remaining-penalty read path named above, with `ContractInstallmentTotals` the one
+acknowledged gross-penalty aggregate (see the implementation note below).
 
 ---
 
@@ -159,13 +168,26 @@ The initial T15 implementation shipped effective penalty as `max(0, gross − ad
   waivers commits.
 - **F5 (doc):** the `PenaltyAdjustmentService` Javadoc/flush comment were corrected — the deferred cap and
   journal-balance triggers fire at COMMIT, not on `flush`; the mapped 409 comes from the in-memory pre-check.
-- **F1 (D4 follow-up), resolved by T30:** the schedule response (`InstallmentResponse`) and the aging report
-  (`AgingReportSourceService`) had still read gross penalty via the zero-adjustment
-  `InstallmentBalance.of(...)`. T30 routed both through `EffectivePenaltyPort`: `InstallmentResponse` gained
-  an adjustment-aware overload `from(Installment, Σ adjustment)` and reports the effective (remaining)
-  penalty on `penalty_amount` (wire shape unchanged); `ContractQueryService.installments(...)` threads the
-  per-installment Σ adjustment for ACTIVE contracts (and uses an empty map for non-ACTIVE ones, since the
-  port answers only for ACTIVE contracts, keeping the schedule endpoint 200 for DRAFT/closed contracts); and
-  `AgingReportSourceService` nets the Σ adjustment into `outstanding`, querying the port once per ACTIVE
-  contract. No second formula and no native `penalty_adjustment` read were introduced, and the `contract →
-  penalty` edge is unchanged (T30 only added in-module consumers). This completes D4.
+- **F1 (D4 follow-up), resolved by T30 and sharpened by the PR #8 review:** the schedule response
+  (`InstallmentResponse`) and the aging report (`AgingReportSourceService`) had still read gross penalty via
+  the zero-adjustment `InstallmentBalance.of(...)`. T30 routed both through `EffectivePenaltyPort`. The PR #8
+  review found that T30's first cut still recomputed a second formula (`gross − Σ adjustment`) in
+  `InstallmentResponse`, which dropped the `− Σ paid penalty` term. The fix:
+  - `InstallmentResponse.from(Installment, Σ adjustment, effectivePenalty)` now reports the port's
+    `effective` verbatim on `penalty_amount` (no local subtraction, no second clamp), while `outstanding`
+    still nets only the Σ adjustment through `InstallmentBalance.of(installment, adjustment)` —
+    `paidAmount` already nets the paid penalty, so the two values are each correct and mutually consistent.
+    Wire shape (snake_case `penalty_amount`, scale-2) is unchanged.
+  - `ContractQueryService.installments(...)` threads the port's per-installment `effective`, branching on
+    status: DRAFT → empty (no schedule), ACTIVE → `loadEffectivePenalty` (409-guarded), closed →
+    `loadEffectivePenaltyAnyStatus`. The closed branch (a new status-agnostic port read) fixes a reported
+    defect where a closed contract's schedule reported **gross** penalty for a previously-waived installment,
+    because gross `penalty_amount` is not zeroed on close. The endpoint stays 200 for every status.
+  - `AgingReportSourceService` now nets the Σ adjustment into `outstanding` using a single **batch** port
+    call (`loadEffectivePenalty(Collection<UUID>)`) across all ACTIVE contracts, instead of one call per
+    contract (the reported O(contracts) concern).
+
+  The status-agnostic and bulk reads are new methods on the existing `EffectivePenaltyPort` /
+  `InstallmentPenaltyPort` interfaces (no new cross-module edge; no native `penalty_adjustment` read in
+  `contract`; one shared `EffectivePenaltyService` helper computes the single formula). This completes D4 for
+  every per-installment remaining-penalty read path.

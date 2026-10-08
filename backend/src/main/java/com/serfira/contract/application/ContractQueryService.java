@@ -5,6 +5,7 @@ import com.serfira.contract.api.ContractResponse;
 import com.serfira.contract.api.InstallmentResponse;
 import com.serfira.contract.domain.Contract;
 import com.serfira.contract.domain.ContractStatus;
+import com.serfira.contract.domain.Installment;
 import com.serfira.contract.infrastructure.ContractInstallmentTotals;
 import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.ContractSpecifications;
@@ -14,6 +15,7 @@ import com.serfira.ledger.application.ContractStatementLine;
 import com.serfira.ledger.application.ContractStatementPort;
 import com.serfira.ledger.domain.LedgerRefType;
 import com.serfira.penalty.application.EffectivePenaltyPort;
+import com.serfira.penalty.application.EffectivePenaltySnapshot;
 import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import com.serfira.shared.api.PageResponse;
 import com.serfira.shared.clock.Clock;
@@ -111,41 +113,64 @@ public class ContractQueryService {
 	/**
 	 * Schedule of one contract, oldest period first. An unknown contract is a 404, not an empty list.
 	 *
-	 * <p>Each row's penalty and outstanding are net of active penalty adjustments (ADR-019 D4): the Σ
-	 * waive/reduce comes from the {@code penalty}-owned {@link EffectivePenaltyPort} (edge
-	 * {@code contract → penalty}, 02_TECH_SPEC.md §1), so the schedule agrees with the payment-receivable
-	 * snapshot instead of reporting gross penalty.
+	 * <p>Each row's {@code penalty_amount} is the effective (remaining) penalty — {@code max(0, gross − Σ
+	 * adjustment − Σ paid penalty)} — read verbatim from the {@code penalty}-owned {@link EffectivePenaltyPort}
+	 * (edge {@code contract → penalty}, 02_TECH_SPEC.md §1), and each row's {@code outstanding} nets the same
+	 * Σ adjustment through {@link InstallmentResponse}. The schedule therefore agrees by construction with the
+	 * payment-receivable path instead of reporting gross penalty.
 	 *
-	 * <p>The port only answers for an ACTIVE contract (it throws 409 otherwise), so it is consulted only
-	 * when the contract is ACTIVE. A non-ACTIVE contract accrues no new penalty and can carry no active
-	 * adjustment, so gross equals effective there and an empty adjustment map is correct — this preserves
-	 * the endpoint's 200 for DRAFT (empty schedule) and closed contracts rather than turning a valid read
-	 * into a 409.
+	 * <p>The read path depends on status, because the two gross-reading ports gate differently:
+	 * <ul>
+	 *   <li>DRAFT — no schedule yet; no port call, an empty effective map, and the row's effective equals its
+	 *       (zero) gross.</li>
+	 *   <li>ACTIVE — {@link EffectivePenaltyPort#loadEffectivePenalty(UUID)} (the 409-guarded read a daily
+	 *       accrual uses).</li>
+	 *   <li>closed (SETTLEMENT / MATURITY / WRITTEN_OFF) — {@link EffectivePenaltyPort#loadEffectivePenaltyAnyStatus(UUID)},
+	 *       the status-agnostic read, so a previously-waived installment still reports its net penalty rather
+	 *       than gross (ADR-019 D4). {@code penalty_adjustment} and {@code payment_allocation} are append-only
+	 *       and still present after close, so no new read source is needed.</li>
+	 * </ul>
+	 * Every status returns 200: routing a closed contract through the any-status read never leaks a 409.
 	 */
 	public List<InstallmentResponse> installments(UUID contractId) {
 		Contract contract = contracts.findById(contractId)
 				.orElseThrow(() -> new ContractNotFoundException(contractId));
-		Map<UUID, BigDecimal> adjustments = contract.isActive()
-				? penaltyAdjustmentsByInstallment(contractId)
-				: Map.of();
+		Map<UUID, InstallmentEffectivePenalty> effectives = effectiveByInstallment(contract);
 		return installments.findByContractIdOrderByPeriodNo(contractId).stream()
-				.map(installment -> InstallmentResponse.from(installment,
-						adjustments.getOrDefault(installment.getId(), BigDecimal.ZERO)))
+				.map(installment -> toResponse(installment, effectives.get(installment.getId())))
 				.toList();
 	}
 
 	/**
-	 * Σ penalty adjustments per installment, sourced through the {@code penalty}-owned
-	 * {@link EffectivePenaltyPort} (ADR-019 D1/D4, edge {@code contract → penalty}). Mirrors
-	 * {@link InstallmentReceivableService}'s read so the schedule row and the receivable snapshot net the
-	 * identical adjustment total.
+	 * The port's effective-penalty record per installment, keyed by installment id. DRAFT (no schedule) gets
+	 * an empty map; an ACTIVE contract uses the 409-guarded read; a closed contract uses the status-agnostic
+	 * read so a prior waiver still nets out of the reported penalty (F2, ADR-019 D4).
 	 */
-	private Map<UUID, BigDecimal> penaltyAdjustmentsByInstallment(UUID contractId) {
-		Map<UUID, BigDecimal> totals = new HashMap<>();
-		for (InstallmentEffectivePenalty installment : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
-			totals.put(installment.installmentId(), installment.adjustment());
+	private Map<UUID, InstallmentEffectivePenalty> effectiveByInstallment(Contract contract) {
+		if (contract.getStatus() == ContractStatus.DRAFT) {
+			return Map.of();
 		}
-		return totals;
+		EffectivePenaltySnapshot snapshot = contract.isActive()
+				? effectivePenalty.loadEffectivePenalty(contract.getId())
+				: effectivePenalty.loadEffectivePenaltyAnyStatus(contract.getId());
+		Map<UUID, InstallmentEffectivePenalty> byInstallment = new HashMap<>();
+		for (InstallmentEffectivePenalty installment : snapshot.installments()) {
+			byInstallment.put(installment.installmentId(), installment);
+		}
+		return byInstallment;
+	}
+
+	/**
+	 * Builds a schedule row from the installment and its effective-penalty record. A null record (e.g. a
+	 * DRAFT contract that reached here with no schedule) falls back to the gross value, so the zero-arg
+	 * {@link InstallmentResponse#from(com.serfira.contract.domain.Installment)} contract still holds.
+	 */
+	private static InstallmentResponse toResponse(Installment installment,
+			InstallmentEffectivePenalty effective) {
+		if (effective == null) {
+			return InstallmentResponse.from(installment);
+		}
+		return InstallmentResponse.from(installment, effective.adjustment(), effective.effective());
 	}
 
 	/**

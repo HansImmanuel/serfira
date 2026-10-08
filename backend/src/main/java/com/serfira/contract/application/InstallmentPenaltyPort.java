@@ -3,6 +3,8 @@ package com.serfira.contract.application;
 import com.serfira.contract.domain.ContractStateException;
 
 import java.math.BigDecimal;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -34,6 +36,33 @@ public interface InstallmentPenaltyPort {
 	 *                                   is ACTIVE without a schedule
 	 */
 	InstallmentPenaltySnapshot loadPenaltySnapshot(UUID contractId);
+
+	/**
+	 * Reads the same gross penalty state as {@link #loadPenaltySnapshot(UUID)} but for a contract in ANY
+	 * status, so a read path can report the effective penalty of a closed (SETTLEMENT / MATURITY /
+	 * WRITTEN_OFF) contract (ADR-019 D4). Gross {@code penalty_amount} is not zeroed on close, so a
+	 * previously-waived installment would otherwise surface gross again.
+	 *
+	 * <p>Unlike the accrual read it does not gate on ACTIVE — a closed contract never accrues, but its
+	 * schedule is still a legal thing to read net of adjustments. It still rejects an unknown id (404) and a
+	 * contract with no schedule (an un-activated DRAFT has none; callers branch DRAFT out before calling).
+	 *
+	 * @param contractId contract whose penalty state is needed
+	 * @return snapshot in period order, future installments included
+	 * @throws ContractNotFoundException if no contract has that id (404 {@code CONTRACT_NOT_FOUND})
+	 * @throws ContractStateException    if the contract has no schedule
+	 */
+	InstallmentPenaltySnapshot loadPenaltySnapshotAnyStatus(UUID contractId);
+
+	/**
+	 * Bulk form of {@link #loadPenaltySnapshotAnyStatus(UUID)} for a set of contracts, in one query, so a
+	 * portfolio read (the aging report) resolves gross penalty for every contract at once instead of once
+	 * per contract (F3). Contracts without a schedule are simply absent from the result.
+	 *
+	 * @param contractIds contracts whose penalty state is needed; an empty input yields an empty list
+	 * @return one snapshot per contract that has a schedule, no particular order
+	 */
+	List<InstallmentPenaltySnapshot> loadPenaltySnapshots(Collection<UUID> contractIds);
 
 	/**
 	 * Raises the gross recognized penalty of the given installments by their amounts.

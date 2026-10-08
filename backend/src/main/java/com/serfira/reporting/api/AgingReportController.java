@@ -50,10 +50,11 @@ public class AgingReportController {
 					Delinquency buckets (Current, 1-30, 31-60, 61-90, >90 days past due) of every ACTIVE contract's
 					outstanding, as a portfolio total and per contract (PRD D-2).
 					Outstanding is principal residual + recognized interest residual + penalty residual; future
-					unrecognized interest is excluded, and penalty adjustments are not yet subtracted (no waiver flow
-					exists until story E5). At both the portfolio and the contract level the five buckets sum to the
-					outstanding. `as_of` defaults to today and must be today — historical reconstruction is not
-					supported in Phase 1. The per-contract rows are paged; the portfolio total spans all contracts.""")
+					unrecognized interest is excluded, and the penalty residual is the effective remaining penalty —
+					net of active penalty adjustments and of penalty already paid — sourced through the
+					effective-penalty port (ADR-019 D4). At both the portfolio and the contract level the five buckets
+					sum to the outstanding. `as_of` defaults to today and must be today — historical reconstruction is
+					not supported in Phase 1. The per-contract rows are paged; the portfolio total spans all contracts.""")
 	@ApiResponses({
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
 					description = "The aging report (portfolio total plus one page of per-contract rows)"),
