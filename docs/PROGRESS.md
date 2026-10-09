@@ -101,19 +101,19 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       memesan satu baris `contract_credit` AVAILABLE (sub-ledger liability `TITIPAN_NASABAH`, bukan jurnal
       kedua) lewat `ContractCreditPort` baru milik `contract` yang dipanggil write path `payment`
       (`uk_contract_credit_source` = satu credit per alokasi EXCESS). `POST /api/v1/contracts/{id}/credit/apply`
-      (ADMIN_OPERASIONAL) mengaplikasikan saldo tersedia ke installment due tertua dengan recognized receivable
+      (ADMIN*OPERASIONAL) mengaplikasikan saldo tersedia ke installment due tertua dengan recognized receivable
       memakai engine murni baru `CreditApplicationEngine` (PENALTY → INTEREST → PRINCIPAL, due_date lalu
       period_no), partial diperbolehkan, satu credit boleh mendanai banyak application, tidak pernah
       auto-apply; hanya mengurangi recognized receivable, resolusi lewat
       `InstallmentReceivablePort.applyPaymentResolution`. Satu jurnal per panggilan (`Dr TITIPAN_NASABAH /
-      Cr PIUTANG_*`, `ref_type=CREDIT_APPLICATION`, `ref_id` = application pertama; mengandalkan service guard
-      `LedgerPostingService`, ADR-008 d5). `GET /api/v1/contracts/{id}/credit` (ADMIN_OPERASIONAL + FINANCE)
-      mengembalikan saldo + histori. Status flip AVAILABLE → APPLIED hanya saat saldo 0. Migrasi V14: trigger
-      deferred cap `Σ application.amount ≤ amount` (invariant 11) + guard status, tanpa `CREATE TABLE`, tanpa
-      menyentuh `uq_journal_entry_event`. Retry optimistic-lock `ContractCreditRetryingService` (3 percobaan,
-      50/150 ms) mencerminkan jalur payment. Verifikasi (Docker aktif): `CreditApplicationEngineTest` (16) +
-      `ContractCreditIT` (10) + `EndpointRoleMatrixIT` + `OpenApiSmokeIT` pass; full `.\gradlew test` = **665
-      tests, 0 gagal**; `.\gradlew check` hijau. Branch `t14-contract-credit`.
+      Cr PIUTANG*\*`, `ref_type=CREDIT_APPLICATION`, `ref_id`= application pertama; mengandalkan service guard
+   `LedgerPostingService`, ADR-008 d5). `GET /api/v1/contracts/{id}/credit`(ADMIN_OPERASIONAL + FINANCE)
+    mengembalikan saldo + histori. Status flip AVAILABLE → APPLIED hanya saat saldo 0. Migrasi V14: trigger
+    deferred cap`Σ application.amount ≤ amount`(invariant 11) + guard status, tanpa`CREATE TABLE`, tanpa
+    menyentuh `uq_journal_entry_event`. Retry optimistic-lock `ContractCreditRetryingService`(3 percobaan,
+    50/150 ms) mencerminkan jalur payment. Verifikasi (Docker aktif):`CreditApplicationEngineTest`(16) +
+    `ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`.\gradlew test`= **665
+    tests, 0 gagal**;`.\gradlew check`hijau. Branch`t14-contract-credit`.
 
 - [x] T15 — E5 Penalty waive/reduce + `EffectivePenaltyPort` (ADR-019, Addendum §16.4). Writer pertama
       `penalty_adjustment`: entity `PenaltyAdjustment` baru di `penalty.domain` (extends `Auditable`,
@@ -148,7 +148,7 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       `PenaltyAdjustmentRetryingService` (3 percobaan, 50/150 ms) men-serialize waiver konkuren di luar
       transaksi → tepat satu commit, sisanya 409 `CONCURRENT_MODIFICATION`. **F5** (doc): Javadoc/komentar
       `flush()` di `PenaltyAdjustmentService` dikoreksi — trigger cap V16 & balance V3 `DEFERRABLE INITIALLY
-      DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal dari pre-check in-memory.
+DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal dari pre-check in-memory.
       **F6** invalid (tanpa aturan WAIVE==full). **F1** di-defer ke T30 (read-path schedule/aging). Dua edge
       lintas-modul baru dicatat TS §1 + ADR-019 (implementation note). Verifikasi: lihat ringkasan FEAT-003.
 
@@ -176,3 +176,25 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       `PenaltyAdjustmentIT` + `AgingReportIT` + `ContractApiIT` + `EffectivePenaltyServiceTest` pass; full
       `.\gradlew test` = **87 suites / 697 tests / 0 gagal / 0 error**; `.\gradlew check` hijau. Branch
       `t30-effective-penalty-reads`.
+
+- [x] T12 — E1 Settlement quote (ADR-018). Modul `settlement` baru (`api/application/domain/infrastructure`)
+      dengan `POST /api/v1/settlements/quote` (ADMIN_OPERASIONAL). `SettlementQuoteCommandService`
+      (`@Transactional`) menjalankan **accrue-before-resolve** dulu (ADR-013, ADR-018 D8) — `billDueInterest`
+      lalu `accrueDuePenalty` pada satu business date — lalu membaca jadwal lewat seam `contract` baru
+      `SettlementReceivablePort` (mengekspos bunga terjadwal `interestAmount` yang disembunyikan
+      `InstallmentReceivablePort` agar future interest terhitung, ADR-018 D2 + `contract.version`), effective
+      penalty lewat `EffectivePenaltyPort` (ADR-018 D8), dan saldo kredit AVAILABLE lewat
+      `ContractCreditPort.availableCredit` baru. Engine murni `SettlementQuoteEngine` menghitung komponen
+      (ADR-018 D6): pokok outstanding, bunga billed belum dibayar, running interest periode aktif (ACT/30, cap
+      30 hari), penalty efektif, net future interest setelah rebate 50%, plus admin fee; `gross_amount`/
+      `cash_due` dengan `credit_used = 0` (konsumsi di T13). `SettlementQuote` immutable (extends `Auditable`,
+      guard konstruktor mencerminkan CHECK V1) di-persist QUOTED dengan `valid_until = quoted_at + TTL` dan
+      `contract_version` snapshot; **tanpa jurnal**, tanpa pergerakan uang. `SettlementQuoteRetryingService`
+      (3 percobaan, 50/150 ms) me-retry race optimistic-lock accrue-before-resolve → 409
+      `CONCURRENT_MODIFICATION`. **Tanpa migrasi** (tabel + immutability V5 sudah ada sejak V1). Satu baris
+      matcher RBAC baru + `EndpointRoleMatrixIT`. TS §1 menambah edge `settlement → contract` dan
+      `settlement → penalty`. Verifikasi (**Docker TIDAK tersedia di environment ini, jadi suite `*IT`
+      Testcontainers tidak dijalankan**, sesuai fallback steering): `compileJava compileTestJava` pass;
+      `.\gradlew test --tests "*Test"` (semua unit, termasuk `SettlementQuoteEngineTest` 5 kasus) BUILD
+      SUCCESSFUL 0 gagal. `SettlementQuoteIT` ditulis & dikompilasi tetapi belum dijalankan — harus hijau di
+      Docker sebelum merge. Branch `t12-settlement-quote`.

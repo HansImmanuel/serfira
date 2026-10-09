@@ -27,21 +27,24 @@ T29 (statement query `cast` fix), and the T11 implementation (Phase-1 test harde
 immutability tests, specific-exception assertions, `Phase1ExitScenariosIT`, `PiiLoggingIT`) — all on branch
 `t11-phase1-exit-verification` @ `a8fa1a6`, pending merge.
 
-**Latest verification — 2026-10-05 (T11), Docker available so the Testcontainers `*IT` suites ran:**
+**Latest verification — 2026-10-09 (T12), Docker NOT available in the environment, so the Testcontainers
+`*IT` suites did not run (per the tech-stack steering fallback):**
 
-- `.\gradlew check`: pass.
-- Forced full `.\gradlew test --rerun-tasks` (all tasks executed, not cached): **80 suites / 633 tests /
-  0 failures / 0 errors / 0 skipped** (621 before T11 + 12 new tests: 4 child-table immutability, the 7
-  `Phase1ExitScenariosIT` scenarios, and `PiiLoggingIT`).
-- Diff is test-only: `AccountingInvariantsIT`, `Phase1ExitScenariosIT` (new), `PiiLoggingIT` (new),
-  `ContractIdempotencyIT`, `PaymentIdempotencyIT`. No production code, migration, or unrelated file changed.
+- `.\gradlew compileJava compileTestJava`: pass (whole main + test tree compiles with the new `settlement`
+  module and the `contract` seam additions).
+- `.\gradlew test --tests "*Test"` (all pure unit suites, no Docker): **BUILD SUCCESSFUL, 0 failures**,
+  including the new `SettlementQuoteEngineTest` (5 golden cases, verified in its JUnit XML: 0 failures /
+  0 errors).
+- Not run: the Testcontainers `*IT` suites (`SettlementQuoteIT` and `EndpointRoleMatrixIT` among them) —
+  Docker was unreachable in this session. They compile and must be run under Docker before the PR merges.
 
-Older per-task verification snapshots (T8, T9, T24, T25, T29) live in `tasks-archive.md`.
+Older per-task verification snapshots (T8, T9, T24, T25, T29, T11) live in `tasks-archive.md`.
 
 **Implemented (verified in source):**
 
-- Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `shared`. `settlement` does not exist;
-  `frontend/` is empty.
+- Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `shared`. The `settlement`
+  module (T12) currently holds only the quote half (E1); execution (E2, T13) is not built yet. `frontend/`
+  is empty.
 - Migrations V1–V15. Baseline + accounting triggers (V3), state coherence (V4), settlement immutability (V5),
   contract-create safety (V6/V7), SYSTEM hardening (V8), ShedLock + penalty-accrual integrity (V9),
   `job_run.business_date` (V10), the `journal_line (contract_id, entry_date)` statement index (V11, T9), the
@@ -77,14 +80,15 @@ Older per-task verification snapshots (T8, T9, T24, T25, T29) live in `tasks-arc
   active penalty adjustments through `EffectivePenaltyPort` instead of reporting gross, so a
   waived-but-otherwise-paid installment shows zero remaining penalty and no aging bucket, agreeing with the
   payment-receivable snapshot.
-- Endpoints (11): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
+- Endpoints (12): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
   `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, `GET /api/v1/reports/aging`,
   `POST /api/v1/contracts/{id}/credit/apply`, `GET /api/v1/contracts/{id}/credit`,
-  `POST /api/v1/penalty-adjustments`.
-- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all eleven
-  endpoints (T7, ADR-015; the two credit rows added by T14, the penalty-adjustment row by T15). `sub` must
-  be a UUID with `exp`. No login/refresh/logout, no `iss`/`aud` validation yet (ADR-005; T21).
+  `POST /api/v1/penalty-adjustments`, `POST /api/v1/settlements/quote`.
+- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all twelve
+  endpoints (T7, ADR-015; the two credit rows added by T14, the penalty-adjustment row by T15, the
+  settlement-quote row by T12 — ADMIN_OPERASIONAL only). `sub` must be a UUID with `exp`. No login/refresh/
+  logout, no `iss`/`aud` validation yet (ADR-005; T21).
 
 Full per-task implementation notes for all DONE work are archived in `tasks-archive.md`.
 
@@ -94,10 +98,11 @@ key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness), T29 (
 statement query, X-13) and T11 (Phase-1 test hardening + exit verification) are all DONE. T10 stays
 DEFERRED (T1.a kept ADR-012 decision 2; no code change required). **Sprint 5 (Settlement, Credit & Waiver,
 T12–T15) is planned** (2026-10-05, ADR-018 + ADR-019; see the Sprint 5 section) and ready to implement in
-order T14 → T15 → T12 → T13. **T14 (E3 credit) and T15 (E5 waive/reduce + `EffectivePenaltyPort`) are DONE**
-(branches `t14-contract-credit`, `t15-penalty-waive-effective-port`); T12 → T13 remain. **T30 (route the
-schedule response + aging report through `EffectivePenaltyPort`, closing the ADR-019 D4 / PR #7 F1
-follow-up) is DONE** (branch `t30-effective-penalty-reads`). T16 (void) remains in Sprint 6.
+order T14 → T15 → T12 → T13. **T14 (E3 credit), T15 (E5 waive/reduce + `EffectivePenaltyPort`) and T12 (E1
+settlement quote) are DONE** (branches `t14-contract-credit`, `t15-penalty-waive-effective-port`,
+`t12-settlement-quote`); **T13 (E2 settlement execution) remains**. **T30 (route the schedule response +
+aging report through `EffectivePenaltyPort`, closing the ADR-019 D4 / PR #7 F1 follow-up) is DONE** (branch
+`t30-effective-penalty-reads`). T16 (void) remains in Sprint 6.
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -113,37 +118,38 @@ package names — doc-only, DEFERRED). The resolved X-table with per-item detail
 These items are preserved and must not be re-implemented. Detail lives in `05_SPRINT_PLAN.md §5` and the
 ADRs listed.
 
-| Story | Title                                                                                                                                                | Status | Reference                      |
-| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------ |
-| A1    | Repo, CI, docker-compose, README, `docs/adr/`                                                                                                        | DONE   | Sprint 0                       |
-| A2    | Injectable Clock (Asia/Jakarta), audit base, error envelope                                                                                          | DONE   | ADR-003                        |
-| A3    | Flyway baseline, seeds, COA                                                                                                                          | DONE   | V1                             |
-| A4    | Business document number generator                                                                                                                   | DONE   | `DocumentNumberGeneratorIT`    |
-| —     | Pre-Sprint-2 hardening: PII at rest, resource server                                                                                                 | DONE   | ADR-004, ADR-005, V2–V5        |
-| B1–B4 | Entities, FLAT/EFFECTIVE engine, due dates, golden tests                                                                                             | DONE   | Sprint 1                       |
-| B5    | Contract create/activate/list/detail/schedule API                                                                                                    | DONE   | ADR-006, ADR-007, V6, V7       |
-| C1    | Ledger posting + disbursement journal at activation                                                                                                  | DONE   | ADR-008                        |
-| C2    | Allocation engine                                                                                                                                    | DONE   | ADR-009                        |
-| C3    | `POST /payments` + idempotency                                                                                                                       | DONE   | ADR-010                        |
-| C4    | Due-date billing + maturity auto-close. **The scheduler half is moved to T3**                                                                        | DONE   | ADR-011                        |
-| D1    | Penalty calculator + per-date idempotent accrual. **The payment-before-job risk is closed by T4; component-exact precision remains deferred in T10** | DONE   | ADR-012, ADR-014               |
-| T1–T3 | Phase-1 decisions, V9 integrity/ShedLock schema, daily billing→penalty job + V10 audit date                                                          | DONE   | ADR-013, V9/V10                |
-| T4    | Lazy penalty accrual in the idempotent payment transaction                                                                                           | DONE   | ADR-014                        |
-| T5    | Payment write-path conflict retry                                                                                                                    | DONE   | ADR-014 decision 7             |
-| T6    | Aging status step in the daily job                                                                                                                   | DONE   | ADR-013 implementation note T6 |
-| T23   | Spring Boot 4 dependency alignment (ShedLock 7.10.1, springdoc 3.1.1)                                                                                | DONE   | PR #1, `OpenApiSmokeIT`        |
-| T7    | RBAC enforcement + JWT identity hardening (roles claim, matcher table, fail-closed `sub`/`exp`)                                                      | DONE   | ADR-015 (CR-01, CR-10, X-10)   |
-| T8    | Aging report (`GET /api/v1/reports/aging`): new read-only `reporting` module, per-installment buckets                                                | DONE   | ADR-013 impl note T8 (A-6/A-7) |
-| T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger-literal rows via a `ledger` read port, filters + paging                          | DONE   | ADR-013 impl note T9 (A-8)     |
-| T24   | Idempotency key lifecycle: single-use forever (option A), 409 `IDEMPOTENCY_KEY_EXPIRED`, classifier no longer retries `uq_payment_idempotency`       | DONE   | ADR-017 (A-13, CR-04, CR-13)   |
-| T25   | DB accounting backstops: V12 parent-side deferred checks, scoped `uq_journal_entry_event`, `system_parameter` append-only                            | DONE   | ADR-008 d5 note (CR-05/06/12)  |
-| T26   | Daily job robustness: `ABANDONED` status + V13, stale-row/loop-escape finalization, keyset batching, retry backoff                                   | DONE   | ADR-013 A-9 note T26 (CR-07/08/09) |
-| T29   | Fix contract statement query on PostgreSQL: `cast(...)`-typed nullable binds in `findContractStatement`/`countQuery`, clearing `42P18`                | DONE   | X-13 (bug task)                |
-| T11   | Phase-1 test hardening + exit verification: child-table immutability tests, specific-exception assertions, PRD §7 scenarios over HTTP, PII log guard | DONE   | commit `a8fa1a6`               |
-| T14   | E3 Excess → `contract_credit` + credit-apply/read endpoints: `ContractCreditPort`, `CreditApplicationEngine`, V14 cap/status triggers, RBAC rows     | DONE   | ADR-009, Addendum §2 (branch `t14-contract-credit`) |
-| T15   | E5 Penalty waive/reduce + `EffectivePenaltyPort`: `PenaltyAdjustment` entity, `POST /penalty-adjustments`, `BEBAN_WAIVER_DENDA`/V15 cap, retired contract native read (CR-14) | DONE   | ADR-019, Addendum §16.4 (branch `t15-penalty-waive-effective-port`) |
-| T30   | Route schedule response + aging report through the adjustment-aware effective penalty via `EffectivePenaltyPort` (closes ADR-019 D4 / PR #7 F1); schedule `penalty_amount` + aging outstanding now net active waivers | DONE   | ADR-019 D4 (branch `t30-effective-penalty-reads`) |
-| —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                  | DONE   | `cdce254`                      |
+| Story | Title                                                                                                                                                                                                                                                            | Status | Reference                                                           |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------- |
+| A1    | Repo, CI, docker-compose, README, `docs/adr/`                                                                                                                                                                                                                    | DONE   | Sprint 0                                                            |
+| A2    | Injectable Clock (Asia/Jakarta), audit base, error envelope                                                                                                                                                                                                      | DONE   | ADR-003                                                             |
+| A3    | Flyway baseline, seeds, COA                                                                                                                                                                                                                                      | DONE   | V1                                                                  |
+| A4    | Business document number generator                                                                                                                                                                                                                               | DONE   | `DocumentNumberGeneratorIT`                                         |
+| —     | Pre-Sprint-2 hardening: PII at rest, resource server                                                                                                                                                                                                             | DONE   | ADR-004, ADR-005, V2–V5                                             |
+| B1–B4 | Entities, FLAT/EFFECTIVE engine, due dates, golden tests                                                                                                                                                                                                         | DONE   | Sprint 1                                                            |
+| B5    | Contract create/activate/list/detail/schedule API                                                                                                                                                                                                                | DONE   | ADR-006, ADR-007, V6, V7                                            |
+| C1    | Ledger posting + disbursement journal at activation                                                                                                                                                                                                              | DONE   | ADR-008                                                             |
+| C2    | Allocation engine                                                                                                                                                                                                                                                | DONE   | ADR-009                                                             |
+| C3    | `POST /payments` + idempotency                                                                                                                                                                                                                                   | DONE   | ADR-010                                                             |
+| C4    | Due-date billing + maturity auto-close. **The scheduler half is moved to T3**                                                                                                                                                                                    | DONE   | ADR-011                                                             |
+| D1    | Penalty calculator + per-date idempotent accrual. **The payment-before-job risk is closed by T4; component-exact precision remains deferred in T10**                                                                                                             | DONE   | ADR-012, ADR-014                                                    |
+| T1–T3 | Phase-1 decisions, V9 integrity/ShedLock schema, daily billing→penalty job + V10 audit date                                                                                                                                                                      | DONE   | ADR-013, V9/V10                                                     |
+| T4    | Lazy penalty accrual in the idempotent payment transaction                                                                                                                                                                                                       | DONE   | ADR-014                                                             |
+| T5    | Payment write-path conflict retry                                                                                                                                                                                                                                | DONE   | ADR-014 decision 7                                                  |
+| T6    | Aging status step in the daily job                                                                                                                                                                                                                               | DONE   | ADR-013 implementation note T6                                      |
+| T23   | Spring Boot 4 dependency alignment (ShedLock 7.10.1, springdoc 3.1.1)                                                                                                                                                                                            | DONE   | PR #1, `OpenApiSmokeIT`                                             |
+| T7    | RBAC enforcement + JWT identity hardening (roles claim, matcher table, fail-closed `sub`/`exp`)                                                                                                                                                                  | DONE   | ADR-015 (CR-01, CR-10, X-10)                                        |
+| T8    | Aging report (`GET /api/v1/reports/aging`): new read-only `reporting` module, per-installment buckets                                                                                                                                                            | DONE   | ADR-013 impl note T8 (A-6/A-7)                                      |
+| T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger-literal rows via a `ledger` read port, filters + paging                                                                                                                                      | DONE   | ADR-013 impl note T9 (A-8)                                          |
+| T24   | Idempotency key lifecycle: single-use forever (option A), 409 `IDEMPOTENCY_KEY_EXPIRED`, classifier no longer retries `uq_payment_idempotency`                                                                                                                   | DONE   | ADR-017 (A-13, CR-04, CR-13)                                        |
+| T25   | DB accounting backstops: V12 parent-side deferred checks, scoped `uq_journal_entry_event`, `system_parameter` append-only                                                                                                                                        | DONE   | ADR-008 d5 note (CR-05/06/12)                                       |
+| T26   | Daily job robustness: `ABANDONED` status + V13, stale-row/loop-escape finalization, keyset batching, retry backoff                                                                                                                                               | DONE   | ADR-013 A-9 note T26 (CR-07/08/09)                                  |
+| T29   | Fix contract statement query on PostgreSQL: `cast(...)`-typed nullable binds in `findContractStatement`/`countQuery`, clearing `42P18`                                                                                                                           | DONE   | X-13 (bug task)                                                     |
+| T11   | Phase-1 test hardening + exit verification: child-table immutability tests, specific-exception assertions, PRD §7 scenarios over HTTP, PII log guard                                                                                                             | DONE   | commit `a8fa1a6`                                                    |
+| T14   | E3 Excess → `contract_credit` + credit-apply/read endpoints: `ContractCreditPort`, `CreditApplicationEngine`, V14 cap/status triggers, RBAC rows                                                                                                                 | DONE   | ADR-009, Addendum §2 (branch `t14-contract-credit`)                 |
+| T15   | E5 Penalty waive/reduce + `EffectivePenaltyPort`: `PenaltyAdjustment` entity, `POST /penalty-adjustments`, `BEBAN_WAIVER_DENDA`/V15 cap, retired contract native read (CR-14)                                                                                    | DONE   | ADR-019, Addendum §16.4 (branch `t15-penalty-waive-effective-port`) |
+| T30   | Route schedule response + aging report through the adjustment-aware effective penalty via `EffectivePenaltyPort` (closes ADR-019 D4 / PR #7 F1); schedule `penalty_amount` + aging outstanding now net active waivers                                            | DONE   | ADR-019 D4 (branch `t30-effective-penalty-reads`)                   |
+| T12   | E1 Settlement quote: new `settlement` module, pure `SettlementQuoteEngine` (ADR-018 D2/D6/D7), `POST /settlements/quote`, new `contract` seams `SettlementReceivablePort` + `ContractCreditPort.availableCredit`, accrue-before-resolve, no journal/no migration | DONE   | ADR-018 (branch `t12-settlement-quote`)                             |
+| —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                                                                                                                              | DONE   | `cdce254`                                                           |
 
 ---
 
@@ -203,16 +209,13 @@ migrations are thin.
 
 **Status: DONE** (branch `t14-contract-credit`). Implementation note: `ContractCreditPort` (new
 `payment → contract` edge) books one AVAILABLE `contract_credit` per EXCESS allocation (sub-ledger, not a
-second journal); `POST /api/v1/contracts/{id}/credit/apply` (ADMIN_OPERASIONAL) applies available credit
+second journal); `POST /api/v1/contracts/{id}/credit/apply` (ADMIN*OPERASIONAL) applies available credit
 via the new pure `CreditApplicationEngine` (PENALTY → INTEREST → PRINCIPAL, oldest due first), reducing
 only recognized receivable through `InstallmentReceivablePort.applyPaymentResolution` and posting one
-`Dr TITIPAN_NASABAH / Cr PIUTANG_*` entry (`ref_type=CREDIT_APPLICATION`, `ref_id` = first application id;
-service guard, ADR-008 d5); `GET /api/v1/contracts/{id}/credit` (ADMIN_OPERASIONAL + FINANCE) returns
-balance + history. Status flips AVAILABLE → APPLIED only at balance 0. Migration V14 adds the deferred
-`Σ applications ≤ amount` cap (invariant 11) + the status guard (no `CREATE TABLE`, `uq_journal_entry_event`
-untouched). Optimistic-lock retry `ContractCreditRetryingService` (3 attempts, 50/150 ms). Verification
-(Docker available): `CreditApplicationEngineTest` (16) + `ContractCreditIT` (10) + `EndpointRoleMatrixIT` +
-`OpenApiSmokeIT` pass; full `./gradlew test` = **665 tests, 0 failures**; `./gradlew check` green.
+`Dr TITIPAN_NASABAH / Cr PIUTANG*\*` entry (`ref_type=CREDIT_APPLICATION`, `ref_id`= first application id;
+service guard, ADR-008 d5);`GET /api/v1/contracts/{id}/credit`(ADMIN_OPERASIONAL + FINANCE) returns
+balance + history. Status flips AVAILABLE → APPLIED only at balance 0. Migration V14 adds the deferred`Σ applications ≤ amount`cap (invariant 11) + the status guard (no`CREATE TABLE`, `uq_journal_entry_event`untouched). Optimistic-lock retry`ContractCreditRetryingService` (3 attempts, 50/150 ms). Verification
+(Docker available):`CreditApplicationEngineTest`(16) +`ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`./gradlew test`= **665 tests, 0 failures**;`./gradlew check` green.
 
 **Dependencies:** none open (C2/C3 EXCESS path DONE; tables exist). First task of Sprint 5.
 
@@ -220,6 +223,7 @@ untouched). Optimistic-lock retry `ContractCreditRetryingService` (3 attempts, 5
 add an explicit endpoint to apply available credit to recognized receivable. Owner module: `contract`.
 
 **Business rules (Addendum §2, §16.3; ADR-009; GLOSSARY ContractCredit).**
+
 - When a payment produces an `EXCESS` allocation, write one `contract_credit` row
   (`status = AVAILABLE`, `amount = excess`, `source_payment_allocation_id` = the EXCESS allocation,
   `uk_contract_credit_source` already enforces one credit per EXCESS allocation). This is the first writer
@@ -250,6 +254,7 @@ level, this is also where `CREDIT_APPLICATION` could be added to `uq_journal_ent
 implementation; default is to rely on the service guard (ADR-008 d5), consistent with how PAYMENT behaves.
 
 **Acceptance criteria.**
+
 - An overpayment books a `contract_credit` AVAILABLE row equal to the EXCESS amount, linked to its source
   allocation; no second journal beyond the existing EXCESS→`TITIPAN_NASABAH`.
 - Applying credit to the oldest recognized installment posts a balanced `Dr TITIPAN_NASABAH / Cr PIUTANG_*`
@@ -301,6 +306,7 @@ weakened test). Verification (Docker available): `EffectivePenaltyFormulaTest` (
 Decisions in **ADR-019**.
 
 **Business rules (Addendum §16.4; ADR-019; GLOSSARY PenaltyAdjustment, effective_penalty).**
+
 - New `PenaltyAdjustment` JPA entity in `penalty.domain` (extends `Auditable` — the table has
   `updated_at NOT NULL`, ADR-008 correction). Append-only (`WAIVE`/`REDUCE`, `amount > 0`, required
   `reason`, `approved_by` = JWT `sub`); V1 immutability trigger already blocks UPDATE/DELETE.
@@ -308,7 +314,7 @@ Decisions in **ADR-019**.
   posts a correcting journal `Dr <waiver expense> / Cr PIUTANG_DENDA` (`ref_type = PENALTY_WAIVER`,
   `ref_id = penalty_adjustment.id`). **Pin the expense account during implementation**: reuse
   `DISKON_PELUNASAN` vs. a new `BEBAN_WAIVER_DENDA` (ADR-019 D3 fixes the shape, not the final code; if a
-  new account is chosen it is seeded in V15). The waiver reverses recognized penalty *receivable*, never
+  new account is chosen it is seeded in V15). The waiver reverses recognized penalty receivable, never
   the append-only accrual history.
 - Introduce `penalty.application.EffectivePenaltyPort` (`loadEffectivePenalty(contractId)` →
   per-installment `grossAccrued`, `adjustment`, `effective`). Replace the native
@@ -323,6 +329,7 @@ Decisions in **ADR-019**.
 optionally extending `uq_journal_entry_event` to `PENALTY_WAIVER`. (No `CREATE TABLE`.)
 
 **Acceptance criteria.**
+
 - A waive/reduce records an append-only `penalty_adjustment` and a balanced `… / Cr PIUTANG_DENDA` entry;
   effective penalty drops by the adjustment and never goes negative.
 - A later payment's penalty cap reflects the adjustment (V3 trigger already subtracts it; confirm parity
@@ -349,6 +356,7 @@ bucket. Route them through the adjustment-aware (and, with F2, paid-aware) effec
 `contract` (reads), feeding the per-installment `Σ adjustment` already available via `EffectivePenaltyPort`.
 
 **Business rules (ADR-019 D4; PR #7 review finding F1).**
+
 - `contract.api.InstallmentResponse.from(...)` currently builds the balance with the zero-adjustment
   `InstallmentBalance.of(installment)` and returns `installment.getPenaltyAmount()` (gross) directly; it
   must report the port's effective (remaining) penalty — `max(0, gross − Σ adjustment − Σ paid penalty)` —
@@ -361,6 +369,7 @@ bucket. Route them through the adjustment-aware (and, with F2, paid-aware) effec
   (the same source as the write-time cap) — no second formula, no native `penalty_adjustment` read.
 
 **Acceptance criteria.**
+
 - The schedule response and the aging report show the same effective (remaining) penalty as the
   payment-receivable snapshot after a waiver; a fully-waived-but-paid installment shows zero outstanding and
   no aging bucket.
@@ -379,7 +388,7 @@ receivable snapshot and the write-time cap. No second effective-penalty formula 
 edit was needed.
 
 - `contract.api.InstallmentResponse`: adjustment-and-paid-aware overload `from(Installment, BigDecimal Σ
-  adjustment, BigDecimal effectivePenalty)` reports the port's effective (remaining) penalty verbatim on
+adjustment, BigDecimal effectivePenalty)` reports the port's effective (remaining) penalty verbatim on
   `penalty_amount` and nets only the Σ adjustment into `outstanding` via
   `InstallmentBalance.of(installment, Σ adjustment)`; the zero-arg `from(Installment)` delegates with the
   gross value. The wire field `penalty_amount` is unchanged in shape; its meaning is the remaining penalty
@@ -399,13 +408,14 @@ edit was needed.
 
 **PR #8 review fixes (branch `t30-effective-penalty-reads`).** The PR #8 review raised four findings; all
 four were validated against the code and fixed:
+
 - **F1** — `InstallmentResponse` recomputed a second formula `gross − Σ adjustment` and dropped the
   `− Σ paid penalty` term, so a partially-paid penalty with no waiver reported gross. Fixed by reporting the
   port's `effective` verbatim (see above); the IT gained the partial-paid case the clearing-waiver test hid.
 - **F2** — a closed contract defaulted adjustments to zero, so its schedule reported gross penalty for a
   previously-waived installment (gross `penalty_amount` is not zeroed on close). Fixed with status-agnostic
   port reads (`EffectivePenaltyPort.loadEffectivePenaltyAnyStatus`, `InstallmentPenaltyPort
-  .loadPenaltySnapshotAnyStatus`) and a closed branch in `ContractQueryService`.
+.loadPenaltySnapshotAnyStatus`) and a closed branch in `ContractQueryService`.
 - **F3** — the aging report called the port once per ACTIVE contract. Fixed with a batch port method
   (`loadEffectivePenalty(Collection<UUID>)`, backed by `InstallmentPenaltyPort.loadPenaltySnapshots`) called
   once, reusing one shared `EffectivePenaltyService` helper.
@@ -421,7 +431,75 @@ check`: pass. Diff is scoped to the two read paths, the response DTO, the two po
 implementations, the installment repository (one batch query), the IT, and docs; no migration, no API-shape
 change.
 
-### T12 — E1 Settlement quote (5 pts)
+### T12 — E1 Settlement quote (5 pts) — DONE
+
+**Status: DONE** (branch `t12-settlement-quote`). Implementation note: new `settlement` module
+(`api/application/domain/infrastructure`, ADR-001) with `POST /api/v1/settlements/quote` (ADMIN_OPERASIONAL
+only). The command service `SettlementQuoteCommandService` (`@Transactional`) runs **accrue-before-resolve**
+first (ADR-013, ADR-018 D8) — `InstallmentBillingPort.billDueInterest` then
+`PenaltyAccrualPort.accrueDuePenalty` on one captured business date — then reads the settlement snapshot
+through a **new `contract` read seam** `SettlementReceivablePort` (exposes scheduled `interestAmount`,
+recognized interest, principal, resolved amount, status flag, and `contract.version`; the ADR-018-authorized
+seam that `InstallmentReceivable` deliberately omits), the effective penalty through
+`EffectivePenaltyPort` (invariant 9, ADR-018 D8), and the available credit through a **new**
+`ContractCreditPort.availableCredit` read. The pure `SettlementQuoteEngine` (domain, no Spring) prices the
+components (ADR-018 D2/D6/D7): outstanding principal, unpaid billed interest, active-period running interest
+(ACT/30, capped at 30 days), effective penalty, net future interest after the 50% rebate, plus the admin fee;
+`gross_amount`/`cash_due` per D6 with `credit_used = 0` (consumption is T13). Config
+(`SETTLEMENT_ADMIN_FEE`, `SETTLEMENT_REBATE_RATE`, `SETTLEMENT_QUOTE_TTL_MINUTES`) read via
+`SystemParameterService`. The immutable `SettlementQuote` entity (extends `Auditable`, constructor guards
+mirror the V1 CHECKs) is persisted QUOTED with `valid_until = quoted_at + TTL` and the snapshotted
+`contract_version`; **no journal** and no money move. `quote_no` via `DocumentNumberGenerator`
+(`DocumentType.QUOTE`). `SettlementQuoteRetryingService` (3 attempts, 50/150 ms) retries the
+accrue-before-resolve optimistic-lock race against the daily job → 409 `CONCURRENT_MODIFICATION`, mirroring
+`ContractCreditRetryingService`. **No migration** (the table + V5 immutability already exist since V1). RBAC
+row added to `ResourceServerSecurityConfiguration` + `EndpointRoleMatrixIT`. TS §1 gains the
+`settlement → contract` / `settlement → penalty` port edges. **No new 409 execution codes** (STALE/EXPIRED/
+ALREADY_EXECUTED/CREDIT_EXCEEDS are T13). Verification (**Docker was NOT available in this environment, so
+the Testcontainers `*IT` suites did not run**): `./gradlew compileJava compileTestJava` green;
+`./gradlew test --tests "*Test"` (all pure unit tests incl. the new `SettlementQuoteEngineTest`, 5 cases:
+on-a-due-date, mid-period active split, final period, ACT/30 cap, SETTLED exclusion) **BUILD SUCCESSFUL, 0
+failures**. The IT `SettlementQuoteIT` (persisted components + D6 identities, accrue-before-resolve bills
+into the quote, snapshot immutability via raw SQL, non-ACTIVE 409, unknown 404, role matrix) is written and
+compiles but was **not executed** here; it must run under Docker before merge.
+
+**PR #9 review fixes (branch `t12-settlement-quote`).** The PR #9 review (qodo + CodeRabbit) raised five
+findings; each was validated against the code and three were fixed, with the remaining two assessed and
+recorded:
+
+- **F1 (HIGH, valid, fixed)** — `SettlementQuoteCommandService.toEngineInstallments` computed
+  `resolvedBeyondPenalty = resolvedAmount − paidPenalty − adjustment`. The penalty adjustment (a waiver)
+  reduces recognized penalty, not money, so it is never part of `resolvedAmount` (`paid + settled +
+written-off`); subtracting it a second time understated interest/principal and overstated
+  `gross_amount`/`cash_due` (a fully-paid installment with a fully-waived penalty was quoted as still
+  owing the waived sum). Fixed to `resolvedBeyondPenalty = max0(resolvedAmount − paidPenalty)`; the
+  adjustment is carried only by `effective`. New pure test `SettlementQuoteCommandServiceMappingTest`
+  (3 cases: fully-waived+paid, partial waiver+penalty payment, untouched).
+- **F3 (MEDIUM, valid, fixed)** — `SettlementQuoteRetryingService` retried only optimistic-lock failures,
+  so the `uk_penalty_accrual` unique-violation race between the quote's accrue step and the daily job
+  surfaced as a raw data-integrity error instead of a retry/409. Extended the predicate (renamed
+  `isRetryable`) to also treat a `23505` naming `uk_penalty_accrual` as retryable, mirroring
+  `PaymentConflictClassifier` (no idempotency constraint to exclude at T12). New pure test
+  `SettlementQuoteRetryingServiceTest` (6 cases).
+- **F5 (LOW, valid, fixed)** — this PR's markdown reformatting had corrupted untouched T14/T15 prose in
+  `tasks.md`/`PROGRESS.md` (`ADMIN*OPERASIONAL`, `PIUTANG*\*`, `\_receivable\*`). Restored the canonical
+  `ADMIN_OPERASIONAL` / `PIUTANG_*` / `receivable` identifiers.
+- **F2 (MEDIUM, valid, deferred to T13)** — a penalty resolved by a **credit application** raises
+  `paid_amount` but writes no PENALTY `payment_allocation`, so it is invisible to `paidPenalty` and is
+  carried as interest/principal (and `effective` itself overstates it). This is a pre-existing limitation
+  of the `EffectivePenaltyPort` definition (the `ContractInstallmentTotals`/credit-funded-penalty gap
+  tracked since T15/ADR-019), not introduced by the quote; closing it needs the credit-funded penalty
+  exposed through the penalty/contract seam. Documented in `toEngineInstallments` and left for T13, not
+  fixed in this quote-only change.
+- **F4 (MEDIUM, by design)** — a payment committing between the quote's reads cannot silently corrupt a
+  quote: the accrue-before-resolve step versions the same installment rows, so a true concurrent write
+  collides on `@Version` (now retried, F3), and the quote is a TTL snapshot that ADR-018 D9 re-validates
+  at T13 execution (`STALE_SETTLEMENT_QUOTE`) before any money moves. No T12 code change.
+
+Re-verification (Docker still unavailable, so `*IT` not run): `./gradlew compileJava compileTestJava`
+green; `./gradlew test --tests "*Test"` all pure unit suites pass (0 failures / 0 errors), including the
+two new suites and the unchanged `SettlementQuoteEngineTest` (5). `SettlementQuoteIT` only fails to load
+its Spring context (no Testcontainers PostgreSQL); CI must run it before merge.
 
 **Dependencies:** T15 (effective penalty via port). New `settlement` module starts here. Decisions in
 **ADR-018**.
@@ -430,6 +508,7 @@ change.
 No execution yet. Owner module: new `settlement`.
 
 **Business rules (ADR-018 D2/D6/D7/D8; Addendum §8, §13, §16.3; config §1).**
+
 - `POST /api/v1/settlements/quote` for an ACTIVE contract. **Accrue-before-resolve first** (ADR-013): in
   the same transaction, bill and accrue through the quote business date so the components price against the
   base actually in force (the settlement analogue of T4).
@@ -440,7 +519,7 @@ No execution yet. Owner module: new `settlement`.
     `min(daysElapsed, 30)/30`, HALF_EVEN; 0 if that period is already billed;
   - `penalty_outstanding` = effective penalty via `EffectivePenaltyPort` (T15/ADR-019);
   - `futureInterestGross` (D2) = `Σ(interestAmount − recognizedInterestAmount) − accrued_interest`
-    (the active period's *earned* slice is excluded — it is in `accrued_interest`; its *unearned*
+    (the active period's _earned_ slice is excluded — it is in `accrued_interest`; its _unearned_
     remainder and all fully-future periods are included);
   - `rebate_amount` = `round(0.50 × futureInterestGross, HALF_EVEN, 2)`;
   - `admin_fee` = `SETTLEMENT_ADMIN_FEE` (150,000);
@@ -460,6 +539,7 @@ No execution yet. Owner module: new `settlement`.
 extension belongs to T13, which posts the journal.)
 
 **Acceptance criteria.**
+
 - A quote for the Demo-B contract at month 7 produces components matching the engine golden values; the
   active-period split is correct (earned slice in `accrued_interest`, remainder rebate-eligible).
 - `gross_amount` and `cash_due` satisfy the D6 identities; `futureInterestCharged` reconstructs to
@@ -482,6 +562,7 @@ future interest at the final period, ACT/30 cap at exactly 30 days, HALF_EVEN ro
 installments, consume credit, and close the contract SETTLEMENT. Over HTTP, idempotent.
 
 **Business rules (ADR-018; Addendum §13; ADR-017).**
+
 - `POST /api/v1/settlements` with an `Idempotency-Key` and the quote id. **Re-price at execution**
   (accrue-before-resolve again) and **revalidate** against the snapshot (D9):
   - `409 STALE_SETTLEMENT_QUOTE` if `contract.version` or any recomputed component differs;
@@ -509,6 +590,7 @@ rule has a DB backstop (ADR-008 T25 note; ADR-018 D1). Add the `contract` SETTLE
 coherence checks need it (verify `settled_amount`/`settled_at` writers against V4). (No `CREATE TABLE`.)
 
 **Acceptance criteria.**
+
 - Executing the Demo-B month-7 quote posts a single balanced `SETTLEMENT` entry with exactly the D4 lines,
   closes the contract SETTLEMENT, moves installments to SETTLED, and returns the settlement record.
 - A stale (version/component-changed) or expired quote is rejected with the right 409 and writes nothing.

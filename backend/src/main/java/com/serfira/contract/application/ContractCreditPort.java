@@ -1,5 +1,6 @@
 package com.serfira.contract.application;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
@@ -31,4 +32,18 @@ public interface ContractCreditPort {
 	 *         payment, so this signals a programming error (a double call), not a retryable race
 	 */
 	UUID recordExcessCredit(RecordExcessCreditCommand command);
+
+	/**
+	 * The contract's available customer credit: {@code Σ (amount − Σ applications)} over its AVAILABLE
+	 * {@code contract_credit} rows (04_GAPS_ADDENDUM.md §2.1). The settlement quote snapshots this as
+	 * {@code settlement_quote.available_credit} (ADR-018 D6); it does not consume it — consumption is T13.
+	 *
+	 * <p>Same derivation the credit read ({@code GET …/credit}) and the apply path use, so the three views
+	 * agree. {@code contract} owns {@code contract_credit}, so the figure is produced here, not read from
+	 * the table by the settlement module.
+	 *
+	 * @param contractId contract whose available credit is needed
+	 * @return the available balance, scale-2, {@code >= 0}; zero when the contract has no AVAILABLE credit
+	 */
+	BigDecimal availableCredit(UUID contractId);
 }

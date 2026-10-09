@@ -81,6 +81,19 @@ Aturan dependency:
   (`contract.domain.InstallmentAging`) dan formula outstanding (`contract.domain.InstallmentBalance`) adalah
   aturan domain milik `contract`; port mengekspos snapshot per installment yang sudah terhitung sehingga
   tidak ada formula kedua (ADR-013 A-7). Bucketing dan agregasi portofolio dilakukan di `reporting`.
+- Sejak T12 (E1, ADR-018) modul `settlement` baru boleh bergantung ke `contract` dan `penalty`, keduanya
+  satu arah lewat **application interface** modul pemilik data (`contract` dan `penalty` tidak tahu modul
+  `settlement`):
+  - `settlement → contract` lewat `contract.application.SettlementReceivablePort` (baca jadwal untuk harga
+    quote; mengekspos juga bunga terjadwal `interestAmount` yang disembunyikan `InstallmentReceivablePort`
+    agar future interest bisa dihitung, ADR-018 D2) dan `ContractCreditPort.availableCredit` (snapshot saldo
+    kredit AVAILABLE; T12 belum mengonsumsinya — konsumsi di T13). `settlement` dilarang menyentuh
+    tabel/entity `contract`/`installment`/`contract_credit` langsung.
+  - `settlement → penalty` lewat `penalty.application.EffectivePenaltyPort` (effective penalty untuk
+    `penalty_outstanding`, invariant 9, ADR-018 D8).
+    T12 (quote) **tidak** mem-posting jurnal apa pun (tidak ada edge `settlement → ledger` sampai T13, yang
+    mem-posting entry `SETTLEMENT`). Accrue-before-resolve: `settlement` memanggil `InstallmentBillingPort`
+    dan `PenaltyAccrualPort` sebelum pricing, di transaksi yang sama (ADR-013, ADR-018 D8).
 
 Jika suatu saat di-split microservice, seam sudah siap di interface antar-module.
 

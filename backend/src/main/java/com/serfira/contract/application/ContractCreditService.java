@@ -1,13 +1,21 @@
 package com.serfira.contract.application;
 
 import com.serfira.contract.domain.ContractCredit;
+import com.serfira.contract.domain.ContractCreditStatus;
+import com.serfira.contract.infrastructure.ContractCreditApplicationRepository;
 import com.serfira.contract.infrastructure.ContractCreditRepository;
+import com.serfira.contract.infrastructure.CreditAppliedTotal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -30,10 +38,16 @@ public class ContractCreditService implements ContractCreditPort {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(ContractCreditService.class);
 
-	private final ContractCreditRepository credits;
+	private static final int MONEY_SCALE = 2;
+	private static final BigDecimal ZERO_MONEY = BigDecimal.ZERO.setScale(MONEY_SCALE);
 
-	public ContractCreditService(ContractCreditRepository credits) {
+	private final ContractCreditRepository credits;
+	private final ContractCreditApplicationRepository applications;
+
+	public ContractCreditService(ContractCreditRepository credits,
+			ContractCreditApplicationRepository applications) {
 		this.credits = credits;
+		this.applications = applications;
 	}
 
 	@Override
@@ -46,5 +60,27 @@ public class ContractCreditService implements ContractCreditPort {
 		LOGGER.info("Booked contract_credit {} (contract={}, amount={}) from EXCESS allocation {}",
 				saved.getId(), command.contractId(), command.amount(), command.sourcePaymentAllocationId());
 		return saved.getId();
+	}
+
+	@Override
+	@Transactional(propagation = Propagation.MANDATORY, readOnly = true)
+	public BigDecimal availableCredit(UUID contractId) {
+		Objects.requireNonNull(contractId, "contractId");
+		List<ContractCredit> available =
+				credits.findByContractIdAndStatusOrderByCreatedAtAsc(contractId, ContractCreditStatus.AVAILABLE);
+		if (available.isEmpty()) {
+			return ZERO_MONEY;
+		}
+		List<UUID> creditIds = available.stream().map(ContractCredit::getId).toList();
+		Map<UUID, BigDecimal> appliedByCredit = new HashMap<>();
+		for (CreditAppliedTotal total : applications.sumAppliedByCreditIds(creditIds)) {
+			appliedByCredit.put(total.creditId(), total.applied());
+		}
+		BigDecimal balance = ZERO_MONEY;
+		for (ContractCredit credit : available) {
+			balance = balance.add(credit.getAmount()
+					.subtract(appliedByCredit.getOrDefault(credit.getId(), ZERO_MONEY)));
+		}
+		return balance.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
 	}
 }
