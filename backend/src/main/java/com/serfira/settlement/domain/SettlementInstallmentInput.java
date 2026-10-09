@@ -9,9 +9,10 @@ import java.util.UUID;
  *
  * <p>The engine derives the per-component split (unpaid principal, unpaid billed interest, future
  * interest) from these raw figures using the allocation waterfall order PENALTY → INTEREST → PRINCIPAL
- * (ADR-009): the {@code resolvedAmount} already covers {@code remainingPenaltyPaid} and the adjustment,
- * so the engine applies what is left to interest then principal. The effective (remaining) penalty is
- * passed pre-netted via {@code effectivePenalty} (invariant 9, through the penalty port, ADR-018 D8).
+ * (ADR-009): {@code resolvedBeyondPenalty} is the money already applied past penalty, so the engine
+ * applies it to interest then principal. The effective (remaining) penalty is passed pre-netted via
+ * {@code effectivePenalty} (invariant 9, through the penalty port, ADR-018 D8); a penalty adjustment
+ * (waiver) is reflected only in {@code effectivePenalty}, never in the money-based figures.
  *
  * @param installmentId     installment the amounts belong to
  * @param periodNo          1-based period number
@@ -22,8 +23,9 @@ import java.util.UUID;
  * @param interestAmount    scheduled interest for the period, scale-2 {@code >= 0}
  * @param recognizedInterest interest billed/recognized so far, scale-2 {@code >= 0}
  * @param effectivePenalty  remaining penalty, {@code max(0, gross − adjustment − paid)}, scale-2 {@code >= 0}
- * @param resolvedBeyondPenalty amount already resolved against interest+principal (i.e. resolved minus the
- *                          paid penalty and the adjustment), scale-2 {@code >= 0}
+ * @param resolvedBeyondPenalty money already resolved against interest+principal (i.e. the resolved amount
+ *                          minus the paid penalty; penalty adjustments are not money and are carried only
+ *                          by {@code effectivePenalty}), scale-2 {@code >= 0}
  */
 public record SettlementInstallmentInput(UUID installmentId, int periodNo, LocalDate dueDate, boolean settled,
 		BigDecimal principalAmount, BigDecimal interestAmount, BigDecimal recognizedInterest,

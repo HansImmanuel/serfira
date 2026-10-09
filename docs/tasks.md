@@ -214,7 +214,7 @@ via the new pure `CreditApplicationEngine` (PENALTY → INTEREST → PRINCIPAL, 
 only recognized receivable through `InstallmentReceivablePort.applyPaymentResolution` and posting one
 `Dr TITIPAN_NASABAH / Cr PIUTANG*\*` entry (`ref_type=CREDIT_APPLICATION`, `ref_id`= first application id;
 service guard, ADR-008 d5);`GET /api/v1/contracts/{id}/credit`(ADMIN_OPERASIONAL + FINANCE) returns
-balance + history. Status flips AVAILABLE → APPLIED only at balance 0. Migration V14 adds the deferred`Σ applications ≤ amount`cap (invariant 11) + the status guard (no`CREATE TABLE`, `uq_journal_entry_event`untouched). Optimistic-lock retry`ContractCreditRetryingService`(3 attempts, 50/150 ms). Verification
+balance + history. Status flips AVAILABLE → APPLIED only at balance 0. Migration V14 adds the deferred`Σ applications ≤ amount`cap (invariant 11) + the status guard (no`CREATE TABLE`, `uq_journal_entry_event`untouched). Optimistic-lock retry`ContractCreditRetryingService` (3 attempts, 50/150 ms). Verification
 (Docker available):`CreditApplicationEngineTest`(16) +`ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`./gradlew test`= **665 tests, 0 failures**;`./gradlew check` green.
 
 **Dependencies:** none open (C2/C3 EXCESS path DONE; tables exist). First task of Sprint 5.
@@ -310,11 +310,11 @@ Decisions in **ADR-019**.
 - New `PenaltyAdjustment` JPA entity in `penalty.domain` (extends `Auditable` — the table has
   `updated_at NOT NULL`, ADR-008 correction). Append-only (`WAIVE`/`REDUCE`, `amount > 0`, required
   `reason`, `approved_by` = JWT `sub`); V1 immutability trigger already blocks UPDATE/DELETE.
-- `POST /api/v1/penalty-adjustments` (ADMIN*OPERASIONAL only, Addendum §3.4) records an adjustment and
+- `POST /api/v1/penalty-adjustments` (ADMIN_OPERASIONAL only, Addendum §3.4) records an adjustment and
   posts a correcting journal `Dr <waiver expense> / Cr PIUTANG_DENDA` (`ref_type = PENALTY_WAIVER`,
   `ref_id = penalty_adjustment.id`). **Pin the expense account during implementation**: reuse
   `DISKON_PELUNASAN` vs. a new `BEBAN_WAIVER_DENDA` (ADR-019 D3 fixes the shape, not the final code; if a
-  new account is chosen it is seeded in V15). The waiver reverses recognized penalty \_receivable*, never
+  new account is chosen it is seeded in V15). The waiver reverses recognized penalty receivable, never
   the append-only accrual history.
 - Introduce `penalty.application.EffectivePenaltyPort` (`loadEffectivePenalty(contractId)` →
   per-installment `grossAccrued`, `adjustment`, `effective`). Replace the native
@@ -462,6 +462,44 @@ on-a-due-date, mid-period active split, final period, ACT/30 cap, SETTLED exclus
 failures**. The IT `SettlementQuoteIT` (persisted components + D6 identities, accrue-before-resolve bills
 into the quote, snapshot immutability via raw SQL, non-ACTIVE 409, unknown 404, role matrix) is written and
 compiles but was **not executed** here; it must run under Docker before merge.
+
+**PR #9 review fixes (branch `t12-settlement-quote`).** The PR #9 review (qodo + CodeRabbit) raised five
+findings; each was validated against the code and three were fixed, with the remaining two assessed and
+recorded:
+
+- **F1 (HIGH, valid, fixed)** — `SettlementQuoteCommandService.toEngineInstallments` computed
+  `resolvedBeyondPenalty = resolvedAmount − paidPenalty − adjustment`. The penalty adjustment (a waiver)
+  reduces recognized penalty, not money, so it is never part of `resolvedAmount` (`paid + settled +
+written-off`); subtracting it a second time understated interest/principal and overstated
+  `gross_amount`/`cash_due` (a fully-paid installment with a fully-waived penalty was quoted as still
+  owing the waived sum). Fixed to `resolvedBeyondPenalty = max0(resolvedAmount − paidPenalty)`; the
+  adjustment is carried only by `effective`. New pure test `SettlementQuoteCommandServiceMappingTest`
+  (3 cases: fully-waived+paid, partial waiver+penalty payment, untouched).
+- **F3 (MEDIUM, valid, fixed)** — `SettlementQuoteRetryingService` retried only optimistic-lock failures,
+  so the `uk_penalty_accrual` unique-violation race between the quote's accrue step and the daily job
+  surfaced as a raw data-integrity error instead of a retry/409. Extended the predicate (renamed
+  `isRetryable`) to also treat a `23505` naming `uk_penalty_accrual` as retryable, mirroring
+  `PaymentConflictClassifier` (no idempotency constraint to exclude at T12). New pure test
+  `SettlementQuoteRetryingServiceTest` (6 cases).
+- **F5 (LOW, valid, fixed)** — this PR's markdown reformatting had corrupted untouched T14/T15 prose in
+  `tasks.md`/`PROGRESS.md` (`ADMIN*OPERASIONAL`, `PIUTANG*\*`, `\_receivable\*`). Restored the canonical
+  `ADMIN_OPERASIONAL` / `PIUTANG_*` / `receivable` identifiers.
+- **F2 (MEDIUM, valid, deferred to T13)** — a penalty resolved by a **credit application** raises
+  `paid_amount` but writes no PENALTY `payment_allocation`, so it is invisible to `paidPenalty` and is
+  carried as interest/principal (and `effective` itself overstates it). This is a pre-existing limitation
+  of the `EffectivePenaltyPort` definition (the `ContractInstallmentTotals`/credit-funded-penalty gap
+  tracked since T15/ADR-019), not introduced by the quote; closing it needs the credit-funded penalty
+  exposed through the penalty/contract seam. Documented in `toEngineInstallments` and left for T13, not
+  fixed in this quote-only change.
+- **F4 (MEDIUM, by design)** — a payment committing between the quote's reads cannot silently corrupt a
+  quote: the accrue-before-resolve step versions the same installment rows, so a true concurrent write
+  collides on `@Version` (now retried, F3), and the quote is a TTL snapshot that ADR-018 D9 re-validates
+  at T13 execution (`STALE_SETTLEMENT_QUOTE`) before any money moves. No T12 code change.
+
+Re-verification (Docker still unavailable, so `*IT` not run): `./gradlew compileJava compileTestJava`
+green; `./gradlew test --tests "*Test"` all pure unit suites pass (0 failures / 0 errors), including the
+two new suites and the unchanged `SettlementQuoteEngineTest` (5). `SettlementQuoteIT` only fails to load
+its Spring context (no Testcontainers PostgreSQL); CI must run it before merge.
 
 **Dependencies:** T15 (effective penalty via port). New `settlement` module starts here. Decisions in
 **ADR-018**.

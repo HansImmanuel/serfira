@@ -138,22 +138,33 @@ public class SettlementQuoteCommandService {
 	}
 
 	/**
-	 * Maps each installment's raw amounts plus its effective-penalty record into the engine input. The
-	 * {@code resolvedBeyondPenalty} is the resolved amount minus the paid penalty and the adjustment, i.e.
-	 * what has been resolved against interest and principal (the penalty share and the waiver are already
-	 * reflected in {@code effective}).
+	 * Maps each installment's raw amounts plus its effective-penalty record into the engine input.
+	 *
+	 * <p>{@code resolvedBeyondPenalty} is the money already resolved against interest and principal:
+	 * {@code resolvedAmount − paidPenalty}. {@code resolvedAmount} ({@code paid + settled + written-off})
+	 * is money only, and the waterfall paid penalty before interest/principal, so subtracting the paid
+	 * penalty leaves exactly the interest+principal share. The penalty <b>adjustment</b> (a waiver) is
+	 * <b>not</b> subtracted here: a waiver lowers the recognized penalty, not any money, so it never enters
+	 * {@code resolvedAmount}. Its only effect on the quote is already carried by {@code effective}
+	 * ({@code max(0, gross − adjustment − paidPenalty)}); subtracting it a second time from the money-based
+	 * {@code resolvedAmount} understated interest/principal and overstated {@code gross_amount}/{@code cash_due}
+	 * (PR #9 review finding 1).
+	 *
+	 * <p>Known limitation (PR #9 review finding 2, ADR-019 follow-up): {@code paidPenalty} counts only
+	 * active PENALTY {@code payment_allocation} rows, so a penalty resolved by a <b>credit application</b>
+	 * (which raises {@code paid_amount} but writes no payment allocation) is not removed here and is still
+	 * carried as interest/principal — the same gap by which {@code effective} overstates a credit-funded
+	 * penalty. Closing it needs the credit-funded penalty exposed through the penalty/contract seam and is
+	 * tracked for T13, not fixed in this quote-only change.
 	 */
-	private static List<SettlementInstallmentInput> toEngineInstallments(SettlementContractSnapshot snapshot,
+	static List<SettlementInstallmentInput> toEngineInstallments(SettlementContractSnapshot snapshot,
 			Map<UUID, InstallmentEffectivePenalty> penaltyByInstallment) {
 		List<SettlementInstallmentInput> inputs = new ArrayList<>(snapshot.installments().size());
 		for (SettlementInstallment installment : snapshot.installments()) {
 			InstallmentEffectivePenalty penalty = penaltyByInstallment.get(installment.installmentId());
 			BigDecimal effective = penalty == null ? ZERO_MONEY : penalty.effective();
 			BigDecimal paidPenalty = penalty == null ? ZERO_MONEY : penalty.paidPenalty();
-			BigDecimal adjustment = penalty == null ? ZERO_MONEY : penalty.adjustment();
-			BigDecimal resolvedBeyondPenalty = max0(installment.resolvedAmount()
-					.subtract(paidPenalty)
-					.subtract(adjustment));
+			BigDecimal resolvedBeyondPenalty = max0(installment.resolvedAmount().subtract(paidPenalty));
 			inputs.add(new SettlementInstallmentInput(installment.installmentId(), installment.periodNo(),
 					installment.dueDate(), installment.resolvedOutsidePayment(),
 					installment.principalAmount(), installment.interestAmount(),

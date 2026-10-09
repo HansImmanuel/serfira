@@ -112,7 +112,7 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
     deferred cap`Σ application.amount ≤ amount`(invariant 11) + guard status, tanpa`CREATE TABLE`, tanpa
     menyentuh `uq_journal_entry_event`. Retry optimistic-lock `ContractCreditRetryingService`(3 percobaan,
     50/150 ms) mencerminkan jalur payment. Verifikasi (Docker aktif):`CreditApplicationEngineTest`(16) +
-   `ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`.\gradlew test`= **665
+    `ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`.\gradlew test`= **665
     tests, 0 gagal**;`.\gradlew check`hijau. Branch`t14-contract-credit`.
 
 - [x] T15 — E5 Penalty waive/reduce + `EffectivePenaltyPort` (ADR-019, Addendum §16.4). Writer pertama
@@ -148,7 +148,7 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       `PenaltyAdjustmentRetryingService` (3 percobaan, 50/150 ms) men-serialize waiver konkuren di luar
       transaksi → tepat satu commit, sisanya 409 `CONCURRENT_MODIFICATION`. **F5** (doc): Javadoc/komentar
       `flush()` di `PenaltyAdjustmentService` dikoreksi — trigger cap V16 & balance V3 `DEFERRABLE INITIALLY
-    DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal dari pre-check in-memory.
+DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal dari pre-check in-memory.
       **F6** invalid (tanpa aturan WAIVE==full). **F1** di-defer ke T30 (read-path schedule/aging). Dua edge
       lintas-modul baru dicatat TS §1 + ADR-019 (implementation note). Verifikasi: lihat ringkasan FEAT-003.
 
