@@ -46,4 +46,30 @@ public interface ContractCreditPort {
 	 * @return the available balance, scale-2, {@code >= 0}; zero when the contract has no AVAILABLE credit
 	 */
 	BigDecimal availableCredit(UUID contractId);
+
+	/**
+	 * Consumes <b>all</b> of the contract's AVAILABLE customer credit for an early settlement and flips each
+	 * consumed {@code contract_credit} to {@code APPLIED} (ADR-018 D10: a settlement must consume all
+	 * available credit). Returns the available balance consumed from each source so the {@code settlement}
+	 * module can write one {@code settlement_credit_application} row per source and the single
+	 * {@code TITIPAN_NASABAH} journal line.
+	 *
+	 * <p>The sum of the returned amounts equals {@link #availableCredit(UUID)} at the moment of the call.
+	 * This method flips status only and writes no {@code contract_credit_application} rows — settlement
+	 * consumption is recorded in the settlement-owned {@code settlement_credit_application}, which the V17
+	 * migration teaches the V14 balance/status guards to count, so a credit flipped {@code APPLIED} here is
+	 * coherent at commit (its combined applied total equals its amount). The caller must have already
+	 * revalidated the quote and must write the matching {@code settlement_credit_application} rows in the
+	 * same transaction.
+	 *
+	 * <p>Called inside the settlement use case's transaction ({@code Propagation.MANDATORY}); the status
+	 * flips commit with the settlement, its allocations and its journal.
+	 *
+	 * @param contractId  contract whose AVAILABLE credit to consume
+	 * @param consumedAt  business instant of the settlement (reserved for audit; the row's audit columns
+	 *                    are stamped from the clock)
+	 * @return one entry per consumed AVAILABLE credit, each a positive scale-2 amount; empty when the
+	 *         contract has no AVAILABLE credit
+	 */
+	java.util.List<ConsumedCredit> consumeAllAvailableCredit(UUID contractId, java.time.OffsetDateTime consumedAt);
 }

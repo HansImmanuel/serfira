@@ -116,6 +116,8 @@ class EndpointRoleMatrixIT {
 		allowedRoles.put("POST /api/v1/penalty-adjustments", List.of(ADMIN));
 		// Settlement quote (T12): ADMIN_OPERASIONAL only (Addendum §3.4, ADR-018).
 		allowedRoles.put("POST /api/v1/settlements/quote", List.of(ADMIN));
+		// Settlement execution (T13): ADMIN_OPERASIONAL only (Addendum §3.4, ADR-018).
+		allowedRoles.put("POST /api/v1/settlements", List.of(ADMIN));
 		// Not registered: denied for every role (C-5 deferred, no payment reads).
 		allowedRoles.put("PUT /api/v1/contracts/" + RANDOM_ID, List.of());
 		allowedRoles.put("DELETE /api/v1/contracts/" + RANDOM_ID, List.of());

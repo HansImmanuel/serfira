@@ -154,6 +154,49 @@ public class Installment extends Auditable {
 	}
 
 	/**
+	 * Settles this installment as part of an early settlement (DM §1.4, ADR-018 D10): raises
+	 * {@code settled_amount} by the receivable the settlement cleared, stamps {@code settled_at} the first
+	 * time, and moves the installment to the terminal {@code SETTLED} state.
+	 *
+	 * <p>This is the settlement analogue of {@link #applyPayment}, but it is <b>terminal</b>: a settlement
+	 * closes the whole contract, so an installment it settles is never downgraded afterwards. A
+	 * {@code SETTLED} installment stays {@code SETTLED} (settling it again only adds to {@code settled_amount}
+	 * and never re-stamps {@code settled_at}), and a {@code WRITTEN_OFF} installment is rejected — the two
+	 * terminal states never overwrite each other (invariant 15).
+	 *
+	 * <p>Writing {@code status = SETTLED} together with a non-null {@code settled_at} keeps the row coherent
+	 * for the V4 {@code ck_installment_settled_coherence} CHECK (status SETTLED ⇒ {@code settled_at NOT NULL})
+	 * before the transaction commits; the resolved total stays within the recognized receivable guarded by
+	 * the V3 {@code assert_installment_amounts} trigger, because the caller caps the settled amount at the
+	 * installment's outstanding receivable.
+	 *
+	 * @param amount    scale-2 money, {@code > 0}, the receivable this settlement resolved on the installment
+	 * @param settledAt business instant of the settlement; kept from the first settling call
+	 * @throws ContractStateException   if the installment is already {@code WRITTEN_OFF}
+	 * @throws IllegalArgumentException if the amount is not positive scale-2 money
+	 * @throws ArithmeticException      if the amount is finer than scale 2
+	 */
+	public void settle(BigDecimal amount, OffsetDateTime settledAt) {
+		Objects.requireNonNull(settledAt, "settledAt");
+		if (amount == null) {
+			throw new IllegalArgumentException("amount is required");
+		}
+		if (status == InstallmentStatus.WRITTEN_OFF) {
+			throw new ContractStateException(
+					"installment " + periodNo + " is WRITTEN_OFF and can no longer be settled");
+		}
+		BigDecimal resolution = amount.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
+		if (resolution.signum() <= 0) {
+			throw new IllegalArgumentException("a settlement resolution must be > 0 but was " + resolution);
+		}
+		this.settledAmount = this.settledAmount.add(resolution);
+		if (this.settledAt == null) {
+			this.settledAt = settledAt;
+		}
+		this.status = InstallmentStatus.SETTLED;
+	}
+
+	/**
 	 * Re-derives the resolution status after a penalty waiver/reduce (E5, task T15, ADR-019 D3): a waiver
 	 * lowers the recognized penalty but never touches the installment's amounts, so without this the status
 	 * stays {@code OVERDUE}/{@code PARTIALLY_PAID} even when the write-down clears the last amount owed,

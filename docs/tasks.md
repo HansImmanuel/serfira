@@ -27,31 +27,36 @@ T29 (statement query `cast` fix), and the T11 implementation (Phase-1 test harde
 immutability tests, specific-exception assertions, `Phase1ExitScenariosIT`, `PiiLoggingIT`) — all on branch
 `t11-phase1-exit-verification` @ `a8fa1a6`, pending merge.
 
-**Latest verification — 2026-10-09 (T12), Docker NOT available in the environment, so the Testcontainers
+**Latest verification — 2026-10-10 (T13), Docker NOT available in the environment, so the Testcontainers
 `*IT` suites did not run (per the tech-stack steering fallback):**
 
-- `.\gradlew compileJava compileTestJava`: pass (whole main + test tree compiles with the new `settlement`
-  module and the `contract` seam additions).
-- `.\gradlew test --tests "*Test"` (all pure unit suites, no Docker): **BUILD SUCCESSFUL, 0 failures**,
-  including the new `SettlementQuoteEngineTest` (5 golden cases, verified in its JUnit XML: 0 failures /
-  0 errors).
-- Not run: the Testcontainers `*IT` suites (`SettlementQuoteIT` and `EndpointRoleMatrixIT` among them) —
-  Docker was unreachable in this session. They compile and must be run under Docker before the PR merges.
+- `.\gradlew compileJava compileTestJava`: pass (whole main + test tree compiles with the T13 settlement
+  execution path, the new `contract` SETTLED-close + credit-consumption seams, and the V17 migration).
+- `.\gradlew test --tests "*Test"` (all pure unit suites, no Docker): **BUILD SUCCESSFUL, 410 tests, 0
+  failures / 0 errors** (verified by aggregating the JUnit result XML), including the new
+  `SettlementResolutionEngineTest` (4 cases) and `SettlementExecutionRetryingServiceTest` (7 cases).
+- Not run: the Testcontainers `*IT` suites — specifically `SettlementExecutionIT`, `EndpointRoleMatrixIT`
+  and `AccountingInvariantsIT` (the three T13 touches), confirmed to fail only at
+  `DockerClientProviderStrategy` (no Docker daemon), not on code. They **compile** and must be run under
+  Docker in CI before the PR merges.
 
 Older per-task verification snapshots (T8, T9, T24, T25, T29, T11) live in `tasks-archive.md`.
 
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `shared`. The `settlement`
-  module (T12) currently holds only the quote half (E1); execution (E2, T13) is not built yet. `frontend/`
-  is empty.
-- Migrations V1–V15. Baseline + accounting triggers (V3), state coherence (V4), settlement immutability (V5),
+  module now holds both the quote half (E1, T12) and execution (E2, T13): `POST /api/v1/settlements`
+  re-prices and revalidates against the quote snapshot, consumes all available credit, posts the one balanced
+  SETTLEMENT journal, settles installments and closes the contract SETTLEMENT. `frontend/` is empty.
+- Migrations V1–V17. Baseline + accounting triggers (V3), state coherence (V4), settlement immutability (V5),
   contract-create safety (V6/V7), SYSTEM hardening (V8), ShedLock + penalty-accrual integrity (V9),
   `job_run.business_date` (V10), the `journal_line (contract_id, entry_date)` statement index (V11, T9), the
   parent-side accounting backstops + `uq_journal_entry_event` + `system_parameter` append-only (V12, T25),
   the `ck_job_run_status` widen for `ABANDONED` (V13, T26), the `contract_credit_application` cap +
-  status-guard deferred triggers (V14, T14), and the `BEBAN_WAIVER_DENDA` COA seed + `penalty_adjustment`
-  deferred cap trigger (V15, T15).
+  status-guard deferred triggers (V14, T14), the `BEBAN_WAIVER_DENDA` COA seed + `penalty_adjustment`
+  deferred cap trigger (V15, T15), the penalty-adjustment-cap-includes-paid fix (V16, E5 review), and the
+  settlement-execution backstops (V17, T13: `uq_journal_entry_event` extended to `SETTLEMENT`, and the V14
+  credit cap/status guards taught to count `settlement_credit_application`).
 - Daily servicing (T3, hardened by T26): one renewable ShedLock for cron + backfill; every ACTIVE contract
   processed atomically billing → penalty → aging with five-attempt backoff retry, failure isolation, SYSTEM
   audit, three `job_run` rows; crashed `RUNNING` rows closed `ABANDONED`; keyset paging by
@@ -98,9 +103,10 @@ key lifecycle), T25 (DB accounting backstops), T26 (daily job robustness), T29 (
 statement query, X-13) and T11 (Phase-1 test hardening + exit verification) are all DONE. T10 stays
 DEFERRED (T1.a kept ADR-012 decision 2; no code change required). **Sprint 5 (Settlement, Credit & Waiver,
 T12–T15) is planned** (2026-10-05, ADR-018 + ADR-019; see the Sprint 5 section) and ready to implement in
-order T14 → T15 → T12 → T13. **T14 (E3 credit), T15 (E5 waive/reduce + `EffectivePenaltyPort`) and T12 (E1
-settlement quote) are DONE** (branches `t14-contract-credit`, `t15-penalty-waive-effective-port`,
-`t12-settlement-quote`); **T13 (E2 settlement execution) remains**. **T30 (route the schedule response +
+order T14 → T15 → T12 → T13. **T14 (E3 credit), T15 (E5 waive/reduce + `EffectivePenaltyPort`), T12 (E1
+settlement quote) and T13 (E2 settlement execution) are DONE** (branches `t14-contract-credit`,
+`t15-penalty-waive-effective-port`, `t12-settlement-quote`, `t13-settlement-execution`); **Sprint 5 is
+complete.** **T30 (route the schedule response +
 aging report through `EffectivePenaltyPort`, closing the ADR-019 D4 / PR #7 F1 follow-up) is DONE** (branch
 `t30-effective-penalty-reads`). T16 (void) remains in Sprint 6.
 
@@ -149,6 +155,7 @@ ADRs listed.
 | T15   | E5 Penalty waive/reduce + `EffectivePenaltyPort`: `PenaltyAdjustment` entity, `POST /penalty-adjustments`, `BEBAN_WAIVER_DENDA`/V15 cap, retired contract native read (CR-14)                                                                                    | DONE   | ADR-019, Addendum §16.4 (branch `t15-penalty-waive-effective-port`) |
 | T30   | Route schedule response + aging report through the adjustment-aware effective penalty via `EffectivePenaltyPort` (closes ADR-019 D4 / PR #7 F1); schedule `penalty_amount` + aging outstanding now net active waivers                                            | DONE   | ADR-019 D4 (branch `t30-effective-penalty-reads`)                   |
 | T12   | E1 Settlement quote: new `settlement` module, pure `SettlementQuoteEngine` (ADR-018 D2/D6/D7), `POST /settlements/quote`, new `contract` seams `SettlementReceivablePort` + `ContractCreditPort.availableCredit`, accrue-before-resolve, no journal/no migration | DONE   | ADR-018 (branch `t12-settlement-quote`)                             |
+| T13   | E2 Settlement execution: `POST /api/v1/settlements`, re-price + revalidate (ADR-018 D9), one balanced SETTLEMENT journal (D1/D4), `settlement`/`settlement_allocation`/`settlement_credit_application` writers, pure `SettlementResolutionEngine` (D5), consume-all-credit + `SettlementClosePort` SETTLED-close (D10), V17 (`uq_journal_entry_event`+SETTLEMENT, credit guards count settlement consumption), 4 new error codes, RBAC row | DONE   | ADR-018 (branch `t13-settlement-execution`)                         |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                                                                                                                              | DONE   | `cdce254`                                                           |
 
 ---
@@ -554,7 +561,44 @@ future interest at the final period, ACT/30 cap at exactly 30 days, HALF_EVEN ro
 `SettlementQuoteIT`: accrue-before-resolve actually bills/accrues; quote persisted with the right TTL and
 `contract_version`; snapshot immutability; role matrix. `FixedClock` for determinism.
 
-### T13 — E2 Settlement execution (5 pts)
+### T13 — E2 Settlement execution (5 pts) — DONE
+
+**Status: DONE** (branch `t13-settlement-execution`). Implementation note: `POST /api/v1/settlements`
+(ADMIN_OPERASIONAL, `Idempotency-Key` header, `quote_id` body) executes a QUOTED quote. The write path
+(`SettlementExecutionCommandService`, wrapped by `SettlementExecutionRetryingService` — 3 attempts, 50/150 ms,
+outside the transaction, mirroring the quote/payment retry) re-runs accrue-before-resolve, re-prices with the
+same pure `SettlementQuoteEngine`, and revalidates every recomputed component **and** `contract.version`
+against the stored snapshot (ADR-018 D9) → `STALE_SETTLEMENT_QUOTE`; `clock.now() > valid_until` →
+`SETTLEMENT_QUOTE_EXPIRED`; an EXECUTED quote with a different key → `SETTLEMENT_QUOTE_ALREADY_EXECUTED`
+(DB backstop `uk_settlement_quote_id`). It consumes **all** AVAILABLE credit (D10) via the new
+`ContractCreditPort.consumeAllAvailableCredit` (flips `contract_credit` AVAILABLE→APPLIED, returns the
+per-source breakdown); `available_credit > gross` → `CREDIT_EXCEEDS_SETTLEMENT`. It posts **one** balanced
+`SETTLEMENT` journal (D1/D4): Dr `KAS` + `TITIPAN_NASABAH`; Cr `PIUTANG_POKOK`/`PIUTANG_BUNGA`/`PIUTANG_DENDA`
++ `PENDAPATAN_BUNGA` (accrued + future-charged) + `PENDAPATAN_ADMIN`; no `DISKON_PELUNASAN` (D3); zero
+components emit no line. `settlement_allocation` records receivable resolution only (pure
+`SettlementResolutionEngine`, PENALTY→INTEREST→PRINCIPAL oldest-first, D5); `settlement_credit_application`
+records each consumed source. Open installments move to `SETTLED` and the contract closes `SETTLEMENT`
+through the new contract-owned `SettlementClosePort` (never the payment MATURITY path, D10). Idempotency via
+`IdempotencyService` exactly as `POST /payments` (identical key replays; expired key →
+`IDEMPOTENCY_KEY_EXPIRED`; `uq_settlement_idempotency` the backstop). Four new `ErrorCode`s +
+`SerfiraException` subclasses (all 409 via `GlobalExceptionHandler`). RBAC row added to
+`ResourceServerSecurityConfiguration` + `EndpointRoleMatrixIT`.
+
+**Migration V17** (task text said "V16"; V16 was taken by the E5 review fix, so forward-only numbering made
+it V17 — documented in the migration header): extends `uq_journal_entry_event` to include `SETTLEMENT` so the
+one-non-reversal-entry-per-settlement rule (D1) is a hard DB backstop, and teaches the V14 credit cap +
+status guards to count `settlement_credit_application`, so a credit consumed by a settlement flips to APPLIED
+coherently across both the regular-apply (E3) and settlement paths. No `CREATE TABLE`. The superseded golden
+`AccountingInvariantsIT.settlementEventsMayStillPostSeveralEntries` was rewritten (not weakened) to assert the
+second non-reversal SETTLEMENT entry is now rejected (`23505`) while a reversal is still allowed — the
+expected value changed because the spec (ADR-018 D1) intentionally changed.
+
+**Verification — 2026-10-10, Docker NOT available in this environment** (tech-stack steering fallback):
+`.\gradlew compileJava compileTestJava` passes; `.\gradlew test --tests "*Test"` = **410 tests, 0 failures /
+0 errors** (JUnit XML aggregated), including the new `SettlementResolutionEngineTest` (4) and
+`SettlementExecutionRetryingServiceTest` (7). The Testcontainers `*IT` suites — `SettlementExecutionIT`,
+`EndpointRoleMatrixIT`, `AccountingInvariantsIT` — were **NOT run** (confirmed to fail only at
+`DockerClientProviderStrategy`, no daemon); they **compile** and CI must run them under Docker before merge.
 
 **Dependencies:** T12 (quote), T14 (credit consumption). Decisions in **ADR-018 D1/D4/D5/D9/D10**.
 
