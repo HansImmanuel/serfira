@@ -648,15 +648,32 @@ class AccountingInvariantsIT {
 	}
 
 	@Test
-	void settlementEventsMayStillPostSeveralEntries() {
-		// The uq_journal_entry_event index is scoped to current ref types, leaving SETTLEMENT free
-		// for E2 to post more than one entry per event (ADR-008 decision 5, kept open by T25).
+	void secondNonReversalSettlementEntryForTheSameSettlementIsRejectedWhileAReversalIsAllowed() {
+		// V17 (ADR-018 D1) extends uq_journal_entry_event to include SETTLEMENT: a settlement is never
+		// voided and posts exactly one balanced non-reversal entry, so the one-entry-per-settlement rule is
+		// now a hard DB backstop, not only the LedgerPostingService service guard. This supersedes the
+		// pre-V17 expectation that SETTLEMENT could post several entries per event (ADR-008 d5 kept it open
+		// for T25; T13/ADR-018 D1 closes it). The expected value changed because the spec intentionally
+		// changed (50-testing).
 		UUID refId = UUID.randomUUID();
 		insertBalancedEntry(UUID.randomUUID(), "SETTLEMENT", refId, null);
-		insertBalancedEntry(UUID.randomUUID(), "SETTLEMENT", refId, null);
-		assertThat(jdbc.queryForObject(
-				"select count(*) from journal_entry where ref_type = 'SETTLEMENT' and ref_id = ?",
-				Long.class, refId)).isEqualTo(2L);
+
+		// A second non-reversal SETTLEMENT entry for the same settlement now violates the index (23505 at
+		// the INSERT statement, like BILLING/PAYMENT).
+		UUID duplicateId = UUID.randomUUID();
+		Throwable thrown = catchThrowable(() -> insertBalancedEntry(duplicateId, "SETTLEMENT", refId, null));
+		assertThat(thrown).isInstanceOf(DataIntegrityViolationException.class);
+		assertThat(sqlStateOf(thrown)).isEqualTo(SQLSTATE_UNIQUE_VIOLATION);
+		assertThat(countOf("journal_entry", "id", duplicateId)).isZero();
+
+		// A reversal (reversal_of_id set) sharing (SETTLEMENT, refId) is still allowed — the index is
+		// scoped WHERE reversal_of_id IS NULL (ADR-018 D1 note).
+		UUID originalId = jdbc.queryForObject(
+				"select id from journal_entry where ref_type = 'SETTLEMENT' and ref_id = ? and reversal_of_id is null",
+				UUID.class, refId);
+		UUID reversalId = UUID.randomUUID();
+		insertBalancedEntry(reversalId, "SETTLEMENT", refId, originalId);
+		assertThat(countOf("journal_entry", "id", reversalId)).isEqualTo(1L);
 	}
 
 	@Test

@@ -172,6 +172,11 @@ public class ResourceServerSecurityConfiguration {
 						// Settlement quote is ADMIN_OPERASIONAL only (Addendum §3.4, T12, ADR-018).
 						.requestMatchers(HttpMethod.POST, "/api/v1/settlements/quote")
 								.hasRole(ADMIN)
+						// Settlement execution is ADMIN_OPERASIONAL only (Addendum §3.4, T13, ADR-018). The
+						// more specific "/quote" rule above is listed first, so this exact-path rule covers
+						// only POST /api/v1/settlements.
+						.requestMatchers(HttpMethod.POST, "/api/v1/settlements")
+								.hasRole(ADMIN)
 						.anyRequest().denyAll())
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(authenticationEntryPoint)

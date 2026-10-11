@@ -198,3 +198,34 @@ DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal
       `.\gradlew test --tests "*Test"` (semua unit, termasuk `SettlementQuoteEngineTest` 5 kasus) BUILD
       SUCCESSFUL 0 gagal. `SettlementQuoteIT` ditulis & dikompilasi tetapi belum dijalankan — harus hijau di
       Docker sebelum merge. Branch `t12-settlement-quote`.
+- [x] T13 — E2 Settlement execution (ADR-018 D1/D4/D5/D9/D10). `POST /api/v1/settlements` (ADMIN_OPERASIONAL,
+      header `Idempotency-Key`, body `quote_id`) mengeksekusi quote QUOTED. `SettlementExecutionCommandService`
+      (`@Transactional`, dibungkus `SettlementExecutionRetryingService` — 3 percobaan 50/150 ms di luar
+      transaksi, meniru jalur quote/payment) mengulang **accrue-before-resolve**, menghargai ulang dengan
+      `SettlementQuoteEngine` yang sama, dan **merevalidasi** setiap komponen hasil hitung ulang **dan**
+      `contract.version` terhadap snapshot quote (D9): mismatch → `STALE_SETTLEMENT_QUOTE`; `clock.now() >
+      valid_until` → `SETTLEMENT_QUOTE_EXPIRED`; quote EXECUTED dengan key berbeda →
+      `SETTLEMENT_QUOTE_ALREADY_EXECUTED` (backstop DB `uk_settlement_quote_id`). Mengonsumsi **seluruh** kredit
+      AVAILABLE (D10) lewat `ContractCreditPort.consumeAllAvailableCredit` baru (membalik `contract_credit`
+      AVAILABLE→APPLIED, mengembalikan rincian per sumber); `available_credit > gross` →
+      `CREDIT_EXCEEDS_SETTLEMENT`. Mem-posting **satu** jurnal `SETTLEMENT` balance (D1/D4): Dr `KAS` +
+      `TITIPAN_NASABAH`; Kr `PIUTANG_POKOK`/`PIUTANG_BUNGA`/`PIUTANG_DENDA` + `PENDAPATAN_BUNGA` (accrued +
+      future-charged) + `PENDAPATAN_ADMIN`; tanpa `DISKON_PELUNASAN` (D3); komponen nol tanpa baris.
+      `settlement_allocation` hanya resolusi receivable (engine murni `SettlementResolutionEngine`,
+      PENALTY→INTEREST→PRINCIPAL tertua dulu, D5); `settlement_credit_application` mencatat tiap sumber yang
+      dikonsumsi. Installment terbuka → `SETTLED` dan kontrak ditutup `SETTLEMENT` lewat
+      `SettlementClosePort` baru milik `contract` (bukan jalur MATURITY pembayaran, D10). Idempotency lewat
+      `IdempotencyService` persis `POST /payments`. Empat `ErrorCode` + subclass `SerfiraException` baru (semua
+      409). Migrasi **V17** (teks tugas menyebut "V16"; V16 sudah dipakai perbaikan review E5, jadi
+      forward-only → V17, didokumentasikan di header): menambah `SETTLEMENT` ke `uq_journal_entry_event`
+      (backstop DB satu entry non-reversal per settlement, D1) dan mengajari guard cap/status kredit V14
+      menghitung `settlement_credit_application`. Golden `AccountingInvariantsIT` yang usang ditulis ulang
+      (bukan dilemahkan) untuk menolak entry SETTLEMENT non-reversal kedua (`23505`). Satu baris matcher RBAC +
+      `EndpointRoleMatrixIT`. TS §1 menambah edge `settlement → ledger`, `settlement → contract`
+      (`SettlementClosePort`, `ContractCreditPort.consumeAllAvailableCredit`). Verifikasi (**Docker TIDAK
+      tersedia, suite `*IT` Testcontainers tidak dijalankan**, fallback steering): `compileJava
+      compileTestJava` pass; `.\gradlew test --tests "*Test"` = **410 tes, 0 gagal / 0 error** (XML JUnit
+      diagregasi), termasuk `SettlementResolutionEngineTest` (4) + `SettlementExecutionRetryingServiceTest`
+      (7). `SettlementExecutionIT`, `EndpointRoleMatrixIT`, `AccountingInvariantsIT` dikompilasi tetapi tidak
+      dijalankan (gagal hanya di `DockerClientProviderStrategy`); CI harus menjalankannya di Docker sebelum
+      merge. Branch `t13-settlement-execution`.

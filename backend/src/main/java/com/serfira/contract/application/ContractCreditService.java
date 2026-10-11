@@ -13,6 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,5 +84,41 @@ public class ContractCreditService implements ContractCreditPort {
 					.subtract(appliedByCredit.getOrDefault(credit.getId(), ZERO_MONEY)));
 		}
 		return balance.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
+	}
+
+	@Override
+	@Transactional(propagation = Propagation.MANDATORY)
+	public List<ConsumedCredit> consumeAllAvailableCredit(UUID contractId, OffsetDateTime consumedAt) {
+		Objects.requireNonNull(contractId, "contractId");
+		Objects.requireNonNull(consumedAt, "consumedAt");
+		List<ContractCredit> available =
+				credits.findByContractIdAndStatusOrderByCreatedAtAsc(contractId, ContractCreditStatus.AVAILABLE);
+		if (available.isEmpty()) {
+			return List.of();
+		}
+		List<UUID> creditIds = available.stream().map(ContractCredit::getId).toList();
+		Map<UUID, BigDecimal> appliedByCredit = new HashMap<>();
+		for (CreditAppliedTotal total : applications.sumAppliedByCreditIds(creditIds)) {
+			appliedByCredit.put(total.creditId(), total.applied());
+		}
+
+		List<ConsumedCredit> consumed = new ArrayList<>(available.size());
+		for (ContractCredit credit : available) {
+			BigDecimal balance = credit.getAmount()
+					.subtract(appliedByCredit.getOrDefault(credit.getId(), ZERO_MONEY))
+					.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
+			if (balance.signum() <= 0) {
+				// A fully-applied credit that the status guard has not yet flipped is nothing to consume.
+				continue;
+			}
+			// Consume the whole remaining balance and flip to APPLIED. The balance reaches 0, so the entity
+			// guard (and the V14/V17 DB status guard, which counts settlement_credit_application) agree the
+			// credit is now APPLIED. The matching settlement_credit_application row is written by the caller.
+			credit.recordApplication(balance, ZERO_MONEY);
+			credits.save(credit);
+			consumed.add(new ConsumedCredit(credit.getId(), balance));
+		}
+		LOGGER.info("Settlement consumed {} AVAILABLE credit source(s) of contract {}", consumed.size(), contractId);
+		return List.copyOf(consumed);
 	}
 }

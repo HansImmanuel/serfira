@@ -149,6 +149,24 @@ public class SettlementQuote extends Auditable {
 		return value.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
 	}
 
+	/**
+	 * Transitions the quote {@code QUOTED → EXECUTED} when it is executed into a settlement (E2, task T13,
+	 * DM §1.5). This is the only mutation the V5 {@code trg_settlement_quote_mutability} trigger permits
+	 * besides the audit/version columns — every component snapshot column stays frozen. A quote executes at
+	 * most once; executing a non-QUOTED quote is a programming error the caller already guards (it rejects
+	 * an EXECUTED quote with {@code SETTLEMENT_QUOTE_ALREADY_EXECUTED} and an EXPIRED one with
+	 * {@code SETTLEMENT_QUOTE_EXPIRED} before reaching here, ADR-018 D9).
+	 *
+	 * @throws IllegalStateException if the quote is not QUOTED
+	 */
+	public void markExecuted() {
+		if (status != SettlementQuoteStatus.QUOTED) {
+			throw new IllegalStateException("settlement quote " + quoteNo + " is " + status
+					+ " and cannot be executed");
+		}
+		this.status = SettlementQuoteStatus.EXECUTED;
+	}
+
 	public UUID getId() {
 		return id;
 	}

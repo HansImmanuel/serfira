@@ -91,9 +91,24 @@ Aturan dependency:
     tabel/entity `contract`/`installment`/`contract_credit` langsung.
   - `settlement → penalty` lewat `penalty.application.EffectivePenaltyPort` (effective penalty untuk
     `penalty_outstanding`, invariant 9, ADR-018 D8).
-    T12 (quote) **tidak** mem-posting jurnal apa pun (tidak ada edge `settlement → ledger` sampai T13, yang
-    mem-posting entry `SETTLEMENT`). Accrue-before-resolve: `settlement` memanggil `InstallmentBillingPort`
-    dan `PenaltyAccrualPort` sebelum pricing, di transaksi yang sama (ADR-013, ADR-018 D8).
+    T12 (quote) **tidak** mem-posting jurnal apa pun. Accrue-before-resolve: `settlement` memanggil
+    `InstallmentBillingPort` dan `PenaltyAccrualPort` sebelum pricing, di transaksi yang sama (ADR-013,
+    ADR-018 D8).
+- Sejak T13 (E2, ADR-018) eksekusi settlement menambah tiga seam, semuanya satu arah dan `MANDATORY`
+  (join transaksi caller):
+  - `settlement → ledger`: eksekusi mem-posting **satu** entry `SETTLEMENT` yang balance lewat
+    `LedgerPostingService` (ADR-018 D1/D4). `SETTLEMENT` kini masuk `uq_journal_entry_event` (migrasi V17),
+    jadi satu entry non-reversal per settlement ditegakkan di DB, bukan hanya oleh service guard.
+  - `settlement → contract` lewat `contract.application.SettlementClosePort` (baru): menutup kontrak
+    `SETTLEMENT` dan memindahkan setiap installment terbuka ke `SETTLED` (`settled_amount`/`settled_at`)
+    lewat jalur milik `contract` sendiri — **bukan** jalur resolusi pembayaran `InstallmentReceivablePort`
+    yang hanya menutup `MATURITY` (ADR-018 D10). `contract` tetap pemilik `installment`/`contract`.
+  - `settlement → contract` lewat `ContractCreditPort.consumeAllAvailableCredit` (baru): mengonsumsi
+    **seluruh** kredit AVAILABLE kontrak (ADR-018 D10), membalik `contract_credit` AVAILABLE→APPLIED dan
+    mengembalikan rincian per sumber; baris `settlement_credit_application` ditulis oleh modul `settlement`
+    (pemilik tabelnya). Migrasi V17 mengajari guard saldo/status V14 menghitung `settlement_credit_application`
+    agar flip ke APPLIED tetap koheren lintas jalur apply reguler (E3) dan settlement.
+    `settlement` tetap dilarang menyentuh tabel/entity `contract`/`installment`/`contract_credit` langsung.
 
 Jika suatu saat di-split microservice, seam sudah siap di interface antar-module.
 
@@ -259,13 +274,7 @@ Posting rules (contoh):
 | Penalty catch-up setelah void | PIUTANG_DENDA | PENDAPATAN_DENDA |
 | Terima payment regular | KAS | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA / TITIPAN_NASABAH |
 | Waive/reduce denda (E5, ADR-019 D3) | BEBAN_WAIVER_DENDA | PIUTANG_DENDA |
-| Settlement - recognize accrued current interest | PIUTANG_BUNGA | PENDAPATAN_BUNGA |
-| Settlement - cash for principal | KAS | PIUTANG_POKOK |
-| Settlement - cash for billed/accrued interest | KAS | PIUTANG_BUNGA |
-| Settlement - cash for penalty | KAS | PIUTANG_DENDA |
-| Settlement - rebate | DISKON_PELUNASAN | PIUTANG_BUNGA |
-| Settlement - admin fee | KAS | PENDAPATAN_ADMIN |
-| Settlement - consume available credit | TITIPAN_NASABAH | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
+| Settlement (E2, ADR-018 D4) — **satu** entry | KAS + TITIPAN_NASABAH | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA + PENDAPATAN_BUNGA + PENDAPATAN_ADMIN |
 | Excess payment diterima | KAS | TITIPAN_NASABAH |
 | Credit diaplikasikan ke installment | TITIPAN_NASABAH | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
 
@@ -308,7 +317,15 @@ dipilih alih-alih `DISKON_PELUNASAN` yang punya makna settlement-rebate berbeda 
 
 | Write-off piutang | BIAYA_PENGHAPUSAN_PIUTANG | PIUTANG_POKOK / PIUTANG_BUNGA / PIUTANG_DENDA |
 
-Settlement wajib membuat transaction record + allocation + satu atau beberapa journal entry yang seluruhnya balance. `rebate` diposting sebagai contra-receivable terhadap eligible interest, bukan sebagai penghapusan future interest yang belum billed. Admin fee diakui ke `PENDAPATAN_ADMIN`.
+**E2 (ADR-018 D1/D3/D4, T13):** settlement wajib membuat transaction record (`settlement`) + allocation
+(`settlement_allocation`, hanya resolusi receivable PENALTY/INTEREST/PRINCIPAL, D5) + **satu** `journal_entry`
+yang balance (`ref_type = SETTLEMENT`, `ref_id = settlement.id`). Entry itu: debit `KAS` (cash) + `TITIPAN_NASABAH`
+(kredit yang dikonsumsi); kredit `PIUTANG_POKOK`/`PIUTANG_BUNGA`/`PIUTANG_DENDA` (receivable yang di-clear) +
+`PENDAPATAN_BUNGA` (bunga berjalan + future interest yang di-charge, D2) + `PENDAPATAN_ADMIN` (admin fee).
+Komponen bernilai nol tidak menghasilkan baris. Rebate atas future interest yang belum billed **tidak**
+di-recognize dan **tidak** memunculkan baris `DISKON_PELUNASAN` di jalur normal (D3) — tidak ada receivable
+`PIUTANG_BUNGA` untuk di-discount, karena future interest tidak pernah di-recognize sebelum billed. Admin fee
+diakui ke `PENDAPATAN_ADMIN`.
 
 Karena ini servicing-saja (bukan full finance), revenue recognition disederhanakan: bunga scheduled di-recognize saat billing pada due date; bunga berjalan settlement yang belum billed di-recognize saat settlement. Future scheduled interest tidak pernah di-recognize sebagai receivable sebelum billed.
 
