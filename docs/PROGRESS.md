@@ -229,3 +229,23 @@ DEFERRED` jadi fire saat COMMIT, bukan saat flush; 409 over-waive normal berasal
       (7). `SettlementExecutionIT`, `EndpointRoleMatrixIT`, `AccountingInvariantsIT` dikompilasi tetapi tidak
       dijalankan (gagal hanya di `DockerClientProviderStrategy`); CI harus menjalankannya di Docker sebelum
       merge. Branch `t13-settlement-execution`.
+    - **Perbaikan review PR #10 (Docker aktif, suite `*IT` dijalankan nyata).** Empat temuan ditangani di
+      branch yang sama (V17 di-edit in-place, bukan menumpuk V18): (1) **HIGH** —
+      `assert_contract_credit_application_cap()` kini bercabang pada `TG_TABLE_NAME`, membaca
+      `contract_credit_id` untuk `settlement_credit_application` (OLD saat DELETE, NEW selainnya) dan
+      `credit_id` untuk `contract_credit_application`, sehingga trigger cap deferred tidak lagi melempar
+      "record has no field credit_id" saat COMMIT; (2) **MAJOR** — `SettlementExecutionIT.seedAvailableCredit`
+      membungkus insert payment + alokasi EXCESS + `contract_credit` dalam satu `TransactionTemplate.execute`
+      (meniru `AccountingInvariantsIT.insertValidPayment`) agar trigger deferred V12 lolos; alokasi EXCESS
+      kini `installment_id = NULL` sesuai `ck_payment_allocation_excess`; (3) **MEDIUM** —
+      `settlement_credit_application` dijadikan append-only lewat `trg_settlement_credit_application_immutable`
+      (`BEFORE UPDATE OR DELETE … block_modification()`), konsisten dengan "tidak ada settlement void di MVP"
+      (ADR-018 D1) dan invariant 14 domain model; IT baru `aSettlementCreditApplicationCannotBeUpdatedOrDeleted
+      AfterSettlement` menegaskan UPDATE/DELETE ditolak; (4) **MINOR** — ditambahkan assertion defense-in-depth
+      di `SettlementExecutionCommandService` bahwa Σ `consumed.amount` == `credit_used`, selain itu
+      `STALE_SETTLEMENT_QUOTE`. Juga diperbaiki dua bug fixture pre-existing yang menghalangi suite:
+      username `app_user` 61 char > `VARCHAR(60)` dan `expires_at` kadaluarsa yang dibandingkan ke
+      `FixedClock` (bukan wall clock). Verifikasi (Docker aktif): `compileJava compileTestJava` pass;
+      `*SettlementExecutionIT` + `*AccountingInvariantsIT` + `*SettlementResolutionEngineTest` +
+      `*SettlementExecutionRetryingServiceTest` hijau; full `.\gradlew test` = **744 tes, 0 gagal / 0 error**;
+      `.\gradlew check` hijau.

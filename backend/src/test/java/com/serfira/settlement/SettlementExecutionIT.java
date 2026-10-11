@@ -20,6 +20,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.JsonNode;
@@ -64,6 +65,9 @@ class SettlementExecutionIT {
 	JdbcTemplate jdbc;
 
 	@Autowired
+	TransactionTemplate tx;
+
+	@Autowired
 	ObjectMapper objectMapper;
 
 	@Autowired
@@ -84,7 +88,7 @@ class SettlementExecutionIT {
 				insert into app_user (username, password_hash, full_name, role, is_active, created_at, updated_at)
 					values (?, 'test-hash', 'Settlement Exec IT Actor', 'ADMIN_OPERASIONAL', TRUE,
 						clock_timestamp(), clock_timestamp())
-					returning id""", UUID.class, "settlement-exec-it-actor-" + UUID.randomUUID());
+					returning id""", UUID.class, "settle-exec-it-" + UUID.randomUUID());
 		adminToken = TestJwts.forRoles(actorId, ADMIN);
 		fixedClock().setDate(SettlementQuoteClockTestConfiguration.BUSINESS_DATE);
 
@@ -258,8 +262,10 @@ class SettlementExecutionIT {
 		assertThat(execute(quoteId, "settle-key-retention").getResponse().getStatus()).isEqualTo(201);
 
 		// Force the claim past its retention window, then reuse the same key: option A rejects it as spent
-		// before the operation runs (ADR-017), independent of the quote already being EXECUTED.
-		jdbc.update("update idempotency_keys set expires_at = clock_timestamp() - interval '1 day' "
+		// before the operation runs (ADR-017), independent of the quote already being EXECUTED. The service
+		// compares expires_at against the FixedClock's now (2026-07-15), not the DB wall clock, so expire the
+		// claim to a timestamp strictly before that fixed instant.
+		jdbc.update("update idempotency_keys set expires_at = timestamptz '2026-07-14 00:00:00+07' "
 				+ "where endpoint = ? and key = ?", "POST /api/v1/settlements", "settle-key-retention");
 
 		MvcResult reused = execute(quoteId, "settle-key-retention");
@@ -347,6 +353,39 @@ class SettlementExecutionIT {
 				duplicateEntryId)).isZero();
 	}
 
+	// ---------------------------------------------------------------------------------------------------
+	// (j) A settlement_credit_application is append-only: UPDATE and DELETE are rejected after commit.
+	// ---------------------------------------------------------------------------------------------------
+	@Test
+	void aSettlementCreditApplicationCannotBeUpdatedOrDeletedAfterSettlement() throws Exception {
+		payPeriodsOnTime(1, 5);
+		fixedClock().setDate(SETTLEMENT_DATE);
+		seedAvailableCredit(new BigDecimal("5000000.00"));
+
+		UUID quoteId = quoteId(quote());
+		MvcResult result = execute(quoteId, "settle-credit-immutable");
+		assertThat(result.getResponse().getStatus()).isEqualTo(201);
+		UUID settlementId = UUID.fromString(data(result).get("settlement_id").asText());
+
+		UUID applicationId = jdbc.queryForObject(
+				"select id from settlement_credit_application where settlement_id = ? limit 1", UUID.class,
+				settlementId);
+
+		// A committed settlement has no void/reversal in the MVP (ADR-018 D1): the consumption record is
+		// append-only, so both UPDATE and DELETE are rejected by trg_settlement_credit_application_immutable.
+		org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+				"update settlement_credit_application set amount = 1.00 where id = ?", applicationId))
+				.isInstanceOf(org.springframework.dao.DataAccessException.class);
+		org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+				"delete from settlement_credit_application where id = ?", applicationId))
+				.isInstanceOf(org.springframework.dao.DataAccessException.class);
+
+		// The row still exists, unchanged.
+		assertThat(jdbc.queryForObject(
+				"select count(*) from settlement_credit_application where id = ?", Long.class, applicationId))
+				.isEqualTo(1L);
+	}
+
 	// --- helpers ---------------------------------------------------------------------------------------
 
 	private void payPeriodsOnTime(int from, int to) throws Exception {
@@ -389,24 +428,33 @@ class SettlementExecutionIT {
 		// A contract_credit needs a source_payment_allocation_id (NOT NULL FK). Seed an EXCESS payment
 		// allocation via a payment on a far-past period so the fixture is self-contained; the credit then
 		// cites it. The payment itself is immaterial to the settlement math beyond being resolvable.
-		UUID paymentId = UUID.randomUUID();
-		jdbc.update("""
-				insert into payment (id, payment_no, contract_id, amount, channel, paid_at, idempotency_key,
-					created_at, updated_at)
-					values (?, ?, ?, ?, 'CASH', clock_timestamp(), ?, clock_timestamp(), clock_timestamp())""",
-				paymentId, "PAY-CR-" + UUID.randomUUID().toString().replace("-", "").substring(0, 18), contractId,
-				amount, "credit-seed-" + UUID.randomUUID());
-		UUID allocationId = jdbc.queryForObject("""
-				insert into payment_allocation (payment_id, installment_id, allocation_type, amount,
-					created_at, updated_at)
-					values (?, (select id from installment where contract_id = ? and period_no = 1), 'EXCESS', ?,
-						clock_timestamp(), clock_timestamp())
-					returning id""", UUID.class, paymentId, contractId, amount);
-		return jdbc.queryForObject("""
-				insert into contract_credit (contract_id, source_payment_allocation_id, amount, status,
-					created_at, updated_at)
-					values (?, ?, ?, 'AVAILABLE', clock_timestamp(), clock_timestamp())
-					returning id""", UUID.class, contractId, allocationId, amount);
+		//
+		// The payment, its EXCESS allocation and the credit must commit in ONE transaction: the V12 deferred
+		// trigger trg_payment_has_allocations_deferred rejects at COMMIT any payment that has no allocations,
+		// so auto-committed per-statement inserts would fail at the first (payment) insert. Mirror
+		// AccountingInvariantsIT.insertValidPayment and wrap them in a single tx.execute.
+		return tx.execute(status -> {
+			UUID paymentId = UUID.randomUUID();
+			jdbc.update("""
+					insert into payment (id, payment_no, contract_id, amount, channel, paid_at, idempotency_key,
+						created_at, updated_at)
+						values (?, ?, ?, ?, 'CASH', clock_timestamp(), ?, clock_timestamp(), clock_timestamp())""",
+					paymentId, "PAY-CR-" + UUID.randomUUID().toString().replace("-", "").substring(0, 18), contractId,
+					amount, "credit-seed-" + UUID.randomUUID());
+			// An EXCESS allocation carries no installment: ck_payment_allocation_excess requires
+			// installment_id IS NULL exactly when allocation_type = 'EXCESS' (V1 baseline), matching how the
+			// payment waterfall records overpayment as customer credit.
+			UUID allocationId = jdbc.queryForObject("""
+					insert into payment_allocation (payment_id, installment_id, allocation_type, amount,
+						created_at, updated_at)
+						values (?, NULL, 'EXCESS', ?, clock_timestamp(), clock_timestamp())
+						returning id""", UUID.class, paymentId, amount);
+			return jdbc.queryForObject("""
+					insert into contract_credit (contract_id, source_payment_allocation_id, amount, status,
+						created_at, updated_at)
+						values (?, ?, ?, 'AVAILABLE', clock_timestamp(), clock_timestamp())
+						returning id""", UUID.class, contractId, allocationId, amount);
+		});
 	}
 
 	private MvcResult quote() throws Exception {

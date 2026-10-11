@@ -144,7 +144,10 @@ record **which installment's recognized receivable** each settlement resolved �
 `payment_allocation`, oldest installment first, `PENALTY → INTEREST → PRINCIPAL`. They do **not** carry
 future-interest income, the admin fee, the rebate, or credit consumption: those are journal lines and
 quote columns, not per-installment receivable resolutions. Consumed credit is recorded in
-`settlement_credit_application` (one row per source `contract_credit`). This keeps
+`settlement_credit_application` (one row per source `contract_credit`). Because a settlement is never
+voided or reversed in MVP (D1), `settlement_credit_application` is **append-only/immutable**: once a row
+is written it is never updated or deleted (DB backstop `trg_settlement_credit_application_immutable` reuses
+`block_modification()`, matching `settlement_allocation`; `03_DOMAIN_MODEL.md` invariant 14). This keeps
 `settlement_allocation` meaning exactly "receivable cleared on installment X," consistent with the
 `PENALTY/INTEREST/PRINCIPAL`-only CHECK already in V1.
 

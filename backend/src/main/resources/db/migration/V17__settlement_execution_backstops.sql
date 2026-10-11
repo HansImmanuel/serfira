@@ -60,7 +60,15 @@ DECLARE
     cap         NUMERIC(19,2);
     applied     NUMERIC(19,2);
 BEGIN
-    credit_id_v := CASE WHEN TG_OP = 'DELETE' THEN OLD.credit_id ELSE NEW.credit_id END;
+    -- This function backs the deferred cap trigger on BOTH tables, but their FK column to the source
+    -- credit differs: contract_credit_application names it credit_id, settlement_credit_application names
+    -- it contract_credit_id (V1 baseline). Branch on TG_TABLE_NAME so the right column is read; reading an
+    -- absent field on the other table would raise "record has no field credit_id" at COMMIT.
+    IF TG_TABLE_NAME = 'settlement_credit_application' THEN
+        credit_id_v := CASE WHEN TG_OP = 'DELETE' THEN OLD.contract_credit_id ELSE NEW.contract_credit_id END;
+    ELSE
+        credit_id_v := CASE WHEN TG_OP = 'DELETE' THEN OLD.credit_id ELSE NEW.credit_id END;
+    END IF;
 
     SELECT amount INTO cap
       FROM contract_credit
@@ -88,6 +96,19 @@ CREATE CONSTRAINT TRIGGER trg_settlement_credit_application_cap_deferred
     AFTER INSERT OR UPDATE OR DELETE ON settlement_credit_application
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION assert_contract_credit_application_cap();
+
+-- -------------------------------------------------------------------------------------
+-- DECISION 3 (ADR-018 D1, 03_DOMAIN_MODEL.md invariant 14): settlement_credit_application is append-only.
+-- -------------------------------------------------------------------------------------
+-- A settlement is never voided or reversed in the MVP (ADR-018 D1), and the domain model groups the
+-- settlement-credit applications with the immutable settlement allocations (invariant 14, §1.6). A
+-- committed settlement_credit_application is therefore a permanent consumption record: once written it is
+-- never updated or deleted. Reuse the existing V1 block_modification() (raises "immutable table: UPDATE and
+-- DELETE are not allowed") as a hard DB backstop, matching journal_line/payment_allocation/
+-- settlement_allocation. INSERT stays allowed; UPDATE/DELETE are blocked at the statement.
+CREATE TRIGGER trg_settlement_credit_application_immutable
+    BEFORE UPDATE OR DELETE ON settlement_credit_application
+    FOR EACH ROW EXECUTE FUNCTION block_modification();
 
 CREATE OR REPLACE FUNCTION assert_contract_credit_status() RETURNS trigger
 LANGUAGE plpgsql AS $$

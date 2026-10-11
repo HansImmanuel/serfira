@@ -245,6 +245,16 @@ public class SettlementExecutionCommandService {
 
 		// Consume ALL available credit and record one settlement_credit_application per source (D10).
 		List<ConsumedCredit> consumed = contractCredit.consumeAllAvailableCredit(contractId, executedAt);
+
+		// Defense-in-depth: the summed consumption must equal the credit_used priced into the quote. A
+		// mismatch means the credit state moved under us (ADR-018 D9/D10), so reject as stale rather than
+		// post an imbalanced journal (cash + credit must equal gross).
+		final BigDecimal summedConsumed = consumed.stream().map(ConsumedCredit::amount)
+				.reduce(BigDecimal.ZERO, BigDecimal::add);
+		if (summedConsumed.compareTo(creditUsed) != 0) {
+			throw stale(quote, "credit_used", creditUsed, summedConsumed);
+		}
+
 		List<SettlementCreditApplication> savedCreditApplications = creditApplications.saveAll(consumed.stream()
 				.map(source -> new SettlementCreditApplication(settlement.getId(), source.creditId(),
 						source.amount()))
