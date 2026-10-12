@@ -120,3 +120,18 @@ ADR-007 decision 9 and leaves decisions 1–8 unchanged.
   outcome). A pre-business-logic permanent-key probe would make the code uniform but adds a read to
   both hot write paths for a case that cannot occur until T18 exists; it is deliberately **not** done
   here and is left for T18 to decide if uniformity is wanted. (Flagged by the PR bot review, 2026-10-02.)
+
+### Resolution of the open T18 item (2026-10-11, Sprint 6 planning)
+
+The pre-business-logic permanent-key probe is **declined**. The varied-but-truthful 409 codes
+(`DUPLICATE_CONTRACT` / `CONTRACT_STATE_INVALID` / `IDEMPOTENCY_KEY_EXPIRED`, whichever truthful guard
+the re-run reaches first after cleanup) are accepted as the final behaviour. Rationale: the probe
+taxes **every** payment and contract write forever with an extra read, to normalise the response only
+for a deliberate key reuse that occurs after both the retention window **and** the T18 cleanup have
+passed — not a real client workflow. The guarantee that actually matters is that a cleaned-up claim can
+**never** permit a duplicate business row, and that is already held by the permanent DB backstops
+(`uq_contract_idempotency`, and — once ADR-020 D3 widens it to all statuses — `uq_payment_idempotency`).
+T18 therefore does **not** add a probe, and its tests assert that a reused spent key after claim-row
+deletion still cannot create a second contract or payment (it is rejected with one of the truthful
+409s, not silently accepted). The void story's widening of `uq_payment_idempotency` to all statuses
+(ADR-020 D3) is the piece that keeps a *voided* payment's key spent after cleanup.

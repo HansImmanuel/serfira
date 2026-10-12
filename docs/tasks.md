@@ -108,7 +108,10 @@ settlement quote) and T13 (E2 settlement execution) are DONE** (branches `t14-co
 `t15-penalty-waive-effective-port`, `t12-settlement-quote`, `t13-settlement-execution`); **Sprint 5 is
 complete.** **T30 (route the schedule response +
 aging report through `EffectivePenaltyPort`, closing the ADR-019 D4 / PR #7 F1 follow-up) is DONE** (branch
-`t30-effective-penalty-reads`). T16 (void) remains in Sprint 6.
+`t30-effective-penalty-reads`). **Sprint 6 (Void, Consistency & Write-off, T16–T19 + T27a) is planned**
+(2026-10-11, ADR-020 for void; ADR-017 T18 item resolved; see the Sprint 6 section) and ready to implement
+in order T16 → T17 → T19 → T18 → T27a. T20 (observability) and the remaining T27 (security scans +
+Compose/OpenAPI smoke) move to Sprint 6b alongside T21 (auth).
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -651,24 +654,260 @@ fully consumed; credit-exceeds-gross rejected; duplicate-entry rejected by the e
 `AccountingInvariantsIT` extended for the `SETTLEMENT`-single-entry backstop. `FixedClock`, `TestJwts`,
 pinned Demo-B golden numbers shared with `SettlementQuoteEngineTest`.
 
+## Sprint 6 — Void, Consistency & Write-off (Epic E4/F1/F4/F5): PLANNED
+
+Planned 2026-10-11 via `/grill-with-docs`. Void semantics are recorded in **ADR-020**; the ADR-017 T18
+permanent-key probe question is resolved (probe declined) in an ADR-017 addendum. Implementation order is
+**T16 → T17 → T19 → T18 → T27a**: void is the heaviest and the one with real design surface, so it goes
+first; the two jobs (T17, T18) reuse the T3/T26 daily-job infrastructure; write-off (T19) is independent;
+T27a is a one-line CI change that can land any time.
+
+**Scope and budget (confirmed).** Sprint 6 = T16 (5) + T17 (2) + T18 (2) + T19 (3) + T27a (1) = **13 pts**
+(at the ceiling). **T20** (observability) and the heavier **T27** (dependency/secret scans +
+Compose/OpenAPI smoke) move to **Sprint 6b** alongside **T21** (auth). The minimal `./gradlew check` CI
+gate is **not** deferred — it is carved out as **T27a** and treated as a Sprint 6 prerequisite, because
+today's `ci.yml` runs only `./gradlew test` (verified 2026-10-11). **If T16 re-estimates above 5 pts or the
+finalized scope exceeds 13 pts, defer T18 first** (its only open question is already resolved, and the
+cleanup job is pure hygiene), leaving T16 + T17 + T19 + T27a ≈ 11 pts. No new module: void lives in
+`payment`, consistency and cleanup jobs in `penalty`'s daily-job host (or `shared/job`), write-off in
+`contract`.
+
+### T16 — E4 Void payment + reversal, installment recalc & conditional credit reversal (5 pts)
+
+**Status: TODO.** Decisions in **ADR-020** (D1–D6). First task of Sprint 6.
+
+**Dependencies:** C3 (`POST /payments` + allocations), ADR-002/ADR-008 (reversal posting), T14
+(`contract_credit` + `ContractCreditPort`), ADR-013 §3 (A-3). None open. **T18 does not block T16**: T16's
+own migration (D3) widens `uq_payment_idempotency` to all statuses so a voided key stays spent even before
+T18 exists.
+
+**Scope.** Add `POST /api/v1/payments/{id}/void` (ADMIN_OPERASIONAL, `Idempotency-Key` header): reverse a
+POSTED payment by posting a reversal journal, flipping the payment to VOIDED, recomputing affected
+installments from the remaining POSTED payments, and reversing the payment's own EXCESS credit when it is
+still entirely AVAILABLE — all atomically. Owner module: `payment`.
+
+**Business rules (ADR-020 D1–D6; DM §1.7, invariant 16; ADR-002/ADR-008; ADR-013 §3 / A-3; ADR-017 D-widen).**
+
+- **Reversal, never deletion (D1).** The original `payment` row flips POSTED → VOIDED; `amount` and all
+  `payment_allocation` rows are left intact (V1 immutability + the V3 `trg_payment_allocation_total_deferred`
+  check, which keys on `payment_id` with no status filter, both stay satisfied). One reversal
+  `journal_entry` is posted with `reversal_of_id` = the original PAYMENT entry and lines mirroring it with
+  Dr/Cr swapped (no new `LedgerRefType`; it reuses the original `(ref_type=PAYMENT, ref_id)`, so the V12
+  `uq_journal_entry_event` non-reversal-only index still permits it).
+- **Installment recalculation (D1.3).** Each installment referenced by the voided payment's allocations
+  recomputes `paid_amount` and status **from the remaining POSTED payments only** (excluding the voided
+  payment's allocations) through `InstallmentReceivablePort.applyPaymentResolution` (the same mutator a
+  payment uses). PAID→PARTIALLY_PAID/PENDING demotions and an undone MATURITY auto-close follow from the
+  recomputation, not from a special path.
+- **No catch-up accrual; A-3 preserved (D2).** The void does **not** accrue penalty. A void raises the
+  penalty base retroactively, which is the mirror of accrue-before-resolve (that invariant guards flows
+  that *lower* the base). Existing `penalty_accrual` rows are never re-priced (ADR-013 §3); the next daily
+  job accrues only un-accrued dates at the then-current (higher) base. The resulting undercharge on
+  already-accrued dates is an **explicitly accepted** trade-off, documented as an intentional exception to
+  a superficial reading of accrue-before-resolve, not a violation of ADR-013.
+- **Consumed-credit guard (D4).** If the payment's EXCESS booked a `contract_credit` row and any of it has
+  been applied (T14) or consumed by a settlement (T13) — available balance < original amount — reject
+  `409 PAYMENT_CREDIT_CONSUMED`, writing nothing. If the credit is still entirely AVAILABLE, reverse it in
+  the same transaction. The check is **concurrency-safe**: take a row lock on the `contract_credit` row
+  (`SELECT … FOR UPDATE`, via a `ContractCreditPort` method) before reading its available balance, so a
+  concurrent credit-apply/settlement cannot consume it between the check and the reversal.
+- **Eligibility guard over all affected installments (D5).** Evaluated over **every** installment the
+  payment's allocations reference, not one assumed target: if any is SETTLED or WRITTEN_OFF, or the
+  contract is not ACTIVE (closed SETTLEMENT/MATURITY/WRITTEN_OFF), reject `409 PAYMENT_NOT_VOIDABLE`,
+  writing nothing. T16 never reopens a closed contract or reverses a settlement/write-off.
+- **Atomicity + concurrency (D6).** The status flip, reversal journal, installment recalculation and credit
+  reversal succeed or roll back together in one `@Transactional` application service (controllers hold no
+  transaction; ports post with `Propagation.MANDATORY`). Guards (D4/D5) run inside that transaction under
+  their row locks. Optimistic-lock conflicts (installment/contract/credit `@Version`) are retried **outside**
+  the transaction by a `PaymentVoidRetryingService` (3 attempts, 50/150 ms, mirroring `PaymentRetryingService`),
+  surfacing `409 CONCURRENT_MODIFICATION` if they persist.
+- **Idempotency (ADR-017).** Idempotent via `IdempotencyService` exactly as `POST /payments`: identical key
+  replays the stored response; expired key → `409 IDEMPOTENCY_KEY_EXPIRED`.
+- **RBAC (Addendum §3.4).** `POST /payments/{id}/void` ADMIN_OPERASIONAL only. Add the matcher row to
+  `ResourceServerSecurityConfiguration` and a cell to `EndpointRoleMatrixIT`.
+
+**Migration (next free number, no `CREATE TABLE`).** Drop and recreate `uq_payment_idempotency` **without**
+the `WHERE status = 'POSTED'` partial predicate, so it is unique across all payment statuses and a voided
+payment's key stays spent after T18 cleanup (ADR-020 D3, ADR-017). The migration is **data-preserving and
+fail-safe**: a preflight detects any rows that would violate the all-status index and the migration **fails**
+rather than deleting/rewriting payment history (an empty preflight is expected — today's partial index
+already blocks two POSTED payments per key, and void does not exist yet). Confirm no setter exposes
+`payment.amount` (it is already effectively immutable per V1 + the V12 note).
+
+**Acceptance criteria.**
+
+- Voiding a POSTED payment flips it to VOIDED, posts exactly one balanced reversal entry
+  (`reversal_of_id` set, Dr/Cr swapped), leaves its allocations intact, and the V3/V12 allocation-total
+  invariants still hold.
+- Affected installments demote correctly (PAID→PARTIALLY_PAID/PENDING; an undone MATURITY close reopens the
+  contract to ACTIVE) computed from the remaining POSTED payments; a second void of the same payment is a
+  no-op replay (idempotent) or rejected if already VOIDED.
+- A void whose payment credit was partially/fully consumed is rejected `PAYMENT_CREDIT_CONSUMED` and writes
+  nothing; a void with fully-AVAILABLE credit reverses the credit atomically with the rest.
+- A void where any affected installment is SETTLED/WRITTEN_OFF or the contract is non-ACTIVE is rejected
+  `PAYMENT_NOT_VOIDABLE` and writes nothing.
+- No `penalty_accrual` row is re-priced; after the void the next accrual run charges un-accrued dates at the
+  higher base (asserted at the service/engine level, not necessarily end-to-end).
+- Role matrix enforced; idempotent replay returns the stored response; expired key → `IDEMPOTENCY_KEY_EXPIRED`.
+- A concurrent credit-apply racing a void never double-spends the credit (one side wins deterministically).
+
+**Tests.** Unit: installment recomputation-from-remaining-POSTED (pure, mirrors allocation ordering);
+reversal-line mirroring (Dr/Cr swap). IT `PaymentVoidIT` (Testcontainers, real commits so deferred triggers
+fire): happy-path reversal + demotion + balanced reversal entry; MATURITY-close undo; `PAYMENT_CREDIT_CONSUMED`
+(applied credit) and clean credit reversal (AVAILABLE); `PAYMENT_NOT_VOIDABLE` for SETTLED installment,
+WRITTEN_OFF installment, and non-ACTIVE contract (one case each); idempotent replay; expired key; a reused
+spent key after a (simulated) claim-row delete still cannot re-void or create a second payment (ties to
+T18); the all-status `uq_payment_idempotency` rejects a duplicate key via raw SQL; role matrix. Concurrency
+IT: a credit-apply committing between a void's check and reversal is serialized by the row lock. Reuse
+`TestJwts`, `FixedClock`.
+
+### T17 — F1 Consistency check job (2 pts)
+
+**Status: TODO.** **Dependencies:** T3/T26 daily-job infrastructure (ShedLock, `job_run`, keyset batching,
+backoff), T25 (the invariants it re-asserts in aggregate).
+
+**Scope.** Add a fourth step to the daily servicing job (after aging, per Addendum §7.3 billing → penalty →
+aging → consistency check): a read-only reconciliation that re-asserts the money invariants in aggregate and
+records a `job_run` row, flagging (not fixing) any drift. Owner: the `penalty` daily-job host (or
+`shared/job`), reusing the existing orchestration — **no new scheduler, lock, or batching mechanism**.
+
+**Business rules (Addendum §7.3, §10; ADR-013 A-9; DM §3 invariants).** The three reconciliation checks
+(the F1 set): (1) ledger balance — every `journal_entry` has `Σ debit = Σ credit` (already a DB trigger, but
+re-asserted in aggregate as a drift alarm); (2) receivable vs. ledger — each contract's installment
+outstanding reconciles with the `PIUTANG_*` ledger balances; (3) credit vs. ledger — `Σ AVAILABLE
+contract_credit` reconciles with the `TITIPAN_NASABAH` balance. The step is **read-only** (no money moves,
+no corrections — a correction would be an operator-initiated reversal, out of scope). It writes one
+`job_run` row (`job_name = "consistency-check"`, `records_processed` = contracts checked, `records_failed` =
+contracts failing a check, status `COMPLETED`/`FAILED` derived from `records_failed`, exactly as ADR-013
+A-9). Discrepancies are logged (safe metadata only, no PII) at WARN/ERROR; the exact alerting channel is out
+of MVP scope (observability is T20). Runs in its own transaction (read-only), isolated from the money steps
+(a failed check never rolls back recognized money, mirroring the T6 aging-step isolation).
+
+**Acceptance criteria.** A clean portfolio produces a `consistency-check` `job_run` row with
+`records_failed = 0`, status COMPLETED. A deliberately corrupted fixture (e.g. a raw-SQL imbalance that
+bypasses the triggers in a test) is detected and flagged with the right contract id, `records_failed > 0`,
+status FAILED, and **no** mutation. The step reuses the existing ShedLock/`job_run`/keyset/backoff; a crash
+leaves a `RUNNING` row that the next run marks `ABANDONED` (T26 behavior, unchanged).
+
+**Tests.** Unit: each reconciliation predicate (pure, over snapshot inputs). IT `ConsistencyCheckIT`
+(Testcontainers): clean portfolio → COMPLETED; injected drift → FAILED + flagged, no mutation; `job_run`
+granularity matches A-9; isolation from the money steps. `FixedClock`.
+
+### T19 — F5 Write-off (3 pts)
+
+**Status: TODO.** **Dependencies:** ADR-013 §1 (accrue-before-resolve), V4 (record-state coherence),
+ADR-008 (posting). Independent of T16/T17/T18.
+
+**Scope.** Add `POST /api/v1/contracts/{id}/write-off` (ADMIN_OPERASIONAL, `Idempotency-Key`): record an
+external decision to stop collecting, closing the contract `ACTIVE → TERMINATED`, capping the receivable,
+moving open installments to WRITTEN_OFF, and posting the write-off journal. Owner module: `contract`.
+
+**Business rules (DM §1.3/§1.12, invariant; Addendum §13; ADR-013 §1; GLOSSARY Write-off).**
+
+- **Accrue-before-resolve first (ADR-013 §1).** In the same transaction, bill and accrue through the
+  write-off business date before capping, so the written-off receivable reflects penalty actually in force
+  (the write-off analogue of T4/T12/T13).
+- Close the contract `ACTIVE → TERMINATED` with the write-off reason; move open installments to
+  WRITTEN_OFF (`written_off_amount`/`written_off_at`), capping the receivable (`InstallmentBalance`
+  outstanding → 0 once written off). Require **`write_off_recorded_by`** (the JWT `sub`, never the body) at
+  the **DB** level — V4 currently checks only the reason; T19's migration adds a NOT-NULL/CHECK so a
+  TERMINATED contract cannot exist without the recording actor.
+- Post one balanced write-off journal `Dr BIAYA_PENGHAPUSAN_PIUTANG / Cr PIUTANG_POKOK|PIUTANG_BUNGA|
+  PIUTANG_DENDA` for the capped recognized receivable (`ref_type = WRITE_OFF`, `ref_id = contract or a
+  write-off record id` — pin one entry per write-off). No future unrecognized interest is written off (it
+  was never a receivable). Posted history is never hidden (append-only).
+- Idempotent via `IdempotencyService`; one `@Transactional` application-service boundary (accrue → cap →
+  close → post, all-or-nothing); optimistic-lock retry outside the transaction.
+- **RBAC:** `POST /contracts/{id}/write-off` ADMIN_OPERASIONAL only. Matrix + `EndpointRoleMatrixIT`.
+
+**Migration (next free number, no `CREATE TABLE`).** Add the DB guard requiring `write_off_recorded_by`
+(and `write_off_at`) when `status = TERMINATED`/reason is a write-off (strengthening V4). Optionally extend
+`uq_journal_entry_event` to `WRITE_OFF` (decide during implementation; default is the service guard, like
+PAYMENT/CREDIT_APPLICATION per ADR-008 d5).
+
+**Acceptance criteria.** A write-off on an ACTIVE contract accrues through the write-off date, caps the
+receivable, closes TERMINATED, moves open installments to WRITTEN_OFF, and posts one balanced `WRITE_OFF`
+entry; outstanding goes to 0 and no penalty accrues afterward (contract is non-ACTIVE). A TERMINATED row
+without `write_off_recorded_by` is rejected at the DB (raw SQL). Write-off of a non-ACTIVE contract is
+rejected. Idempotent replay returns the stored response. Role matrix enforced.
+
+**Tests.** Unit: write-off cap/close transition (pure where possible). IT `WriteOffIT` (Testcontainers):
+accrue-before-resolve bills/accrues into the write-off; cap + close + WRITTEN_OFF; balanced `WRITE_OFF`
+entry; DB rejects TERMINATED without `write_off_recorded_by` (raw SQL); non-ACTIVE rejected; idempotent
+replay; role matrix. `FixedClock`, `TestJwts`.
+
+### T18 — F4 Idempotency key cleanup job (2 pts)
+
+**Status: TODO.** **Dependencies:** T3/T26 daily-job infrastructure; ADR-017 (lifecycle, including the
+2026-10-11 resolution of the probe item); ADR-020 D3 (the all-status `uq_payment_idempotency` that keeps a
+voided key spent after cleanup). First candidate to defer if Sprint 6 exceeds 13 pts.
+
+**Scope.** Add a job that deletes `idempotency_keys` rows past their retention window (`expires_at` passed),
+reusing the T3/T26 job infrastructure (ShedLock, `job_run`, keyset batching, backoff). Owner: the daily-job
+host (or `shared/job`). Purely hygiene — it bounds table growth; the permanent DB backstops, not the claim
+rows, are the correctness authority once a row is gone.
+
+**Business rules (ADR-017 D1–D3 + the 2026-10-11 resolution; TS §2.5).**
+
+- Delete only rows whose `expires_at` has passed. The delete must **not** re-open a key: a later reuse of a
+  deleted-and-expired key is still rejected, because the permanent business-row backstops
+  (`uq_contract_idempotency`, and the ADR-020-D3-widened all-status `uq_payment_idempotency`) hold
+  independently of the claim row.
+- **No pre-business-logic permanent-key probe (resolved 2026-10-11, ADR-017 addendum).** The 409 code a
+  reused spent key returns after cleanup is whichever truthful guard the re-run reaches first
+  (`DUPLICATE_CONTRACT` for a same-request contract retry, `CONTRACT_STATE_INVALID` for a payment against a
+  now-inactive contract, `IDEMPOTENCY_KEY_EXPIRED` from a backstop translator when reached). These varied
+  codes are accepted; the probe is explicitly **declined** (it would tax every hot write path with an extra
+  read for a case that cannot occur until after both retention and cleanup, to normalize a non-workflow
+  reuse). The invariant that matters — a cleaned-up claim can **never** permit a duplicate business row —
+  is held by the backstops and is what T18 tests assert.
+- Writes one `job_run` row (`job_name = "idempotency-cleanup"`, `records_processed` = rows deleted, A-9
+  granularity and status rules). Keyset batching + backoff from T26.
+
+**Acceptance criteria.** The job deletes only expired rows and leaves live ones; it records a correct
+`job_run` row. After the job deletes an expired claim, re-issuing that key **cannot** create a second
+contract or payment — it is rejected with one of the truthful 409s (asserted), never silently accepted. A
+voided payment's key stays spent after cleanup (ties to ADR-020 D3). Crash leaves a `RUNNING` row the next
+run marks `ABANDONED` (T26, unchanged).
+
+**Tests.** IT `IdempotencyCleanupIT` (Testcontainers): expired rows deleted, live rows kept; `job_run`
+granularity; **after cleanup, a reused spent key cannot mint a second contract/payment** (the key
+assertion); a voided payment's key still spent (ADR-020 D3). `FixedClock`.
+
+### T27a — Minimal CI gate: `./gradlew check` (1 pt)
+
+**Status: TODO.** **Dependencies:** none. Sprint 6 prerequisite (not deferred), because `ci.yml` today runs
+only `./gradlew test` (verified 2026-10-11).
+
+**Scope.** Change the CI `test` job in `.github/workflows/ci.yml` to run `./gradlew check` instead of
+`./gradlew test`, so the quality gate (tests plus whatever `check` aggregates — compilation of all source
+sets and any configured verification tasks) runs on every PR and push to `main`. **Not** in scope here (→
+T27, Sprint 6b): adding a dependency-vulnerability scan, a secret scan, and the `docker compose up` →
+`/actuator/health` → `/v3/api-docs` smoke → `down` runtime gate. Each of those tools must be justified per
+`35-coding-standards` when T27 is planned.
+
+**Acceptance criteria.** CI runs `./gradlew check` and the build is green on the current `main` (verify the
+`check` task does not pull in an unconfigured plugin that fails the build; if it does, either configure it
+minimally or scope that out explicitly to T27). No change to application code.
+
+**Tests.** CI config change; verified by a green CI run on the PR. (If `check` currently equals `test` plus
+nothing, note that and keep the change for forward-safety as new verification tasks are added.)
+
 ## Future / Deferred Work
 
 ### Later sprints (planned, detailed at their sprint planning)
 
-> **Sprint 5 (T12–T15) is now fully planned** in the "Sprint 5 — Settlement, Credit & Waiver" section
-> above (ADR-018, ADR-019). The rows below are the still-stubbed later tasks.
+> **Sprint 5 (T12–T15) is complete** and **Sprint 6 (T16–T19 + T27a) is now fully planned** in the
+> "Sprint 6 — Void, Consistency & Write-off" section above (ADR-020 for void; the ADR-017 T18 probe item
+> is resolved there). The rows below are the still-stubbed later tasks (Sprint 6b onward).
 
-| ID  | Story                                                              | Sprint | Status | Carry-forward requirements from this plan                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| --- | ------------------------------------------------------------------ | ------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T16 | E4 Void payment + synchronous penalty recalc                       | 6      | TODO   | The void re-pricing rule is resolved by ADR-013 (A-3): no re-pricing of already-accrued dates, catch-up only for dates with no row yet. Make `payment.amount` non-updatable (the parent-side deferred checks moved to T25). Revisit the V3 allocation-total trigger, which counts VOIDED rows (C3 note), and T25's payment-insert check for voided payments. Under A-13 (option A) a voided payment's key stays consumed; because `uq_payment_idempotency` only covers `POSTED`, keep that true after T18 deletes the claim row (for example by widening the index to all statuses in the void migration). Void is blocked when credit was consumed (invariant 16). |
-| T17 | F1 Consistency check job                                           | 6      | TODO   | Runs after aging in the T3 job, reusing its ShedLock, `job_run`, keyset batching and backoff (T26).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| T18 | F4 Idempotency key cleanup job                                     | 6      | TODO   | Reuses the T3/T26 job infrastructure. Deleting a row must not re-open the key: the T24/A-13 rule and the business-row backstops decide what a later reuse returns. Note (ADR-017 consequences, PR #5 bot review): after the row is deleted the exact 409 depends on which truthful guard fires first (`DUPLICATE_CONTRACT` for a same-request contract retry, `CONTRACT_STATE_INVALID` for a payment against a now-inactive contract), not necessarily `IDEMPOTENCY_KEY_EXPIRED`. Decide here whether a pre-business-logic permanent-key probe is wanted to make the code uniform.                                                                                  |
-| T19 | F5 Write-off                                                       | 6      | TODO   | Accrue through the write-off date first. Require `write_off_recorded_by` for TERMINATED at DB level (V4 checks only the reason).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| T20 | Observability baseline (Addendum §10)                              | 6      | TODO   | `X-Request-Id` filter + MDC, JSON logs (`timestamp`, `level`, `request_id`, `contract_id`, `module`), write `idempotency_keys.request_id`. Not owned by any story in `05_SPRINT_PLAN.md` (X-3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| T21 | F2 Auth: login/refresh/logout, Argon2id, lockout, refresh rotation | 6b     | TODO   | Issue `roles` as a string array per ADR-015 (T7). Validate `iss`/`aud` once a real issuer exists and consider RS256 (ADR-005, review CR-10). Revisit T7 D2 (active `app_user` check at issue or per request). Add a production guard against the dev-key fallbacks in `docker-compose.yml` (CR-16).                                                                                                                                                                                                                                                                                                                                                                 |
-| T22 | G1–G6 Reporting, frontend, demo, outbox                            | 7–8    | TODO   | Unchanged from `05_SPRINT_PLAN.md`. NPL/AR depend on the DPD definition from T1.b.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| T27 | CI and runtime gates (review CR-15)                                | 6      | TODO   | CI runs `./gradlew check` instead of `test`. Add a dependency-vulnerability and a secret scan (justify each tool per `35-coding-standards`). Add `docker compose up` → wait for `/actuator/health` → `/v3/api-docs` smoke → `down`. T23's `OpenApiSmokeIT` already covers the in-JVM part.                                                                                                                                                                                                                                                                                                                                                                          |
-| T28 | PII / HMAC key rotation (review CR-11)                             | 7      | TODO   | Key id in the PII envelope (`v2:<kid>:…`), a key ring for decrypt and for HMAC lookups, and a re-keying procedure for `nik_hash`/`phone_lookup` and `idempotency_keys.request_hash` (ADR-004, ADR-007 consequences). New ADR.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ID   | Story                                                              | Sprint | Status  | Carry-forward requirements from this plan                                                                                                                                                                                                                                                                                       |
+| ---- | ------------------------------------------------------------------ | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T20  | Observability baseline (Addendum §10)                              | 6b     | TODO    | `X-Request-Id` filter + MDC, JSON logs (`timestamp`, `level`, `request_id`, `contract_id`, `module`), write `idempotency_keys.request_id`. Not owned by any story in `05_SPRINT_PLAN.md` (X-3). Moved out of Sprint 6 at planning (2026-10-11) to hold the 13-pt ceiling; the void/consistency/write-off theme comes first.      |
+| T21  | F2 Auth: login/refresh/logout, Argon2id, lockout, refresh rotation | 6b     | TODO    | Issue `roles` as a string array per ADR-015 (T7). Validate `iss`/`aud` once a real issuer exists and consider RS256 (ADR-005, review CR-10). Revisit T7 D2 (active `app_user` check at issue or per request). Add a production guard against the dev-key fallbacks in `docker-compose.yml` (CR-16).                               |
+| T27  | CI & runtime gates — security scans + Compose smoke (review CR-15) | 6b     | TODO    | The minimal `./gradlew check` CI gate is split out to **T27a** and lands in Sprint 6 (prerequisite, not deferred). T27 keeps the heavier parts: a dependency-vulnerability and a secret scan (justify each tool per `35-coding-standards`), and `docker compose up` → wait for `/actuator/health` → `/v3/api-docs` smoke → `down`. T23's `OpenApiSmokeIT` already covers the in-JVM part. |
+| T22  | G1–G6 Reporting, frontend, demo, outbox                            | 7–8    | TODO    | Unchanged from `05_SPRINT_PLAN.md`. NPL/AR depend on the DPD definition from T1.b.                                                                                                                                                                                                                                               |
+| T28  | PII / HMAC key rotation (review CR-11)                             | 7      | TODO    | Key id in the PII envelope (`v2:<kid>:…`), a key ring for decrypt and for HMAC lookups, and a re-keying procedure for `nik_hash`/`phone_lookup` and `idempotency_keys.request_hash` (ADR-004, ADR-007 consequences). New ADR.                                                                                                     |
 
 ### Deferred
 
@@ -755,5 +994,16 @@ T23 (DONE) ─► T7 RBAC + JWT identity (DONE) ─► T8, T9
 A-13 (option A, decided) ─► T24 idempotency lifecycle
 T25 DB backstops ─► T12–T15 (new posting types)
 T26 job robustness ─► T17, T18
-T3…T10, T23…T26 ─► T11 exit verification ─► Sprint 5 (T12–T15) ─► Sprint 6 (T16–T20, T27) ─► T21 ─► T22, T28
+T14 credit + ADR-020 (void) ─► T16
+ADR-020 D3 (all-status uq_payment_idempotency) ─► T18 (voided key stays spent after cleanup)
+T3…T10, T23…T26 ─► T11 exit verification ─► Sprint 5 (T12–T15) ─► Sprint 6 (T16 → T17 → T19 → T18 → T27a)
+    ─► Sprint 6b (T20, T27, T21) ─► T22, T28
 ```
+
+### Sprint 6 planning note (2026-10-11)
+
+The void semantics (A-3 confirmed unchanged, reversal + status flip, consumed-credit and settled-installment
+guards, all-status idempotency widening, atomic transaction) are recorded in **ADR-020**. The ADR-017 open
+T18 item (pre-business-logic permanent-key probe) is **resolved: declined** (ADR-017 addendum). Scope held at
+the 13-pt ceiling by moving T20 and the heavy T27 work to Sprint 6b while keeping the minimal `./gradlew check`
+CI gate in Sprint 6 as **T27a**. T18 is the designated cut if T16 grows past 5 pts.

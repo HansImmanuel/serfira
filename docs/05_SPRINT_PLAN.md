@@ -309,10 +309,18 @@ Story baru "done" kalau **semua** terpenuhi:
 
 ### Sprint 6 — Void, Consistency & Write-off
 
-**Goal:** Audit trail lengkap — void dengan penalty recalc synchronous, tiga consistency check, dan write-off dengan jurnal.
+**Goal:** Audit trail lengkap — void sebagai reversal, tiga consistency check, dan write-off dengan jurnal.
 
-- E4 (5), F1 (3), F4 (1), F5 (2) = **11 pts**
-- **Exit:** void synchronous penalty recalc benar; tiga reconciliation check jalan; write-off journal dan installment WRITTEN_OFF benar.
+- E4 (5), F1 (2), F4 (2), F5 (3), + T27a CI gate (1) = **13 pts**
+- **Exit:** void memposting reversal + flip POSTED→VOIDED dan merekalkulasi installment dari pembayaran POSTED yang tersisa (tanpa menghapus allocation); tiga reconciliation check jalan; write-off journal dan installment WRITTEN_OFF benar; CI menjalankan `./gradlew check`.
+
+> **Catatan planning 2026-10-11 (otoritatif di `docs/tasks.md` §Sprint 6 + ADR-020).** Framing lama "void
+> dengan penalty recalc _synchronous_" **diperbaiki**: ADR-020 D2 memutuskan void **tidak** menjalankan
+> catch-up accrual sendiri — base denda naik retroaktif, baris `penalty_accrual` yang ada tidak pernah
+> di-reprice (A-3, ADR-013 §3), dan job harian berikutnya meng-accrue hanya tanggal yang belum punya baris.
+> Void adalah reversal journal + flip status, bukan recalc penalty synchronous. Estimasi di `tasks.md`
+> (F1 = 2, F4 = 2, F5 = 3) menang atas angka lama di sini. T20 (observability) dan sisa T27 (scan + Compose
+> smoke) pindah ke Sprint 6b; gate CI minimal `./gradlew check` tetap di Sprint 6 sebagai T27a.
 
 ### Sprint 6b — Auth & RBAC
 
