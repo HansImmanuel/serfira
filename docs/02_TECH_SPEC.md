@@ -109,6 +109,26 @@ Aturan dependency:
     (pemilik tabelnya). Migrasi V17 mengajari guard saldo/status V14 menghitung `settlement_credit_application`
     agar flip ke APPLIED tetap koheren lintas jalur apply reguler (E3) dan settlement.
     `settlement` tetap dilarang menyentuh tabel/entity `contract`/`installment`/`contract_credit` langsung.
+- Sejak T16 (E4 void, ADR-020) write path `payment` menambah dua seam ke `contract` (keduanya satu arah,
+  join transaksi caller) dan menggunakan kembali `ledger`. `payment` tetap pemilik `payment`/
+  `payment_allocation` dan tidak menyentuh tabel/entity `contract`/`installment`/`contract_credit` langsung:
+  - `payment → contract` lewat `contract.application.PaymentVoidPort` (baru): `payment` menghitung berapa
+    yang masih di-resolve oleh pembayaran POSTED yang tersisa (dari `payment_allocation`-nya sendiri) lalu
+    meminta `contract` (a) mengecek kelayakan void atas setiap installment terkait (D5) dan (b) me-recompute
+    `paid_amount`/status installment ke nilai absolut itu — demosi `PAID → PARTIALLY_PAID → PENDING` — serta
+    membuka kembali kontrak dari auto-close `MATURITY` ke `ACTIVE` bila void membatalkan penutupan itu (D1.3).
+    Berbeda dari `InstallmentReceivablePort.applyPaymentResolution` yang hanya _menaikkan_ paid dan hanya
+    _menutup_ kontrak, sehingga void memakai mutator demosi + reopen milik `contract`.
+  - `payment → contract` lewat `ContractCreditPort.reverseAvailableCreditFromAllocations` (baru): membalik
+    kredit `TITIPAN_NASABAH` yang dibuat EXCESS pembayaran yang di-void **hanya bila masih sepenuhnya
+    AVAILABLE** (lock baris `FOR UPDATE` sebelum baca saldo, ADR-020 D4); bila sudah di-apply/dikonsumsi
+    settlement → 409 `PAYMENT_CREDIT_CONSUMED` dan tidak menulis apa pun.
+  - `payment → ledger` lewat `LedgerPostingService.postReversal` (baru): mem-posting **satu** entry reversal
+    yang mencerminkan baris entry PAYMENT asli dengan debit/credit ditukar (`reversal_of_id` di-set, reuse
+    `(ref_type=PAYMENT, ref_id)`), sehingga index non-reversal-only `uq_journal_entry_event` (V12) tetap
+    mengizinkannya (ADR-002, ADR-020 D1.2). Tidak ada `LedgerRefType` baru. Migrasi V18 melebarkan
+    `uq_payment_idempotency` ke semua status agar key pembayaran yang di-void tetap "terpakai" setelah job
+    pembersihan T18 (ADR-020 D3, ADR-017).
 
 Jika suatu saat di-split microservice, seam sudah siap di interface antar-module.
 

@@ -48,4 +48,29 @@ public record PaymentResponse(
 				allocation.excessAmount(),
 				allocation.lines().stream().map(PaymentAllocationResponse::from).toList());
 	}
+
+	/**
+	 * The response of a voided payment (E4, task T16): the same payment, now {@code VOIDED}, with its
+	 * original allocation rows intact — a void is a reversal, not a deletion, so the allocations stay as
+	 * history (DM §1.7/§1.8). {@code excess_amount} is the EXCESS the payment had booked; the void reverses
+	 * the matching customer credit when it is still available (ADR-020 D4).
+	 */
+	public static PaymentResponse fromVoided(Payment payment,
+			List<com.serfira.payment.domain.PaymentAllocation> allocations) {
+		BigDecimal excess = allocations.stream()
+				.filter(allocation -> allocation.getType() == com.serfira.payment.domain.AllocationType.EXCESS)
+				.map(com.serfira.payment.domain.PaymentAllocation::getAmount)
+				.reduce(BigDecimal.ZERO, BigDecimal::add)
+				.setScale(2, java.math.RoundingMode.UNNECESSARY);
+		return new PaymentResponse(
+				payment.getId(),
+				payment.getPaymentNo(),
+				payment.getContractId(),
+				payment.getAmount(),
+				payment.getChannel(),
+				payment.getPaidAt(),
+				payment.getStatus(),
+				excess,
+				allocations.stream().map(PaymentAllocationResponse::from).toList());
+	}
 }

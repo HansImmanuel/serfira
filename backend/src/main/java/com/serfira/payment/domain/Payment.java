@@ -111,6 +111,31 @@ public class Payment extends Auditable {
 		this.status = PaymentStatus.POSTED;
 	}
 
+	/**
+	 * Reverses this payment (E4, task T16, ADR-020 D1): flips {@code POSTED → VOIDED} and stamps the
+	 * voiding instant and reason. A reversal, never a deletion — {@code amount} and the
+	 * {@link PaymentAllocation} rows are left intact as history and merely stop counting as <b>active</b>
+	 * (DM §1.7/§1.8); the reversal journal and the installment recomputation are the caller's steps.
+	 *
+	 * <p>Idempotent by state: voiding an already {@code VOIDED} payment writes nothing and returns
+	 * {@code false}, so a retried void never produces a second reversal. The {@code @Version} column
+	 * carries the optimistic lock that serializes a void against a concurrent write on the same payment.
+	 *
+	 * @param voidedAt   business instant of the void, from the application clock (never client supplied)
+	 * @param voidReason free-text reason recorded for the audit trail (never PII)
+	 * @return {@code true} when this call performed the {@code POSTED → VOIDED} transition
+	 */
+	public boolean markVoided(OffsetDateTime voidedAt, String voidReason) {
+		Objects.requireNonNull(voidedAt, "voidedAt");
+		if (status == PaymentStatus.VOIDED) {
+			return false;
+		}
+		this.status = PaymentStatus.VOIDED;
+		this.voidedAt = voidedAt;
+		this.voidReason = voidReason == null || voidReason.isBlank() ? null : voidReason.trim();
+		return true;
+	}
+
 	public UUID getId() {
 		return id;
 	}

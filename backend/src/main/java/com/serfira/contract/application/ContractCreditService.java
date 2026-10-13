@@ -5,6 +5,7 @@ import com.serfira.contract.domain.ContractCreditStatus;
 import com.serfira.contract.infrastructure.ContractCreditApplicationRepository;
 import com.serfira.contract.infrastructure.ContractCreditRepository;
 import com.serfira.contract.infrastructure.CreditAppliedTotal;
+import com.serfira.shared.error.PaymentCreditConsumedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -120,5 +122,48 @@ public class ContractCreditService implements ContractCreditPort {
 		}
 		LOGGER.info("Settlement consumed {} AVAILABLE credit source(s) of contract {}", consumed.size(), contractId);
 		return List.copyOf(consumed);
+	}
+
+	@Override
+	@Transactional(propagation = Propagation.MANDATORY)
+	public BigDecimal reverseAvailableCreditFromAllocations(Set<UUID> sourcePaymentAllocationIds,
+			OffsetDateTime reversedAt) {
+		Objects.requireNonNull(sourcePaymentAllocationIds, "sourcePaymentAllocationIds");
+		Objects.requireNonNull(reversedAt, "reversedAt");
+		if (sourcePaymentAllocationIds.isEmpty()) {
+			return ZERO_MONEY;
+		}
+		// Lock the candidate credit rows FOR UPDATE before reading their balances (ADR-020 D4): a concurrent
+		// credit-apply or settlement cannot consume them between this check and the reversal below.
+		List<ContractCredit> matched =
+				credits.findBySourcePaymentAllocationIdInForUpdate(sourcePaymentAllocationIds);
+		if (matched.isEmpty()) {
+			return ZERO_MONEY;
+		}
+		List<UUID> creditIds = matched.stream().map(ContractCredit::getId).toList();
+		Map<UUID, BigDecimal> appliedByCredit = new HashMap<>();
+		for (CreditAppliedTotal total : applications.sumAppliedByCreditIds(creditIds)) {
+			appliedByCredit.put(total.creditId(), total.applied());
+		}
+
+		BigDecimal reversed = ZERO_MONEY;
+		for (ContractCredit credit : matched) {
+			BigDecimal applied = appliedByCredit.getOrDefault(credit.getId(), ZERO_MONEY);
+			// A credit consumed by a settlement is already APPLIED (status check), a regular partial apply
+			// leaves it AVAILABLE with applied > 0 (balance check); either way the payment's credit is spent
+			// and the void cannot cleanly unwind it (ADR-020 D4).
+			if (credit.getStatus() != ContractCreditStatus.AVAILABLE || applied.signum() != 0) {
+				throw new PaymentCreditConsumedException("contract_credit " + credit.getId()
+						+ " of the voided payment has been applied or consumed and cannot be reversed");
+			}
+			reversed = reversed.add(credit.getAmount());
+		}
+		// Entirely AVAILABLE with no applications: remove the sub-ledger rows. The money is reversed by the
+		// void's TITIPAN_NASABAH debit; the immutable journal entries keep the trail.
+		credits.deleteAll(matched);
+		credits.flush();
+		LOGGER.info("Reversed {} AVAILABLE customer-credit row(s) totalling {} for a payment void",
+				matched.size(), reversed);
+		return reversed.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
 	}
 }

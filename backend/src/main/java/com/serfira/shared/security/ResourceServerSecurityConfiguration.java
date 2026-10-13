@@ -150,6 +150,9 @@ public class ResourceServerSecurityConfiguration {
 						.requestMatchers(HttpMethod.POST, "/api/v1/contracts").hasRole(ADMIN)
 						.requestMatchers(HttpMethod.POST, "/api/v1/contracts/*/activate").hasRole(ADMIN)
 						.requestMatchers(HttpMethod.POST, "/api/v1/payments").hasRole(ADMIN)
+						// Payment void is ADMIN_OPERASIONAL only (Addendum §3.4, T16, ADR-020). A single-segment
+						// "*" means the exact "/api/v1/payments" rule above does not match "/*/void".
+						.requestMatchers(HttpMethod.POST, "/api/v1/payments/*/void").hasRole(ADMIN)
 						.requestMatchers(HttpMethod.GET,
 								"/api/v1/contracts", "/api/v1/contracts/*", "/api/v1/contracts/*/installments")
 								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)

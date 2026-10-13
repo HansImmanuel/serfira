@@ -103,6 +103,8 @@ class EndpointRoleMatrixIT {
 		allowedRoles.put("POST /api/v1/contracts", List.of(ADMIN));
 		allowedRoles.put("POST /api/v1/contracts/" + RANDOM_ID + "/activate", List.of(ADMIN));
 		allowedRoles.put("POST /api/v1/payments", List.of(ADMIN));
+		// Payment void (T16): ADMIN_OPERASIONAL only (Addendum §3.4, ADR-020).
+		allowedRoles.put("POST /api/v1/payments/" + RANDOM_ID + "/void", List.of(ADMIN));
 		allowedRoles.put("GET /api/v1/contracts", List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID, List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/installments", List.of(ADMIN, FINANCE, MANAJEMEN));
