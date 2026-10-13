@@ -11,9 +11,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * E4 — {@link Installment#resetPaidAmountForVoid(BigDecimal)}, the mutator a payment void uses to reset an
- * installment's {@code paid_amount} to the absolute total the remaining POSTED payments resolve, then
- * re-derive the resolution status (task T16, ADR-020 D1.3).
+ * E4 — {@link Installment#resetPaidAmountForVoid(BigDecimal, OffsetDateTime)}, the mutator a payment void
+ * uses to reset an installment's {@code paid_amount} to the absolute total the remaining POSTED payments
+ * (plus surviving applied credit) resolve, re-stamp {@code paid_at} from the first surviving resolving
+ * payment, then re-derive the resolution status (task T16, ADR-020 D1.3).
  *
  * <p>Unlike {@link Installment#applyPayment}, this can <b>lower</b> the paid amount, so the status demotes
  * {@code PAID → PARTIALLY_PAID → PENDING}. The {@code SETTLED}/{@code WRITTEN_OFF} terminal guard is
@@ -24,6 +25,8 @@ class InstallmentVoidRecomputeTest {
 
 	private static final OffsetDateTime PAID_AT =
 			OffsetDateTime.of(2026, 9, 21, 9, 30, 0, 0, ZoneOffset.ofHours(7));
+	private static final OffsetDateTime LATER_PAID_AT =
+			OffsetDateTime.of(2026, 9, 24, 11, 0, 0, 0, ZoneOffset.ofHours(7));
 
 	private static final BigDecimal PRINCIPAL = new BigDecimal("1000.00");
 	private static final BigDecimal INTEREST = new BigDecimal("100.00");
@@ -34,7 +37,7 @@ class InstallmentVoidRecomputeTest {
 		assertThat(installment.getStatus()).isEqualTo(InstallmentStatus.PAID);
 		assertThat(installment.getPaidAt()).isEqualTo(PAID_AT);
 
-		installment.resetPaidAmountForVoid(new BigDecimal("0.00"));
+		installment.resetPaidAmountForVoid(new BigDecimal("0.00"), null);
 
 		// The only payment that resolved it is voided: paid_amount back to 0, paid_at cleared, PENDING.
 		assertThat(installment.getPaidAmount()).isEqualByComparingTo("0.00");
@@ -47,7 +50,7 @@ class InstallmentVoidRecomputeTest {
 		Installment installment = fullyPaid();
 
 		// A second POSTED payment still resolves 400.00 of this installment after the void.
-		installment.resetPaidAmountForVoid(new BigDecimal("400.00"));
+		installment.resetPaidAmountForVoid(new BigDecimal("400.00"), PAID_AT);
 
 		assertThat(installment.getPaidAmount()).isEqualByComparingTo("400.00");
 		assertThat(installment.getStatus()).isEqualTo(InstallmentStatus.PARTIALLY_PAID);
@@ -59,17 +62,30 @@ class InstallmentVoidRecomputeTest {
 		Installment installment = fullyPaid();
 
 		// A void that only removed an over-resolution leaves the installment still fully paid.
-		installment.resetPaidAmountForVoid(PRINCIPAL.add(INTEREST));
+		installment.resetPaidAmountForVoid(PRINCIPAL.add(INTEREST), PAID_AT);
 
 		assertThat(installment.getStatus()).isEqualTo(InstallmentStatus.PAID);
 		assertThat(installment.getPaidAt()).isEqualTo(PAID_AT);
 	}
 
 	@Test
+	void voidingTheEarliestPaymentAdvancesPaidAtToTheNextSurvivingPayment() {
+		Installment installment = fullyPaid();
+
+		// The void removes the earliest payment (which supplied PAID_AT); a later POSTED payment still
+		// resolves 400.00, so paid_at advances to that surviving payment's instant (ADR-020 D1.3, finding #4).
+		installment.resetPaidAmountForVoid(new BigDecimal("400.00"), LATER_PAID_AT);
+
+		assertThat(installment.getPaidAmount()).isEqualByComparingTo("400.00");
+		assertThat(installment.getStatus()).isEqualTo(InstallmentStatus.PARTIALLY_PAID);
+		assertThat(installment.getPaidAt()).isEqualTo(LATER_PAID_AT);
+	}
+
+	@Test
 	void aNegativeRecomputedAmountIsRejected() {
 		Installment installment = fullyPaid();
 
-		assertThatThrownBy(() -> installment.resetPaidAmountForVoid(new BigDecimal("-1.00")))
+		assertThatThrownBy(() -> installment.resetPaidAmountForVoid(new BigDecimal("-1.00"), PAID_AT))
 				.isInstanceOf(IllegalArgumentException.class);
 	}
 
@@ -77,7 +93,7 @@ class InstallmentVoidRecomputeTest {
 	void aFinerThanScaleTwoAmountIsRejected() {
 		Installment installment = fullyPaid();
 
-		assertThatThrownBy(() -> installment.resetPaidAmountForVoid(new BigDecimal("1.001")))
+		assertThatThrownBy(() -> installment.resetPaidAmountForVoid(new BigDecimal("1.001"), PAID_AT))
 				.isInstanceOf(ArithmeticException.class);
 	}
 
@@ -85,7 +101,7 @@ class InstallmentVoidRecomputeTest {
 	void aNullAmountIsRejected() {
 		Installment installment = fullyPaid();
 
-		assertThatThrownBy(() -> installment.resetPaidAmountForVoid(null))
+		assertThatThrownBy(() -> installment.resetPaidAmountForVoid(null, PAID_AT))
 				.isInstanceOf(NullPointerException.class);
 	}
 

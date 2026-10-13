@@ -58,4 +58,25 @@ public interface PaymentAllocationRepository extends JpaRepository<PaymentAlloca
 			""")
 	List<ResolvedInstallmentTotal> sumResolvedByInstallmentIds(@Param("status") PaymentStatus status,
 			@Param("installmentIds") Collection<UUID> installmentIds);
+
+	/**
+	 * The earliest {@code paid_at} among the payments in the given status whose non-EXCESS allocations
+	 * resolve each installment (E4 void, task T16). Called with {@code status = POSTED} after the voided
+	 * payment is flushed VOIDED, so it yields the first <b>surviving</b> resolving instant per installment,
+	 * which the void writes back as the installment's {@code paid_at} (ADR-020 D1.3).
+	 *
+	 * <p>Only installments that still have a resolving POSTED allocation appear; an installment absent from
+	 * the result is no longer resolved by any POSTED payment, so its {@code paid_at} is cleared.
+	 */
+	@Query("""
+			select new com.serfira.payment.infrastructure.EarliestResolvingInstant(
+				a.installmentId, min(a.payment.paidAt))
+			from PaymentAllocation a
+			where a.payment.status = :status
+				and a.type <> com.serfira.payment.domain.AllocationType.EXCESS
+				and a.installmentId in :installmentIds
+			group by a.installmentId
+			""")
+	List<EarliestResolvingInstant> earliestResolvingInstantByInstallmentIds(@Param("status") PaymentStatus status,
+			@Param("installmentIds") Collection<UUID> installmentIds);
 }

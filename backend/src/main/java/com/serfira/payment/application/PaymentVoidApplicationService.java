@@ -4,7 +4,6 @@ import com.serfira.contract.application.PaymentVoidPort;
 import com.serfira.contract.application.VoidAffectedInstallment;
 import com.serfira.contract.application.VoidEligibility;
 import com.serfira.contract.application.ContractCreditPort;
-import com.serfira.contract.domain.ContractStatus;
 import com.serfira.contract.domain.InstallmentStatus;
 import com.serfira.ledger.application.LedgerPostingService;
 import com.serfira.ledger.domain.LedgerRefType;
@@ -14,6 +13,7 @@ import com.serfira.payment.domain.AllocationType;
 import com.serfira.payment.domain.Payment;
 import com.serfira.payment.domain.PaymentAllocation;
 import com.serfira.payment.domain.PaymentStatus;
+import com.serfira.payment.infrastructure.EarliestResolvingInstant;
 import com.serfira.payment.infrastructure.PaymentAllocationRepository;
 import com.serfira.payment.infrastructure.PaymentRepository;
 import com.serfira.payment.infrastructure.ResolvedInstallmentTotal;
@@ -56,9 +56,11 @@ import java.util.UUID;
  *
  * <p><b>Guards (ADR-020 D4/D5), inside the transaction under row locks.</b> The eligibility guard (D5)
  * runs over <b>every</b> installment the payment's allocations reference: any {@code SETTLED}/
- * {@code WRITTEN_OFF} installment, or a non-ACTIVE contract, rejects the void (409
- * {@code PAYMENT_NOT_VOIDABLE}). The consumed-credit guard (D4) locks the {@code contract_credit} row
- * before reading its balance, so a concurrent credit-apply/settlement cannot race it.
+ * {@code WRITTEN_OFF} installment rejects the void (409 {@code PAYMENT_NOT_VOIDABLE}), as does a contract
+ * that is neither {@code ACTIVE} nor {@code CLOSED}/{@code MATURITY} (voiding the final payment of a
+ * matured contract reopens it, ADR-020 D1.3; a {@code SETTLEMENT} close or write-off is still rejected).
+ * The consumed-credit guard (D4) locks the {@code contract_credit} row before reading its balance, so a
+ * concurrent credit-apply/settlement cannot race it.
  */
 @Service
 public class PaymentVoidApplicationService {
@@ -136,9 +138,11 @@ public class PaymentVoidApplicationService {
 		payments.saveAndFlush(payment);
 
 		// 2. Recompute each affected installment from what the remaining POSTED payments now resolve, and
-		//    reopen the contract if the void undid its MATURITY close.
+		//    reopen the contract if the void undid its MATURITY close. The earliest-instant map lets the
+		//    contract set each installment's paid_at to its first surviving resolving payment.
 		Map<UUID, BigDecimal> recomputedPaid = remainingResolvedByInstallment(affectedInstallmentIds);
-		contractVoid.applyVoidRecomputation(contractId, recomputedPaid, voidedAt);
+		Map<UUID, OffsetDateTime> earliestResolving = earliestResolvingByInstallment(affectedInstallmentIds);
+		contractVoid.applyVoidRecomputation(contractId, recomputedPaid, earliestResolving, voidedAt);
 
 		// 3. Reverse the payment's EXCESS credit when it is still entirely AVAILABLE; reject (409) otherwise.
 		Set<UUID> excessAllocationIds = excessAllocationIds(paymentAllocations);
@@ -154,9 +158,14 @@ public class PaymentVoidApplicationService {
 
 	private void assertVoidable(Payment payment, UUID contractId, Set<UUID> affectedInstallmentIds) {
 		VoidEligibility eligibility = contractVoid.checkVoidEligibility(contractId, affectedInstallmentIds);
-		if (eligibility.contractStatus() != ContractStatus.ACTIVE) {
+		// D5/D1.3: a void may proceed against an ACTIVE contract, or a CLOSED/MATURITY one whose auto-close
+		// the recompute can undo (reopenIfNoLongerMatured). A SETTLEMENT close or a TERMINATED/write-off is
+		// rejected — reversing those closures is out of T16's scope.
+		if (!eligibility.contractAllowsVoid()) {
+			String closure = eligibility.closedReason() == null ? "" : "/" + eligibility.closedReason();
 			throw new PaymentNotVoidableException("payment " + payment.getPaymentNo() + " cannot be voided: its "
-					+ "contract is " + eligibility.contractStatus() + ", not ACTIVE");
+					+ "contract is " + eligibility.contractStatus() + closure
+					+ ", not ACTIVE or CLOSED/MATURITY");
 		}
 		for (VoidAffectedInstallment installment : eligibility.affectedInstallments()) {
 			if (installment.status() == InstallmentStatus.SETTLED
@@ -206,6 +215,21 @@ public class PaymentVoidApplicationService {
 			resolved.put(total.installmentId(), total.amount());
 		}
 		return resolved;
+	}
+
+	/**
+	 * The earliest {@code paid_at} among the remaining POSTED payments that resolve each affected
+	 * installment (the voided payment is already flipped VOIDED and flushed, so it is excluded). An
+	 * installment with no remaining POSTED payment is absent, which the contract recompute treats as
+	 * "no payment resolves this" (it then uses surviving credit's instant, or clears paid_at).
+	 */
+	private Map<UUID, OffsetDateTime> earliestResolvingByInstallment(Set<UUID> affectedInstallmentIds) {
+		Map<UUID, OffsetDateTime> earliest = new LinkedHashMap<>();
+		for (EarliestResolvingInstant instant : allocations.earliestResolvingInstantByInstallmentIds(
+				PaymentStatus.POSTED, affectedInstallmentIds)) {
+			earliest.put(instant.installmentId(), instant.paidAt());
+		}
+		return earliest;
 	}
 
 	/**

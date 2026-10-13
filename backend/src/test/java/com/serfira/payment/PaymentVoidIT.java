@@ -233,6 +233,41 @@ class PaymentVoidIT {
 	}
 
 	@Test
+	void voidingAPaymentKeepsResolutionFundedByAppliedCreditFromAnotherPayment() throws Exception {
+		// 1. Book pure excess early (2026-01-15): the payment resolves nothing (no period due yet) and leaves
+		//    an AVAILABLE credit of 2,000,000.
+		fixedClock().setDate(LocalDate.of(2026, 1, 15));
+		postedPayment("make-credit", "2000000.00");
+		assertThat(count("contract_credit")).isEqualTo(1L);
+
+		// 2. On a date where period 1 is due, make a partial payment that resolves part of installment 1.
+		fixedClock().setDate(LocalDate.of(2026, 2, 28));
+		UUID partialPaymentId = postedPayment("partial-period-1", "500000.00");
+		assertThat(installmentStatusOf(1)).isEqualTo("PARTIALLY_PAID");
+		BigDecimal paidAfterPartial = paidAmountOf(1);
+
+		// 3. Apply 300,000 of the credit to installment 1's remaining recognized receivable.
+		MvcResult apply = mockMvc.perform(post("/api/v1/contracts/" + contractId + "/credit/apply")
+						.header("Authorization", "Bearer " + adminToken)
+						.contentType(MediaType.APPLICATION_JSON).content("{\"amount\":300000.00}"))
+				.andReturn();
+		assertThat(apply.getResponse().getStatus()).isEqualTo(200);
+		BigDecimal paidAfterCredit = paidAmountOf(1);
+		assertThat(paidAfterCredit).isGreaterThan(paidAfterPartial);
+		BigDecimal creditFunded = paidAfterCredit.subtract(paidAfterPartial);
+
+		// 4. Void the partial payment. Installment 1 must keep the credit-funded portion — it is not dropped
+		//    to zero — because the surviving contract_credit_application still resolves it (ADR-020 D1.3).
+		MvcResult result = voidPayment(partialPaymentId, "void-partial", "{}");
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(200);
+		assertThat(paidAmountOf(1)).isEqualByComparingTo(creditFunded);
+		assertThat(installmentStatusOf(1)).isNotEqualTo("PENDING");
+		// The applied credit and its row are untouched by the void.
+		assertThat(count("contract_credit_application")).isEqualTo(1L);
+	}
+
+	@Test
 	void voidingAPaymentOfASettledInstallmentIsRejectedAsNotVoidable() throws Exception {
 		UUID paymentId = postedPayment("to-be-settled", "500000.00");
 		// Simulate a settlement having since settled the installment the payment resolved: mark it SETTLED

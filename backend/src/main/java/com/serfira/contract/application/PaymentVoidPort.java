@@ -46,16 +46,27 @@ public interface PaymentVoidPort {
 	 * leaves an installment no longer {@code PAID}.
 	 *
 	 * <p>The amounts are absolute, not deltas: an installment missing from the map means the remaining
-	 * POSTED payments resolve nothing against it, so it is reset to {@code paid_amount = 0}. The versioned
-	 * installment and contract writes commit with the caller's reversal journal and payment status flip.
+	 * POSTED payments resolve nothing against it, so it is reset to {@code paid_amount = 0}. The contract
+	 * module adds back any surviving customer credit applied to each installment ({@code
+	 * contract_credit_application}, task T14) before the reset, so a void of one payment does not drop
+	 * credit-funded resolution contributed by another payment. The versioned installment and contract
+	 * writes commit with the caller's reversal journal and payment status flip.
 	 *
-	 * @param contractId                   the payment's contract
-	 * @param recomputedPaidByInstallment  absolute paid total per affected installment id from the remaining
-	 *                                     POSTED payments, each {@code >= 0}
-	 * @param voidedAt                     business instant of the void (unused by the recomputation itself,
-	 *                                     kept for symmetry with the resolution mutators and future audit)
+	 * <p>Each affected installment's {@code paid_at} is reset to the earliest instant among the remaining
+	 * POSTED payments that still resolve it ({@code earliestResolvingByInstallment}), so voiding the
+	 * earliest of several payments no longer leaves the voided payment's instant behind; an installment
+	 * with no surviving resolving payment has its {@code paid_at} cleared.
+	 *
+	 * @param contractId                       the payment's contract
+	 * @param recomputedPaidByInstallment      absolute paid total per affected installment id from the
+	 *                                         remaining POSTED payments, each {@code >= 0}
+	 * @param earliestResolvingByInstallment   earliest surviving POSTED resolving instant per affected
+	 *                                         installment id; an installment absent here is no longer
+	 *                                         resolved by any POSTED payment
+	 * @param voidedAt                         business instant of the void (unused by the recomputation
+	 *                                         itself, kept for symmetry with the resolution mutators)
 	 * @throws IllegalStateException if an installment of the map is not part of the contract's schedule
 	 */
 	void applyVoidRecomputation(UUID contractId, Map<UUID, BigDecimal> recomputedPaidByInstallment,
-			OffsetDateTime voidedAt);
+			Map<UUID, OffsetDateTime> earliestResolvingByInstallment, OffsetDateTime voidedAt);
 }

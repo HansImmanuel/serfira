@@ -162,19 +162,24 @@ public class Installment extends Auditable {
 	 *
 	 * <p>The caller ({@code contract}'s void recompute service) sums the resolved amount of the
 	 * <b>remaining</b> POSTED payments per installment ({@code payment} owns those allocations) and passes
-	 * that absolute total here; this method never adds to the current value. {@code paid_at} is cleared
-	 * when the recomputed total is zero (no payment resolves the installment any more) and otherwise kept,
-	 * because the earliest resolving payment's instant is still correct while any POSTED payment remains.
+	 * that absolute total here; this method never adds to the current value. {@code paid_at} is set to the
+	 * earliest instant among the surviving resolving payments ({@code recomputedPaidAt}), so voiding the
+	 * payment that supplied the stored first-payment instant correctly advances it to the next surviving
+	 * payment; it is cleared ({@code recomputedPaidAt == null}) when no payment resolves the installment any
+	 * more.
 	 *
 	 * <p>Terminal states are never touched: a {@code SETTLED} or {@code WRITTEN_OFF} installment cannot be
 	 * reached by a void (ADR-020 D5 rejects the whole void first), so this guard is defensive. The derived
 	 * status reads the zero-adjustment balance ({@link InstallmentBalance#of(Installment)}), matching
 	 * {@link #applyPayment}: a void does not change penalty adjustments.
 	 *
-	 * @param recomputedPaidAmount absolute paid total from the remaining POSTED payments; scale-2, {@code >= 0}
+	 * @param recomputedPaidAmount absolute paid total from the remaining POSTED payments plus surviving
+	 *                             applied credit; scale-2, {@code >= 0}
+	 * @param recomputedPaidAt     earliest instant among the surviving resolving payments, or {@code null}
+	 *                             when no payment resolves the installment any more
 	 * @throws IllegalArgumentException if the amount is negative or finer than scale 2
 	 */
-	public void resetPaidAmountForVoid(BigDecimal recomputedPaidAmount) {
+	public void resetPaidAmountForVoid(BigDecimal recomputedPaidAmount, OffsetDateTime recomputedPaidAt) {
 		Objects.requireNonNull(recomputedPaidAmount, "recomputedPaidAmount");
 		if (status == InstallmentStatus.SETTLED || status == InstallmentStatus.WRITTEN_OFF) {
 			return;
@@ -184,9 +189,9 @@ public class Installment extends Auditable {
 			throw new IllegalArgumentException("a recomputed paid amount must be >= 0 but was " + recomputed);
 		}
 		this.paidAmount = recomputed;
-		if (recomputed.signum() == 0) {
-			this.paidAt = null;
-		}
+		// paid_at follows the earliest surviving resolving payment: cleared when nothing resolves it, else
+		// advanced to the next payment's instant if the void removed the one that supplied the old value.
+		this.paidAt = recomputed.signum() == 0 ? null : recomputedPaidAt;
 		if (InstallmentBalance.of(this).outstanding().signum() == 0) {
 			this.status = InstallmentStatus.PAID;
 		} else if (recomputed.signum() == 0) {

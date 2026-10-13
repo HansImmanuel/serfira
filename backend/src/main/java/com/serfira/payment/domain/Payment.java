@@ -44,6 +44,13 @@ public class Payment extends Auditable {
 	private static final int MONEY_SCALE = 2;
 	private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 80;
 
+	/**
+	 * The reason stored when a void carries no explicit one. {@code ck_payment_voided_coherence} (V4)
+	 * requires {@code void_reason IS NOT NULL} whenever {@code status = 'VOIDED'}, and the void body is
+	 * optional (ADR-020), so a bare void must still record a non-null reason rather than fail at flush.
+	 */
+	static final String DEFAULT_VOID_REASON = "(no reason given)";
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.UUID)
 	@Column(name = "id", nullable = false, updatable = false)
@@ -121,8 +128,13 @@ public class Payment extends Auditable {
 	 * {@code false}, so a retried void never produces a second reversal. The {@code @Version} column
 	 * carries the optimistic lock that serializes a void against a concurrent write on the same payment.
 	 *
+	 * <p>A {@code null}/blank reason is stored as {@link #DEFAULT_VOID_REASON}, never {@code null}: the
+	 * void body is optional (ADR-020) but {@code ck_payment_voided_coherence} (V4) forbids a null reason on
+	 * a VOIDED row, so a bare void records the default rather than failing at flush.
+	 *
 	 * @param voidedAt   business instant of the void, from the application clock (never client supplied)
-	 * @param voidReason free-text reason recorded for the audit trail (never PII)
+	 * @param voidReason free-text reason recorded for the audit trail (never PII); {@code null}/blank
+	 *                   becomes {@link #DEFAULT_VOID_REASON}
 	 * @return {@code true} when this call performed the {@code POSTED → VOIDED} transition
 	 */
 	public boolean markVoided(OffsetDateTime voidedAt, String voidReason) {
@@ -132,7 +144,7 @@ public class Payment extends Auditable {
 		}
 		this.status = PaymentStatus.VOIDED;
 		this.voidedAt = voidedAt;
-		this.voidReason = voidReason == null || voidReason.isBlank() ? null : voidReason.trim();
+		this.voidReason = voidReason == null || voidReason.isBlank() ? DEFAULT_VOID_REASON : voidReason.trim();
 		return true;
 	}
 

@@ -37,13 +37,25 @@ class PaymentVoidTest {
 	}
 
 	@Test
-	void voidingWithABlankReasonStoresNoReason() {
+	void voidingWithABlankReasonStoresTheDefaultReasonSoTheCheckConstraintHolds() {
 		Payment payment = posted();
 
 		payment.markVoided(VOIDED_AT, "   ");
 
 		assertThat(payment.getStatus()).isEqualTo(PaymentStatus.VOIDED);
-		assertThat(payment.getVoidReason()).isNull();
+		// ck_payment_voided_coherence (V4) forbids a null void_reason on a VOIDED row, so a blank/missing
+		// reason is stored as the default rather than null (ADR-020: the void body is optional).
+		assertThat(payment.getVoidReason()).isEqualTo("(no reason given)");
+	}
+
+	@Test
+	void voidingWithANullReasonStoresTheDefaultReason() {
+		Payment payment = posted();
+
+		payment.markVoided(VOIDED_AT, null);
+
+		assertThat(payment.getStatus()).isEqualTo(PaymentStatus.VOIDED);
+		assertThat(payment.getVoidReason()).isEqualTo("(no reason given)");
 	}
 
 	@Test

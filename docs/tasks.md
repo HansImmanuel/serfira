@@ -722,15 +722,38 @@ ADR-017), so a voided payment's key stays spent after T18 cleanup. RBAC row adde
 `ResourceServerSecurityConfiguration` + `EndpointRoleMatrixIT`. No new module. TS §1 gains the two
 `payment → contract` void edges and the `payment → ledger` reversal use.
 
+**Review-fix addendum (2026-10-13, PR #11 — CodeRabbit + Qodo).** Four confirmed defects fixed on the
+branch; a fifth deferred:
+
+1. **MATURITY void was always rejected (both tools; blocking).** `assertVoidable` rejected every non-ACTIVE
+   contract, so the D1.3 reopen path (and the `PaymentVoidIT` maturity scenario) was dead. `VoidEligibility`
+   now carries `closedReason`; the guard allows ACTIVE **or** CLOSED/MATURITY and still rejects
+   SETTLEMENT/write-off. **ADR-020 D5 corrected** (it had contradicted D1.3).
+2. **Bare void → 500 (Qodo High; blocking).** `Payment.markVoided` stored `null` for a blank/missing reason,
+   violating V4 `ck_payment_voided_coherence` (VOIDED ⇒ `void_reason NOT NULL`). It now stores a
+   `"(no reason given)"` default, so a `{}`-body void (used across `PaymentVoidIT`) succeeds.
+3. **Void dropped credit-funded resolution (Qodo High).** The recompute replaced `paid_amount` with only
+   remaining POSTED **payment** allocations, ignoring surviving `contract_credit_application` amounts.
+   `PaymentVoidService` now adds surviving applied credit per installment (new
+   `ContractCreditApplicationRepository.sumAppliedByInstallmentIds`).
+4. **Stale `paid_at` (Qodo Medium).** Voiding the earliest payment left the voided payment's instant.
+   `Installment.resetPaidAmountForVoid` now takes the earliest **surviving** resolving instant (POSTED
+   payment or applied-credit instant), advancing or clearing `paid_at`.
+5. **Deferred — reusable void key (Qodo Medium).** A _void_ idempotency key is not single-use-forever (V18
+   covers creation keys only); the hole is latent until the T18 cleanup job ships, and closing it needs a
+   new migration. Tracked as **T31** below and in ADR-020 Consequences.
+
 **Verification — 2026-10-13, Docker NOT available in this environment** (tech-stack steering fallback):
 `.\gradlew compileJava compileTestJava` passes (whole tree compiles with the void path, the two new
-`contract` seams, V18, and the two new error codes). `.\gradlew test --tests "*Test"` (all pure unit suites,
-no Docker) = **BUILD SUCCESSFUL, 57 suites / 427 tests / 0 failures / 0 errors** (up from 410 after T13),
-including the new `InstallmentVoidRecomputeTest` (6), `PaymentVoidTest` (4), `ContractReopenFromMaturityTest`
-(3) and `PaymentVoidRetryingServiceTest` (4). **Not run:** the Testcontainers `*IT` suites — specifically the
-new `PaymentVoidIT` and the extended `EndpointRoleMatrixIT` — confirmed to fail only at
-`DockerClientProviderStrategy` (no Docker daemon), not on code. They **compile** and CI must run them under
-Docker before the PR merges.
+`contract` seams, V18, the two new error codes, and the review-fix changes). `.\gradlew test --tests "*Test"`
+(all pure unit suites, no Docker) = **BUILD SUCCESSFUL, 57 suites / 429 tests / 0 failures / 0 errors**
+(up from 427; +2 from the new `PaymentVoidTest` null-reason case and the `InstallmentVoidRecomputeTest`
+paid_at-advance case), including `InstallmentVoidRecomputeTest` (7), `PaymentVoidTest` (5),
+`ContractReopenFromMaturityTest` (3) and `PaymentVoidRetryingServiceTest` (4). **Not run:** the Testcontainers
+`*IT` suites — specifically the new `PaymentVoidIT` (now including the credit-funded-resolution-survives-void
+scenario) and the extended `EndpointRoleMatrixIT` — confirmed to fail only at `DockerClientProviderStrategy`
+(no Docker daemon in this environment), not on code. They **compile** and CI must run them under Docker before
+the PR merges.
 
 **Dependencies:** C3 (`POST /payments` + allocations), ADR-002/ADR-008 (reversal posting), T14
 (`contract_credit` + `ContractCreditPort`), ADR-013 §3 (A-3). None open. **T18 does not block T16**: T16's
@@ -767,10 +790,11 @@ still entirely AVAILABLE — all atomically. Owner module: `payment`.
   the same transaction. The check is **concurrency-safe**: take a row lock on the `contract_credit` row
   (`SELECT … FOR UPDATE`, via a `ContractCreditPort` method) before reading its available balance, so a
   concurrent credit-apply/settlement cannot consume it between the check and the reversal.
-- **Eligibility guard over all affected installments (D5).** Evaluated over **every** installment the
-  payment's allocations reference, not one assumed target: if any is SETTLED or WRITTEN_OFF, or the
-  contract is not ACTIVE (closed SETTLEMENT/MATURITY/WRITTEN_OFF), reject `409 PAYMENT_NOT_VOIDABLE`,
-  writing nothing. T16 never reopens a closed contract or reverses a settlement/write-off.
+- **Eligibility guard over all affected installments (D5, corrected per PR #11).** Evaluated over **every**
+  installment the payment's allocations reference, not one assumed target: if any is SETTLED or WRITTEN_OFF,
+  reject `409 PAYMENT_NOT_VOIDABLE`, writing nothing. The contract must be ACTIVE **or** CLOSED/MATURITY
+  (the latter so voiding the final payment can reopen it, D1.3); a SETTLEMENT close or a write-off/termination
+  is rejected. T16 never reverses a settlement or write-off.
 - **Atomicity + concurrency (D6).** The status flip, reversal journal, installment recalculation and credit
   reversal succeed or roll back together in one `@Transactional` application service (controllers hold no
   transaction; ports post with `Propagation.MANDATORY`). Guards (D4/D5) run inside that transaction under
@@ -948,6 +972,30 @@ minimally or scope that out explicitly to T27). No change to application code.
 
 **Tests.** CI config change; verified by a green CI run on the PR. (If `check` currently equals `test` plus
 nothing, note that and keep the change for forward-safety as new verification tasks are added.)
+
+### T31 — Durable single-use-forever void idempotency key (2 pts)
+
+**Status: TODO.** **Dependencies:** T16 (DONE, void path + V18), ADR-017 (single-use-forever key lifecycle),
+ADR-020 D3 (all-status `uq_payment_idempotency`), T18 (the cleanup job that makes the hole reachable). Raised
+by the PR #11 review (Qodo finding #5).
+
+**Problem.** A payment-_creation_ idempotency key is kept spent forever by V18's all-status
+`uq_payment_idempotency`. A _void_ key has no such durable backstop: it lives only in the
+`IdempotencyService` claim row. Once T18's cleanup deletes an expired claim, the same key could be reused to
+void a **different** payment. No ledger invariant is breached — each such void still passes every eligibility
+guard and posts its own legitimate reversal — but it weakens the ADR-017 single-use-forever contract for
+void keys.
+
+**Scope.** Persist a durable, uniquely-constrained, endpoint-scoped void-key association with the voided
+payment (new Flyway migration: a column or side table + unique index keyed on the void endpoint scope + key),
+written inside the void transaction. Reject reuse of a spent void key for a different payment as
+`IDEMPOTENCY_KEY_EXPIRED` / `CONFLICT` even after the claim row is gone. Owner module: `payment`.
+
+**Acceptance criteria.** After a void and a simulated claim-row deletion (as T18 would do), reusing that key
+for a different payment is rejected and writes nothing; an identical retry of the original void still replays.
+
+**Tests.** IT (Testcontainers): void a payment, delete the claim row directly, then a reused-key void of a
+different payment is rejected; identical-key replay of the original void still returns the stored response.
 
 ## Future / Deferred Work
 

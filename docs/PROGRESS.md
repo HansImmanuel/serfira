@@ -107,13 +107,13 @@ Sprint 5 (settlement, credit application, void, consistency check, write-off, fr
       auto-apply; hanya mengurangi recognized receivable, resolusi lewat
       `InstallmentReceivablePort.applyPaymentResolution`. Satu jurnal per panggilan (`Dr TITIPAN_NASABAH /
       Cr PIUTANG*\*`, `ref_type=CREDIT_APPLICATION`, `ref_id`= application pertama; mengandalkan service guard
- `LedgerPostingService`, ADR-008 d5). `GET /api/v1/contracts/{id}/credit`(ADMIN_OPERASIONAL + FINANCE)
-  mengembalikan saldo + histori. Status flip AVAILABLE → APPLIED hanya saat saldo 0. Migrasi V14: trigger
-  deferred cap`Σ application.amount ≤ amount`(invariant 11) + guard status, tanpa`CREATE TABLE`, tanpa
-  menyentuh `uq_journal_entry_event`. Retry optimistic-lock `ContractCreditRetryingService`(3 percobaan,
-  50/150 ms) mencerminkan jalur payment. Verifikasi (Docker aktif):`CreditApplicationEngineTest`(16) +
-  `ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`.\gradlew test`= **665
-  tests, 0 gagal**;`.\gradlew check`hijau. Branch`t14-contract-credit`.
+`LedgerPostingService`, ADR-008 d5). `GET /api/v1/contracts/{id}/credit`(ADMIN_OPERASIONAL + FINANCE)
+ mengembalikan saldo + histori. Status flip AVAILABLE → APPLIED hanya saat saldo 0. Migrasi V14: trigger
+ deferred cap`Σ application.amount ≤ amount`(invariant 11) + guard status, tanpa`CREATE TABLE`, tanpa
+ menyentuh `uq_journal_entry_event`. Retry optimistic-lock `ContractCreditRetryingService`(3 percobaan,
+ 50/150 ms) mencerminkan jalur payment. Verifikasi (Docker aktif):`CreditApplicationEngineTest`(16) +
+ `ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`.\gradlew test`= **665
+ tests, 0 gagal**;`.\gradlew check`hijau. Branch`t14-contract-credit`.
 
 - [x] T15 — E5 Penalty waive/reduce + `EffectivePenaltyPort` (ADR-019, Addendum §16.4). Writer pertama
       `penalty_adjustment`: entity `PenaltyAdjustment` baru di `penalty.domain` (extends `Auditable`,
@@ -265,20 +265,30 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       bila masih sepenuhnya AVAILABLE (`ContractCreditPort.reverseAvailableCreditFromAllocations`, lock
       `SELECT … FOR UPDATE` lalu hapus baris sub-ledger, D4), dan mem-posting **satu** jurnal reversal cermin
       (`LedgerPostingService.postReversal` — baris PAYMENT asli dengan Dr/Cr ditukar, `reversal_of_id` di-set,
-      `(ref_type, ref_id)` sama, tanpa `LedgerRefType` baru, D1.2). Guard kelayakan (D5) atas **setiap**
-      installment terdampak: SETTLED/WRITTEN_OFF atau kontrak non-ACTIVE → 409 `PAYMENT_NOT_VOIDABLE`; kredit
-      sudah dipakai → 409 `PAYMENT_CREDIT_CONSUMED`; keduanya tidak menulis apa pun. **Tanpa catch-up accrual**
+      `(ref_type, ref_id)` sama, tanpa `LedgerRefType` baru, D1.2). Guard kelayakan (D5, dikoreksi di PR #11)
+      atas **setiap** installment terdampak: SETTLED/WRITTEN_OFF → 409 `PAYMENT_NOT_VOIDABLE`; kontrak harus
+      ACTIVE **atau** CLOSED/MATURITY (agar void pembayaran terakhir bisa membuka kembali, D1.3), penutupan
+      SETTLEMENT/write-off ditolak; kredit sudah dipakai → 409 `PAYMENT_CREDIT_CONSUMED`; semua tidak menulis
+      apa pun. **Tanpa catch-up accrual**
       (ADR-020 D2): void menaikkan base, job harian berikutnya meng-accrue tanggal yang belum punya baris. Dua
       `ErrorCode` baru + subclass `SerfiraException`. Migrasi **V18** drop + recreate `uq_payment_idempotency`
       tanpa predikat `status = 'POSTED'` (semua status), dengan preflight fail-safe (ADR-020 D3, ADR-017), agar
       key pembayaran yang di-void tetap terpakai setelah pembersihan T18. Baris RBAC baru di
       `ResourceServerSecurityConfiguration` + `EndpointRoleMatrixIT`. Tanpa modul baru. TS §1 menambah dua edge
       void `payment → contract` dan penggunaan `payment → ledger` untuk reversal.
+      **Perbaikan review PR #11 (2026-10-13, CodeRabbit + Qodo):** (1) guard MATURITY diperbaiki —
+      `VoidEligibility` kini membawa `closedReason`, void boleh untuk ACTIVE atau CLOSED/MATURITY (ADR-020 D5
+      dikoreksi karena bertentangan dengan D1.3); (2) `Payment.markVoided` menyimpan reason default
+      `"(no reason given)"` untuk reason kosong/null agar tak melanggar CHECK V4 (`void_reason NOT NULL`);
+      (3) recompute kini menambahkan kembali kredit yang diterapkan ke installment
+      (`contract_credit_application`) agar void tak menjatuhkan resolusi berpendanaan kredit; (4) `paid_at`
+      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency _void_
+      belum single-use-forever (butuh migrasi baru; laten sampai T18) → **T31**.
       **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):**
       `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"` (semua unit, tanpa Docker)
-      = **57 suite / 427 tes / 0 gagal / 0 error** (naik dari 410 setelah T13), termasuk
-      `InstallmentVoidRecomputeTest` (6), `PaymentVoidTest` (4), `ContractReopenFromMaturityTest` (3) dan
+      = **57 suite / 429 tes / 0 gagal / 0 error** (naik dari 427), termasuk
+      `InstallmentVoidRecomputeTest` (7), `PaymentVoidTest` (5), `ContractReopenFromMaturityTest` (3) dan
       `PaymentVoidRetryingServiceTest` (4). **Tidak dijalankan:** suite Testcontainers `*IT` — `PaymentVoidIT`
-      baru dan `EndpointRoleMatrixIT` yang diperluas — dikompilasi tetapi gagal hanya di
-      `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus menjalankannya di Docker sebelum merge.
-      Branch `t16-payment-void`.
+      baru (termasuk skenario kredit-tersisa-bertahan-saat-void) dan `EndpointRoleMatrixIT` yang diperluas —
+      dikompilasi tetapi gagal hanya di `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus
+      menjalankannya di Docker sebelum merge. Branch `t16-payment-void`.

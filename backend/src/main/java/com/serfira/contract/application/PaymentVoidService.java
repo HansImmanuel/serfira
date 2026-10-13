@@ -3,7 +3,9 @@ package com.serfira.contract.application;
 import com.serfira.contract.domain.Contract;
 import com.serfira.contract.domain.Installment;
 import com.serfira.contract.domain.InstallmentStatus;
+import com.serfira.contract.infrastructure.ContractCreditApplicationRepository;
 import com.serfira.contract.infrastructure.ContractRepository;
+import com.serfira.contract.infrastructure.CreditResolvedInstallmentTotal;
 import com.serfira.contract.infrastructure.InstallmentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,10 +47,13 @@ public class PaymentVoidService implements PaymentVoidPort {
 
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
+	private final ContractCreditApplicationRepository creditApplications;
 
-	public PaymentVoidService(ContractRepository contracts, InstallmentRepository installments) {
+	public PaymentVoidService(ContractRepository contracts, InstallmentRepository installments,
+			ContractCreditApplicationRepository creditApplications) {
 		this.contracts = contracts;
 		this.installments = installments;
+		this.creditApplications = creditApplications;
 	}
 
 	@Override
@@ -62,14 +67,15 @@ public class PaymentVoidService implements PaymentVoidPort {
 				.filter(installment -> installmentIds.contains(installment.getId()))
 				.map(installment -> new VoidAffectedInstallment(installment.getId(), installment.getStatus()))
 				.toList();
-		return new VoidEligibility(contract.getStatus(), affected);
+		return new VoidEligibility(contract.getStatus(), contract.getClosedReason(), affected);
 	}
 
 	@Override
 	public void applyVoidRecomputation(UUID contractId, Map<UUID, BigDecimal> recomputedPaidByInstallment,
-			OffsetDateTime voidedAt) {
+			Map<UUID, OffsetDateTime> earliestResolvingByInstallment, OffsetDateTime voidedAt) {
 		Objects.requireNonNull(contractId, "contractId");
 		Objects.requireNonNull(recomputedPaidByInstallment, "recomputedPaidByInstallment");
+		Objects.requireNonNull(earliestResolvingByInstallment, "earliestResolvingByInstallment");
 		Objects.requireNonNull(voidedAt, "voidedAt");
 
 		List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
@@ -77,13 +83,27 @@ public class PaymentVoidService implements PaymentVoidPort {
 		for (Installment installment : schedule) {
 			byId.put(installment.getId(), installment);
 		}
+		// Credit applied to these installments through contract_credit_application (task T14) also resolved
+		// part of them and survives the void. Add its amount back (so the absolute recompute does not drop
+		// surviving credit resolution and wrongly inflate the outstanding balance) and let its earliest
+		// applied instant stand in for paid_at when no POSTED payment resolves the installment any more, so
+		// ck_installment_paid_coherence stays satisfied (ADR-020 D1.3).
+		Map<UUID, CreditResolvedInstallmentTotal> creditFunded =
+				creditFundedByInstallment(recomputedPaidByInstallment.keySet());
 		for (Map.Entry<UUID, BigDecimal> recomputed : recomputedPaidByInstallment.entrySet()) {
-			Installment installment = byId.get(recomputed.getKey());
+			UUID installmentId = recomputed.getKey();
+			Installment installment = byId.get(installmentId);
 			if (installment == null) {
-				throw new IllegalStateException("installment " + recomputed.getKey()
+				throw new IllegalStateException("installment " + installmentId
 						+ " does not belong to contract " + contractId);
 			}
-			installment.resetPaidAmountForVoid(recomputed.getValue() == null ? ZERO : recomputed.getValue());
+			BigDecimal fromPayments = recomputed.getValue() == null ? ZERO : recomputed.getValue();
+			CreditResolvedInstallmentTotal credit = creditFunded.get(installmentId);
+			BigDecimal fromCredit = credit == null ? ZERO : credit.applied();
+			OffsetDateTime resolvedAt = earliestResolvingInstant(
+					earliestResolvingByInstallment.get(installmentId),
+					credit == null ? null : credit.earliestAppliedAt());
+			installment.resetPaidAmountForVoid(fromPayments.add(fromCredit), resolvedAt);
 		}
 		reopenIfNoLongerMatured(contractId, schedule);
 		// Flush now (as InstallmentReceivableService does) so a broken recomputation or an incoherent reopen
@@ -114,5 +134,38 @@ public class PaymentVoidService implements PaymentVoidPort {
 
 	private static boolean allPaid(List<Installment> schedule) {
 		return schedule.stream().allMatch(installment -> installment.getStatus() == InstallmentStatus.PAID);
+	}
+
+	/**
+	 * Surviving customer credit applied to each of the given installments — amount and earliest instant
+	 * (ADR-020 D1.3). A void never touches {@code contract_credit_application} rows, so every application
+	 * still counts; this is the credit-funded portion of {@code paid_amount} the absolute recompute must
+	 * preserve, with a {@code paid_at} candidate for an installment resolved only by credit.
+	 */
+	private Map<UUID, CreditResolvedInstallmentTotal> creditFundedByInstallment(Set<UUID> installmentIds) {
+		Map<UUID, CreditResolvedInstallmentTotal> funded = new HashMap<>();
+		if (installmentIds.isEmpty()) {
+			return funded;
+		}
+		for (CreditResolvedInstallmentTotal total : creditApplications.sumAppliedByInstallmentIds(installmentIds)) {
+			funded.put(total.installmentId(), total);
+		}
+		return funded;
+	}
+
+	/**
+	 * The earlier of the two surviving resolving instants (a remaining POSTED payment's {@code paid_at} and
+	 * the earliest surviving credit application's {@code applied_at}), or {@code null} when neither resolves
+	 * the installment. Used as the installment's recomputed {@code paid_at} so it reflects the first thing
+	 * that still resolves it after the void.
+	 */
+	private static OffsetDateTime earliestResolvingInstant(OffsetDateTime fromPayment, OffsetDateTime fromCredit) {
+		if (fromPayment == null) {
+			return fromCredit;
+		}
+		if (fromCredit == null) {
+			return fromPayment;
+		}
+		return fromPayment.isBefore(fromCredit) ? fromPayment : fromCredit;
 	}
 }
