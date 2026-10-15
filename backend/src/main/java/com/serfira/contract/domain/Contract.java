@@ -218,6 +218,36 @@ public class Contract extends Auditable {
 		return true;
 	}
 
+	/**
+	 * Reopens a {@code CLOSED}/{@code MATURITY} contract back to {@code ACTIVE} when a payment void undoes
+	 * the resolution that matured it (E4, task T16, ADR-020 D1.3): if the voided payment was what paid the
+	 * final installment, the auto-close (invariant 17) must be undone together with the installment demotion.
+	 *
+	 * <p>Only a {@code MATURITY} close may be reopened, and only this way: a {@code SETTLEMENT} close or a
+	 * write-off ({@code TERMINATED}) is never reopened by a void (ADR-020 D5 rejects a void whose contract
+	 * is not ACTIVE before reaching here, so this guard is defensive). Clears {@code closed_at} and
+	 * {@code closed_reason} so the row stays coherent for the V4 {@code ck_contract_active_coherence} CHECK
+	 * (ACTIVE ⇒ both NULL). Idempotent by state: an already {@code ACTIVE} contract writes nothing and
+	 * returns {@code false}.
+	 *
+	 * @return {@code true} when this call performed the {@code CLOSED → ACTIVE} transition
+	 * @throws ContractStateException if the contract is CLOSED for a non-MATURITY reason, or TERMINATED
+	 */
+	public boolean reopenFromMaturity() {
+		if (status == ContractStatus.ACTIVE) {
+			return false;
+		}
+		if (status != ContractStatus.CLOSED || closedReason != ClosedReason.MATURITY) {
+			throw new ContractStateException("contract " + contractNo + " is " + status
+					+ (closedReason == null ? "" : "/" + closedReason)
+					+ " and cannot be reopened by a payment void; only a MATURITY auto-close can");
+		}
+		this.status = ContractStatus.ACTIVE;
+		this.closedAt = null;
+		this.closedReason = null;
+		return true;
+	}
+
 	public UUID getId() {
 		return id;
 	}

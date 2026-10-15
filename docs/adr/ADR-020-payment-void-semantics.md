@@ -44,9 +44,16 @@ Voiding payment `P`:
 2. posts **one** reversal `journal_entry` whose `reversal_of_id` points at `P`'s original payment
    entry and whose lines mirror the original with debit/credit swapped (ADR-002, ADR-008);
 3. recomputes each affected installment's `paid_amount` and resolution status **from the remaining
-   POSTED payments only** — i.e. excluding `P`'s allocations — through the existing
-   `InstallmentReceivablePort` resolution mutator, so an installment correctly drops from PAID back
-   to PARTIALLY_PAID / PENDING and a MATURITY auto-close is undone if `P` was what closed it.
+   POSTED payments** — i.e. excluding `P`'s allocations — **plus any customer credit still applied to
+   that installment** (`contract_credit_application`, T14), through the void-specific
+   `Installment.resetPaidAmountForVoid` mutator, so an installment correctly drops from PAID back to
+   PARTIALLY*PAID / PENDING and a MATURITY auto-close is undone if `P` was what closed it. The surviving
+   applied credit is added back because a void of a \_different* payment must not drop credit-funded
+   resolution and wrongly inflate the outstanding balance (PR #11 review). Each installment's `paid_at`
+   is re-stamped to the earliest instant among its surviving resolving payments (or the earliest
+   surviving credit application when no POSTED payment resolves it, keeping
+   `ck_installment_paid_coherence` satisfied), so voiding the earliest payment advances `paid_at` to the
+   next surviving one instead of leaving the voided payment's instant behind (PR #11 review).
 
 The `payment_allocation` rows of a VOIDED payment remain in the table; the VOIDED status on the
 parent is the historical marker that they no longer count toward live receivable. Reads that compute
@@ -98,13 +105,27 @@ the reversal. A concurrent consumer either loses the race (void reverses first; 
 no AVAILABLE credit) or wins it (void then sees the balance reduced and returns
 `PAYMENT_CREDIT_CONSUMED`). The DB `contract_credit` cap/status guards (V14) remain the backstop.
 
-### D5 — Void is blocked if any affected installment is SETTLED/WRITTEN_OFF or its contract is not ACTIVE
+### D5 — Void is blocked if any affected installment is SETTLED/WRITTEN_OFF, or the contract is closed for any reason other than MATURITY
 
 The void guard is evaluated over **every** installment referenced by `P`'s immutable allocations, not
-one assumed target. If any such installment is SETTLED or WRITTEN_OFF, or `P`'s contract is no longer
-ACTIVE (closed SETTLEMENT / MATURITY / WRITTEN_OFF), the void is rejected `409 PAYMENT_NOT_VOIDABLE`
-and writes nothing. T16 never reopens a closed contract or reverses a settlement/write-off; reversing
-those closures is a separate, out-of-scope story.
+one assumed target. If any such installment is SETTLED or WRITTEN_OFF, the void is rejected
+`409 PAYMENT_NOT_VOIDABLE` and writes nothing.
+
+The contract-status half of this guard is **narrower than an "ACTIVE-only" rule**, so it does not
+contradict D1.3: a void proceeds when the contract is **ACTIVE**, or **CLOSED with
+`closed_reason = MATURITY`**. The latter is exactly the case D1.3 recovers — voiding the final payment
+of a matured contract demotes an installment below PAID and reopens the contract to ACTIVE
+(`Contract.reopenFromMaturity`). A contract closed for **SETTLEMENT**, or terminated by a write-off, is
+rejected `409 PAYMENT_NOT_VOIDABLE`: T16 never reverses a settlement or write-off; reversing those
+closures is a separate, out-of-scope story.
+
+> **Correction (PR #11 review).** The original wording of D5 said "or `P`'s contract is no longer ACTIVE
+> (closed SETTLEMENT / MATURITY / WRITTEN_OFF)", which read as rejecting a MATURITY close too and so
+> contradicted D1.3's promised reopen. The implemented guard originally took that literal reading and
+> made the reopen path dead code (the `PaymentVoidIT` maturity-reopen scenario failed). The guard and
+> this decision now allow a CLOSED/MATURITY contract through so D1.3 can run; only SETTLEMENT/write-off
+> closures are rejected here. The eligibility snapshot (`VoidEligibility`) carries the `closed_reason` so
+> the guard can tell MATURITY from SETTLEMENT.
 
 ### D6 — The whole void is one atomic transaction
 
@@ -161,6 +182,14 @@ as `POST /payments` (identical key replays the stored response; expired key → 
   accepted).
 - **ADR-018's "void must account for settled installments" note is answered** by D5: settled/closed
   installments make the payment non-voidable in T16; reopening them is out of scope.
+- **Deferred (PR #11 review, finding #5): a void idempotency key is not yet single-use-forever.** V18's
+  all-status `uq_payment_idempotency` keeps a _payment-creation_ key spent, but a _void_ key lives only
+  in the `IdempotencyService` claim row. Once the T18 cleanup job deletes an expired claim, the same key
+  could be reused to void a _different_ payment (each such void still passes every eligibility guard and
+  posts its own legitimate reversal — it is not a second reversal of the same payment, so no invariant
+  is breached; it only weakens the ADR-017 single-use-forever contract for void keys). The hole is
+  latent until T18 ships. Closing it needs a durable, uniquely-constrained void-key association on the
+  voided payment (a new migration), tracked as a follow-up task rather than folded into T16.
 - **Derived docs to update with this ADR** (per `80-documentation`): `02_TECH_SPEC.md` §1 (void is a
   `payment → contract`/`ledger` flow; no new module), `03_DOMAIN_MODEL.md` §1.7/§1.4 (Payment VOIDED
   recomputation; invariant 16 void-when-credit-consumed), `04_GAPS_ADDENDUM.md` §6 (void = reversal +

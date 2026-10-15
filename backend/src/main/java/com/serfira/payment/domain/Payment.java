@@ -44,6 +44,13 @@ public class Payment extends Auditable {
 	private static final int MONEY_SCALE = 2;
 	private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 80;
 
+	/**
+	 * The reason stored when a void carries no explicit one. {@code ck_payment_voided_coherence} (V4)
+	 * requires {@code void_reason IS NOT NULL} whenever {@code status = 'VOIDED'}, and the void body is
+	 * optional (ADR-020), so a bare void must still record a non-null reason rather than fail at flush.
+	 */
+	static final String DEFAULT_VOID_REASON = "(no reason given)";
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.UUID)
 	@Column(name = "id", nullable = false, updatable = false)
@@ -109,6 +116,36 @@ public class Payment extends Auditable {
 		this.paidAt = Objects.requireNonNull(paidAt, "paidAt");
 		this.idempotencyKey = requireKey(idempotencyKey);
 		this.status = PaymentStatus.POSTED;
+	}
+
+	/**
+	 * Reverses this payment (E4, task T16, ADR-020 D1): flips {@code POSTED → VOIDED} and stamps the
+	 * voiding instant and reason. A reversal, never a deletion — {@code amount} and the
+	 * {@link PaymentAllocation} rows are left intact as history and merely stop counting as <b>active</b>
+	 * (DM §1.7/§1.8); the reversal journal and the installment recomputation are the caller's steps.
+	 *
+	 * <p>Idempotent by state: voiding an already {@code VOIDED} payment writes nothing and returns
+	 * {@code false}, so a retried void never produces a second reversal. The {@code @Version} column
+	 * carries the optimistic lock that serializes a void against a concurrent write on the same payment.
+	 *
+	 * <p>A {@code null}/blank reason is stored as {@link #DEFAULT_VOID_REASON}, never {@code null}: the
+	 * void body is optional (ADR-020) but {@code ck_payment_voided_coherence} (V4) forbids a null reason on
+	 * a VOIDED row, so a bare void records the default rather than failing at flush.
+	 *
+	 * @param voidedAt   business instant of the void, from the application clock (never client supplied)
+	 * @param voidReason free-text reason recorded for the audit trail (never PII); {@code null}/blank
+	 *                   becomes {@link #DEFAULT_VOID_REASON}
+	 * @return {@code true} when this call performed the {@code POSTED → VOIDED} transition
+	 */
+	public boolean markVoided(OffsetDateTime voidedAt, String voidReason) {
+		Objects.requireNonNull(voidedAt, "voidedAt");
+		if (status == PaymentStatus.VOIDED) {
+			return false;
+		}
+		this.status = PaymentStatus.VOIDED;
+		this.voidedAt = voidedAt;
+		this.voidReason = voidReason == null || voidReason.isBlank() ? DEFAULT_VOID_REASON : voidReason.trim();
+		return true;
 	}
 
 	public UUID getId() {

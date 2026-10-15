@@ -23,4 +23,14 @@ public record PaymentAllocationResponse(UUID installmentId, AllocationType alloc
 	public static PaymentAllocationResponse from(AllocationLine line) {
 		return new PaymentAllocationResponse(line.installmentRef(), line.type(), line.amount());
 	}
+
+	/**
+	 * The response view of a persisted {@link com.serfira.payment.domain.PaymentAllocation} row, for the
+	 * void path (E4): a void returns the payment with its original allocations intact (they are kept as
+	 * history, DM §1.8), so the response is built from the stored rows rather than a fresh allocation.
+	 */
+	public static PaymentAllocationResponse from(com.serfira.payment.domain.PaymentAllocation allocation) {
+		return new PaymentAllocationResponse(allocation.getInstallmentId(), allocation.getType(),
+				allocation.getAmount());
+	}
 }

@@ -72,4 +72,33 @@ public interface ContractCreditPort {
 	 *         contract has no AVAILABLE credit
 	 */
 	java.util.List<ConsumedCredit> consumeAllAvailableCredit(UUID contractId, java.time.OffsetDateTime consumedAt);
+
+	/**
+	 * Reverses the customer credit a voided payment's EXCESS allocation(s) booked, when it is still
+	 * <b>entirely AVAILABLE</b> (E4, task T16, ADR-020 D4). Called by the payment void inside its
+	 * transaction after the void has decided the payment is eligible.
+	 *
+	 * <p>Concurrency-safe (ADR-020 D4): each candidate {@code contract_credit} row is locked
+	 * {@code FOR UPDATE} before its available balance is read, so a concurrent credit-apply or settlement
+	 * cannot consume it between the check and the reversal. If any such credit has been partially or fully
+	 * applied (regular apply, T14) or consumed by a settlement (T13) — available balance {@code <} amount,
+	 * or status no longer {@code AVAILABLE} — the whole void is rejected with
+	 * {@code PaymentCreditConsumedException} (409) and nothing is written.
+	 *
+	 * <p>An entirely-AVAILABLE credit is reversed by removing the sub-ledger row: the credit is only the
+	 * sub-ledger of the EXCESS → {@code TITIPAN_NASABAH} journal line, and the void's reversal entry debits
+	 * {@code TITIPAN_NASABAH} back, so the credit must disappear for {@code Σ AVAILABLE contract_credit} to
+	 * keep reconciling with the {@code TITIPAN_NASABAH} ledger balance (Addendum §7, T17 check 3). The money
+	 * trail is preserved by the immutable journal entries (original + reversal), not by the sub-ledger row.
+	 * A credit with no applications has nothing in {@code contract_credit_application} to orphan.
+	 *
+	 * @param sourcePaymentAllocationIds the EXCESS allocation ids of the payment being voided; may be empty
+	 *                                   (the payment produced no EXCESS), in which case this is a no-op
+	 * @param reversedAt                 business instant of the void (for audit/logging)
+	 * @return the total credit amount reversed, scale-2, {@code >= 0}; zero when there was no credit
+	 * @throws com.serfira.shared.error.PaymentCreditConsumedException if any matched credit is not entirely
+	 *         AVAILABLE
+	 */
+	BigDecimal reverseAvailableCreditFromAllocations(java.util.Set<UUID> sourcePaymentAllocationIds,
+			java.time.OffsetDateTime reversedAt);
 }

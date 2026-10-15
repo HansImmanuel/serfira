@@ -1,6 +1,7 @@
 package com.serfira.payment.api;
 
 import com.serfira.payment.application.PaymentRetryingService;
+import com.serfira.payment.application.PaymentVoidRetryingService;
 import com.serfira.shared.api.ApiResponse;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -12,11 +13,14 @@ import jakarta.validation.Valid;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.UUID;
 
 /**
  * Payment HTTP surface (PRD P-1–P-4, DM §2). HTTP concerns only — allocation, installment resolution
@@ -37,9 +41,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class PaymentController {
 
 	private final PaymentRetryingService payments;
+	private final PaymentVoidRetryingService voids;
 
-	public PaymentController(PaymentRetryingService payments) {
+	public PaymentController(PaymentRetryingService payments, PaymentVoidRetryingService voids) {
 		this.payments = payments;
+		this.voids = voids;
 	}
 
 	@PostMapping
@@ -82,5 +88,46 @@ public class PaymentController {
 			@Valid @RequestBody PaymentRequest request) {
 		PaymentResponse posted = payments.create(idempotencyKey, request);
 		return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(posted));
+	}
+
+	@PostMapping("/{id}/void")
+	@Operation(summary = "Void a posted payment",
+			description = """
+					Reverses a previously POSTED payment (E4). The payment flips to VOIDED and keeps its row and
+					allocations as history (never deleted); a balanced reversal journal entry is posted; the
+					affected installments are recomputed from the remaining POSTED payments (demoting PAID back to
+					PARTIALLY_PAID/PENDING and undoing a MATURITY auto-close if this payment was what closed the
+					contract); and the payment's own overpayment credit is reversed when it is still entirely
+					available.
+					The void does NOT re-price already-accrued penalty — the next daily job accrues un-accrued dates
+					at the then-current base (ADR-020 D2).
+					The whole operation commits atomically, and repeating the request with the same `Idempotency-Key`
+					replays the original result instead of reversing twice.""")
+	@ApiResponses({
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
+					description = "Payment voided (or the original void, replayed for an identical retry)"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400",
+					description = "VALIDATION_ERROR - missing Idempotency-Key or an over-long reason"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
+					description = "UNAUTHORIZED - missing or invalid bearer token"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
+					description = "FORBIDDEN - allowed role: ADMIN_OPERASIONAL"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404",
+					description = "PAYMENT_NOT_FOUND - no such payment"),
+			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
+					description = "PAYMENT_NOT_VOIDABLE - an affected installment is SETTLED/WRITTEN_OFF or the "
+							+ "contract is not ACTIVE; PAYMENT_CREDIT_CONSUMED - the payment's overpayment credit "
+							+ "has been applied or consumed; CONFLICT - the Idempotency-Key was already used for a "
+							+ "different request; IDEMPOTENCY_KEY_EXPIRED - the Idempotency-Key is spent past its "
+							+ "retention window (mint a fresh key); CONCURRENT_MODIFICATION - a concurrent write "
+							+ "kept colliding after 3 attempts (refresh and retry)")
+	})
+	public ResponseEntity<ApiResponse<PaymentResponse>> voidPayment(
+			@Parameter(description = "The payment to void", required = true) @PathVariable("id") UUID id,
+			@Parameter(description = "Endpoint-scoped retry key (TS §2.2/§2.5)", required = true)
+			@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+			@Valid @RequestBody(required = false) VoidPaymentRequest request) {
+		PaymentResponse voided = voids.voidPayment(id, idempotencyKey, request);
+		return ResponseEntity.ok(ApiResponse.ok(voided));
 	}
 }
