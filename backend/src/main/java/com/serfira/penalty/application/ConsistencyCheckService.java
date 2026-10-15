@@ -13,6 +13,7 @@ import com.serfira.penalty.infrastructure.ReconciliationExceptionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
@@ -68,7 +69,13 @@ public class ConsistencyCheckService {
 	 *         so a drift is not a transaction failure. A thrown exception means a genuine read/processing
 	 *         failure, which the orchestrator counts separately and retries.
 	 */
-	@Transactional
+	// REPEATABLE_READ so all five reconciliation reads see one consistent database snapshot. Under the
+	// default READ COMMITTED each aggregate query sees its own freshest commit, so a POST /payments that
+	// commits mid-check (billing is live while the job runs) could make the ledger KAS/PIUTANG reads
+	// disagree with the earlier payment/allocation reads and record false OPEN drift. The step only reads
+	// money tables, so a serialization conflict is unlikely; if one occurs the orchestrator's retry path
+	// (T3/T26) handles it. (Addendum §7.1, PR #12 review.)
+	@Transactional(isolation = Isolation.REPEATABLE_READ)
 	public CheckOutcome check(UUID contractId, LocalDate businessDate) {
 		Objects.requireNonNull(contractId, "contractId");
 		Objects.requireNonNull(businessDate, "businessDate");
@@ -93,6 +100,13 @@ public class ConsistencyCheckService {
 			LOGGER.error("Consistency check {} drift for contract {}: expected {}, actual {}, diff {}",
 					discrepancy.type(), contractId, discrepancy.expected(), discrepancy.actual(),
 					discrepancy.diff());
+			// Idempotent per (contract, business date, check type): a same-date re-run of a still-drifting
+			// contract (a supported workflow) must not add a second OPEN row for one drift. Skip when an OPEN
+			// row for the key already exists; the V19 uq_recon_exception_open index is the hard backstop.
+			if (exceptions.existsByContractIdAndCheckDateAndCheckTypeAndStatus(
+					contractId, businessDate, discrepancy.type().dbValue(), ReconciliationException.OPEN_STATUS)) {
+				continue;
+			}
 			exceptions.save(new ReconciliationException(contractId, businessDate, discrepancy));
 		}
 		return discrepancies.isEmpty() ? CheckOutcome.CLEAN : CheckOutcome.DRIFT;

@@ -33,7 +33,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * T17 consistency-check behavior (F1 / story L-3, Addendum §7.1/§7.3) against PostgreSQL and Flyway V1–V18.
+ * T17 consistency-check behavior (F1 / story L-3, Addendum §7.1/§7.3) against PostgreSQL and Flyway V1–V19.
  * The check runs as the daily job's fourth step; this suite drives it through {@link LockedDailyServicingJob}
  * (the same entry point the other daily-job ITs use) and asserts the {@code consistency-check} {@code job_run}
  * row and the {@code reconciliation_exception} rows it records. The three pure predicates are golden-tested
@@ -149,6 +149,24 @@ class ConsistencyCheckIT {
 		assertConsistencyRun(2, 1, "FAILED");
 		assertThat(reconciliationExceptionCountFor(clean)).isZero();
 		assertThat(reconciliationExceptionCountFor(drifted)).isEqualTo(2L);
+	}
+
+	@Test
+	void rerunningTheSameDateDoesNotDuplicateAnOpenException() {
+		UUID contractId = createActiveContract(8, LocalDate.of(2026, 1, 31));
+		// Drifts checks A and B, so the first run records exactly two OPEN rows.
+		insertBarePayment(contractId, new BigDecimal("750000.00"));
+
+		job.run(BUSINESS_DATE);
+		assertThat(reconciliationExceptionCount()).isEqualTo(2L);
+
+		// A same-date re-run of a still-drifting contract (a supported workflow) must not add a second OPEN
+		// row for the same (contract, date, check): recording is idempotent per that key (PR #12 review).
+		job.run(BUSINESS_DATE);
+
+		assertThat(reconciliationExceptionCount()).isEqualTo(2L);
+		assertException(contractId, "PAYMENT_CASH", "750000.00", "0.00", "750000.00");
+		assertException(contractId, "ALLOCATION_PAYMENT", "750000.00", "0.00", "750000.00");
 	}
 
 	@Test

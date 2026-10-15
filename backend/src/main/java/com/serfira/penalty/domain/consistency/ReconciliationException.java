@@ -32,6 +32,13 @@ public class ReconciliationException extends Auditable {
 
 	private static final int MONEY_SCALE = 2;
 
+	/**
+	 * The {@code status} every row is created with: an unresolved drift (V1 {@code ck_recon_exception_status}).
+	 * A human moves it to {@code INVESTIGATING}/{@code RESOLVED} later (Addendum §7.3). Exposed so the
+	 * consistency step can query for an existing OPEN row without duplicating the literal.
+	 */
+	public static final String OPEN_STATUS = "OPEN";
+
 	@Id
 	@GeneratedValue(strategy = GenerationType.UUID)
 	@Column(name = "id", nullable = false, updatable = false)
@@ -77,7 +84,7 @@ public class ReconciliationException extends Auditable {
 		this.expectedAmount = money(discrepancy.expected(), "expected");
 		this.actualAmount = money(discrepancy.actual(), "actual");
 		this.diffAmount = money(discrepancy.diff(), "diff");
-		this.status = "OPEN";
+		this.status = OPEN_STATUS;
 	}
 
 	public UUID getId() {
