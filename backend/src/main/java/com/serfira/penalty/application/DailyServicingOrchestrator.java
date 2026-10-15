@@ -26,7 +26,11 @@ import java.util.UUID;
  * isolating one contract's failure from the rest.
  *
  * <p>{@code job_run} gets one row per step (A-9). {@code billing} and {@code penalty-accrual} share one
- * transaction and therefore one outcome per contract; {@code aging} is counted separately.
+ * transaction and therefore one outcome per contract; {@code aging} is counted separately. The fourth step,
+ * {@code consistency-check} (F1, task T17, Addendum §7.1/§7.3), runs after aging; it is read-only
+ * reconciliation that records drift as {@code reconciliation_exception} rows and never corrects it. For that
+ * step alone {@code records_failed} counts contracts whose reconciliation <b>drifted</b> (or threw), not
+ * only contracts whose step errored, so the {@code job_run} row is itself a portfolio drift alarm.
  */
 @Service
 public class DailyServicingOrchestrator {
@@ -34,6 +38,7 @@ public class DailyServicingOrchestrator {
 	static final String BILLING_JOB_NAME = "billing";
 	static final String PENALTY_JOB_NAME = "penalty-accrual";
 	static final String AGING_JOB_NAME = "aging";
+	static final String CONSISTENCY_JOB_NAME = "consistency-check";
 	static final int MAX_ATTEMPTS = 5;
 
 	/**
@@ -53,6 +58,7 @@ public class DailyServicingOrchestrator {
 
 	private final ActiveContractListingPort contracts;
 	private final DailyServicingContractProcessor processor;
+	private final ConsistencyCheckService consistencyCheck;
 	private final JobRunService jobRuns;
 	private final AuditContext auditContext;
 	private final Clock clock;
@@ -60,14 +66,15 @@ public class DailyServicingOrchestrator {
 	private final int batchSize;
 
 	public DailyServicingOrchestrator(ActiveContractListingPort contracts,
-			DailyServicingContractProcessor processor, JobRunService jobRuns,
-			AuditContext auditContext, Clock clock, Sleeper sleeper,
+			DailyServicingContractProcessor processor, ConsistencyCheckService consistencyCheck,
+			JobRunService jobRuns, AuditContext auditContext, Clock clock, Sleeper sleeper,
 			@Value("${serfira.jobs.daily-servicing.batch-size:500}") int batchSize) {
 		if (batchSize < 1) {
 			throw new IllegalArgumentException("batch-size must be positive");
 		}
 		this.contracts = contracts;
 		this.processor = processor;
+		this.consistencyCheck = consistencyCheck;
 		this.jobRuns = jobRuns;
 		this.auditContext = auditContext;
 		this.clock = clock;
@@ -89,13 +96,16 @@ public class DailyServicingOrchestrator {
 		// CR-07 (b): any pre-existing RUNNING row of these three job names is a crash remnant — the
 		// ShedLock guarantees no other run is live. Abandon them before starting this run's rows, so the
 		// fresh rows (not yet RUNNING when this reads) are never mistaken for stale.
-		jobRuns.abandonStaleRuns(List.of(BILLING_JOB_NAME, PENALTY_JOB_NAME, AGING_JOB_NAME));
+		jobRuns.abandonStaleRuns(List.of(BILLING_JOB_NAME, PENALTY_JOB_NAME, AGING_JOB_NAME,
+				CONSISTENCY_JOB_NAME));
 
 		UUID billingRunId = jobRuns.start(BILLING_JOB_NAME, businessDate);
 		UUID penaltyRunId = jobRuns.start(PENALTY_JOB_NAME, businessDate);
 		UUID agingRunId = jobRuns.start(AGING_JOB_NAME, businessDate);
+		UUID consistencyRunId = jobRuns.start(CONSISTENCY_JOB_NAME, businessDate);
 		StepCounters servicing = new StepCounters();
 		StepCounters aging = new StepCounters();
+		StepCounters consistency = new StepCounters();
 
 		try {
 			// CR-08: keyset (seek) paging through the contract port, one page of batchSize ids at a time.
@@ -119,6 +129,16 @@ public class DailyServicingOrchestrator {
 									() -> processor.age(contractId, businessDate));
 					aging.record(agingOutcome);
 
+					// Consistency check (F1, T17): read-only reconciliation after aging. A contract already
+					// observed non-ACTIVE is skipped (its receivable residual read would 409 anyway). Unlike
+					// the other steps, a reconciled-but-drifted contract is counted as a check failure
+					// (records_failed) while still committing its exception rows, so the job_run row flags
+					// portfolio drift; a genuine read error is also a failure, via the retry wrapper.
+					ProcessingOutcome consistencyOutcome = servicingOutcome == ProcessingOutcome.SKIPPED
+							? ProcessingOutcome.SKIPPED
+							: runConsistencyWithRetry(contractId, businessDate);
+					consistency.record(consistencyOutcome);
+
 					cursor = contractId;
 				}
 			} while (page.size() == batchSize);
@@ -132,12 +152,14 @@ public class DailyServicingOrchestrator {
 			jobRuns.failHard(billingRunId, servicing.processed, servicing.failed);
 			jobRuns.failHard(penaltyRunId, servicing.processed, servicing.failed);
 			jobRuns.failHard(agingRunId, aging.processed, aging.failed);
+			jobRuns.failHard(consistencyRunId, consistency.processed, consistency.failed);
 			throw loopFailure;
 		}
 
 		jobRuns.complete(billingRunId, servicing.processed, servicing.failed);
 		jobRuns.complete(penaltyRunId, servicing.processed, servicing.failed);
 		jobRuns.complete(agingRunId, aging.processed, aging.failed);
+		jobRuns.complete(consistencyRunId, consistency.processed, consistency.failed);
 	}
 
 	/**
@@ -186,8 +208,54 @@ public class DailyServicingOrchestrator {
 		LOGGER.info("Daily {} skipped contract {} because it is no longer ACTIVE", stepName, contractId);
 	}
 
+	/**
+	 * Runs the consistency check for one contract in fresh transactions, with the same retry/skip handling
+	 * as {@link #runWithRetry}, but mapping a committed-but-drifted result to {@link
+	 * ProcessingOutcome#PROCESSED_WITH_DRIFT} so the {@code job_run} counts it as both checked and failed
+	 * (F1, task T17 A-9: {@code records_failed} = contracts failing a check). A drift commits its
+	 * {@code reconciliation_exception} rows and is never retried; only a thrown read conflict is retryable.
+	 */
+	private ProcessingOutcome runConsistencyWithRetry(UUID contractId, LocalDate businessDate) {
+		for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+			try {
+				ConsistencyCheckService.CheckOutcome outcome = consistencyCheck.check(contractId, businessDate);
+				return outcome == ConsistencyCheckService.CheckOutcome.DRIFT
+						? ProcessingOutcome.PROCESSED_WITH_DRIFT
+						: ProcessingOutcome.PROCESSED;
+			} catch (RuntimeException failure) {
+				if (failure instanceof ContractStateException && !contracts.isActive(contractId)) {
+					logSkipped(contractId, CONSISTENCY_JOB_NAME);
+					return ProcessingOutcome.SKIPPED;
+				}
+
+				boolean retryable = DailyServicingConflictClassifier.isRetryable(failure);
+				if (retryable && attempt < MAX_ATTEMPTS) {
+					if (!contracts.isActive(contractId)) {
+						logSkipped(contractId, CONSISTENCY_JOB_NAME);
+						return ProcessingOutcome.SKIPPED;
+					}
+					LOGGER.warn("Retrying daily {} for contract {} after attempt {} ({})",
+							CONSISTENCY_JOB_NAME, contractId, attempt, failure.getClass().getSimpleName());
+					sleeper.sleep(BACKOFF_MILLIS[attempt - 1]);
+					continue;
+				}
+
+				if (!contracts.isActive(contractId)) {
+					logSkipped(contractId, CONSISTENCY_JOB_NAME);
+					return ProcessingOutcome.SKIPPED;
+				}
+				LOGGER.error("Daily {} failed for contract {} after {} attempt(s) ({})",
+						CONSISTENCY_JOB_NAME, contractId, attempt, failure.getClass().getName());
+				return ProcessingOutcome.FAILED;
+			}
+		}
+		throw new IllegalStateException("unreachable retry state");
+	}
+
 	private enum ProcessingOutcome {
 		PROCESSED,
+		/** Consistency check only: the contract was checked and committed, but at least one check drifted. */
+		PROCESSED_WITH_DRIFT,
 		SKIPPED,
 		FAILED
 	}
@@ -199,10 +267,19 @@ public class DailyServicingOrchestrator {
 		private int failed;
 
 		void record(ProcessingOutcome outcome) {
-			if (outcome == ProcessingOutcome.PROCESSED) {
-				processed++;
-			} else if (outcome == ProcessingOutcome.FAILED) {
-				failed++;
+			switch (outcome) {
+				case PROCESSED -> processed++;
+				// Consistency drift (F1, T17): the contract was successfully checked (processed) AND failed
+				// a reconciliation (failed), so the job_run row flags portfolio drift without losing the
+				// count of contracts actually checked.
+				case PROCESSED_WITH_DRIFT -> {
+					processed++;
+					failed++;
+				}
+				case FAILED -> failed++;
+				case SKIPPED -> {
+					// a contract no longer ACTIVE is neither processed nor failed
+				}
 			}
 		}
 	}

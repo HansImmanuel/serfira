@@ -17,11 +17,13 @@ ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `467e44d` plus Sprint 5 (T12–T15) + T30, and the T16 implementation (ADR-020:
-`POST /api/v1/payments/{id}/void`, mirrored reversal journal, installment recompute-from-remaining +
-MATURITY reopen, conditional AVAILABLE-credit reversal under a row lock, V18 all-status
-`uq_payment_idempotency`, 2 new error codes, RBAC row) on branch `t16-payment-void`, pending PR. Earlier
-baseline detail below is retained from the T13 snapshot.
+**Snapshot:** `main` @ `6186fc1` (T16 merged via PR #11) plus the T17 implementation (F1 consistency check:
+a fourth read-only `consistency-check` daily step reconciling the three Addendum §7.1 invariants per contract
+through the pure `ConsistencyCheckEngine`, recording drift to `reconciliation_exception` and never fixing it;
+three new read ports — `payment.PaymentReconciliationPort`, `ledger.ContractLedgerBalancePort`,
+`contract.ReceivableReconciliationPort`; `penalty`-owned `ReconciliationException` writer; no migration, no
+HTTP endpoint) on branch `t17-consistency-check-job`, pending PR. Earlier baseline detail below is retained
+from the T16/T13 snapshots.
 
 **Pre-T16 baseline:** `main` @ `0b282c0` plus the T7 implementation (ADR-015: RBAC matrix, roles-claim converter,
 fail-closed JWT identity, `support/TestJwts`, retired audit probe), the T8 implementation (new read-only
@@ -66,10 +68,13 @@ Older per-task verification snapshots (T8, T9, T24, T25, T29, T11) live in `task
   credit cap/status guards taught to count `settlement_credit_application`), and the all-status
   `uq_payment_idempotency` (V18, T16: drops the `status = 'POSTED'` partial predicate, with a fail-safe
   preflight, so a voided payment's idempotency key stays spent after T18 cleanup — ADR-020 D3).
-- Daily servicing (T3, hardened by T26): one renewable ShedLock for cron + backfill; every ACTIVE contract
-  processed atomically billing → penalty → aging with five-attempt backoff retry, failure isolation, SYSTEM
-  audit, three `job_run` rows; crashed `RUNNING` rows closed `ABANDONED`; keyset paging by
-  `serfira.jobs.daily-servicing.batch-size` (default 500).
+- Daily servicing (T3, hardened by T26, extended by T17): one renewable ShedLock for cron + backfill; every
+  ACTIVE contract processed atomically billing → penalty → aging → consistency-check with five-attempt
+  backoff retry, failure isolation, SYSTEM audit, four `job_run` rows; crashed `RUNNING` rows closed
+  `ABANDONED`; keyset paging by `serfira.jobs.daily-servicing.batch-size` (default 500). The fourth step
+  (T17, F1): read-only reconciliation of the three Addendum §7.1 invariants per contract via the pure
+  `ConsistencyCheckEngine`, recording drift to `reconciliation_exception` (never fixing); its
+  `records_failed` counts drifted contracts, so the `job_run` row is a portfolio drift alarm.
 - Payment path: lazy billing + accrual inside the idempotent transaction (T4, ADR-014); write-path conflict
   retry → 409 `CONCURRENT_MODIFICATION` (T5); single-use-forever idempotency keys → 409
   `IDEMPOTENCY_KEY_EXPIRED` past retention (T24, ADR-017).
@@ -126,9 +131,10 @@ T12–T15) is complete** (2026-10-05, ADR-018 + ADR-019; branches `t14-contract-
 (route the schedule response + aging report through `EffectivePenaltyPort`, closing the ADR-019 D4 / PR #7
 F1 follow-up; branch `t30-effective-penalty-reads`). **Sprint 6 (Void, Consistency & Write-off,
 T16–T19 + T27a) is planned** (2026-10-11, ADR-020 for void; ADR-017 T18 item resolved; see the Sprint 6
-section) and in progress in order T16 → T17 → T19 → T18 → T27a. **T16 (E4 payment void) is DONE** (branch
-`t16-payment-void`); T17, T19, T18 and T27a remain TODO. T20 (observability) and the remaining T27 (security
-scans + Compose/OpenAPI smoke) move to Sprint 6b alongside T21 (auth).
+section) and in progress in order T16 → T17 → T19 → T18 → T27a. **T16 (E4 payment void) is DONE** (merged via
+PR #11) and **T17 (F1 consistency check) is DONE** (branch `t17-consistency-check-job`, pending PR); T19, T18
+and T27a remain TODO. T20 (observability) and the remaining T27 (security scans + Compose/OpenAPI smoke) move
+to Sprint 6b alongside T21 (auth).
 
 **Blockers and critical gaps:** none open. The two that remained after T6 (the unenforced Addendum §3.4
 matrix, and a non-UUID `sub` writing as `SYSTEM`) were closed by T7 (ADR-015).
@@ -177,6 +183,7 @@ ADRs listed.
 | T12   | E1 Settlement quote: new `settlement` module, pure `SettlementQuoteEngine` (ADR-018 D2/D6/D7), `POST /settlements/quote`, new `contract` seams `SettlementReceivablePort` + `ContractCreditPort.availableCredit`, accrue-before-resolve, no journal/no migration                                                                                                                                                                           | DONE   | ADR-018 (branch `t12-settlement-quote`)                             |
 | T13   | E2 Settlement execution: `POST /api/v1/settlements`, re-price + revalidate (ADR-018 D9), one balanced SETTLEMENT journal (D1/D4), `settlement`/`settlement_allocation`/`settlement_credit_application` writers, pure `SettlementResolutionEngine` (D5), consume-all-credit + `SettlementClosePort` SETTLED-close (D10), V17 (`uq_journal_entry_event`+SETTLEMENT, credit guards count settlement consumption), 4 new error codes, RBAC row | DONE   | ADR-018 (branch `t13-settlement-execution`)                         |
 | T16   | E4 Payment void: `POST /api/v1/payments/{id}/void`, mirrored reversal journal (`LedgerPostingService.postReversal`), installment recompute-from-remaining-POSTED + MATURITY reopen (`PaymentVoidPort`), conditional AVAILABLE-credit reversal under row lock (`ContractCreditPort.reverseAvailableCreditFromAllocations`), 2 new error codes, V18 all-status `uq_payment_idempotency`, RBAC row                                            | DONE   | ADR-020 (branch `t16-payment-void`)                                 |
+| T17   | F1 Consistency check job: fourth daily step (`consistency-check`), read-only three-check reconciliation (PAYMENT_CASH / ALLOCATION_PAYMENT / RECEIVABLE_INSTALLMENT) via pure `ConsistencyCheckEngine`, drift recorded to `reconciliation_exception` (never fixed), three new read ports (`PaymentReconciliationPort`, `ContractLedgerBalancePort`, `ReceivableReconciliationPort`), no migration, no endpoint                             | DONE   | Addendum §7.1 (branch `t17-consistency-check-job`)                  |
 | —     | Phase A hygiene: V8 SYSTEM hardening, idempotency retention takeover (semantics revisited in T24), open-in-view off                                                                                                                                                                                                                                                                                                                        | DONE   | `cdce254`                                                           |
 
 ---
@@ -682,7 +689,8 @@ first; the two jobs (T17, T18) reuse the T3/T26 daily-job infrastructure; write-
 T27a is a one-line CI change that can land any time.
 
 **Scope and budget (confirmed).** Sprint 6 = T16 (5) + T17 (2) + T18 (2) + T19 (3) + T27a (1) = **13 pts**
-(at the ceiling). **T16 is DONE** (branch `t16-payment-void`); T17, T19, T18, T27a remain. **T20**
+(at the ceiling). **T16 is DONE** (merged via PR #11) and **T17 is DONE** (branch
+`t17-consistency-check-job`); T19, T18, T27a remain. **T20**
 (observability) and the heavier **T27** (dependency/secret scans +
 Compose/OpenAPI smoke) move to **Sprint 6b** alongside **T21** (auth). The minimal `./gradlew check` CI
 gate is **not** deferred — it is carved out as **T27a** and treated as a Sprint 6 prerequisite, because
@@ -841,10 +849,61 @@ T18); the all-status `uq_payment_idempotency` rejects a duplicate key via raw SQ
 IT: a credit-apply committing between a void's check and reversal is serialized by the row lock. Reuse
 `TestJwts`, `FixedClock`.
 
-### T17 — F1 Consistency check job (2 pts)
+### T17 — F1 Consistency check job (2 pts) — DONE
 
-**Status: TODO.** **Dependencies:** T3/T26 daily-job infrastructure (ShedLock, `job_run`, keyset batching,
-backoff), T25 (the invariants it re-asserts in aggregate).
+**Status: DONE** (branch `t17-consistency-check-job`). **Dependencies:** T3/T26 daily-job infrastructure
+(ShedLock, `job_run`, keyset batching, backoff), T25 (the invariants it re-asserts in aggregate) — none open.
+
+**Implementation note (2026-10-15, branch `t17-consistency-check-job`).** A fourth step
+(`consistency-check`) was added to `DailyServicingOrchestrator`, after aging, reusing the T3/T26 ShedLock,
+`job_run` lifecycle, keyset paging and retry/backoff — **no new scheduler, lock, or batching**. The step is
+**read-only reconciliation**: it records drift as `reconciliation_exception` rows and never corrects money
+(Addendum §7.3). The three independent checks (Addendum §7.1) live in the pure
+`penalty.domain.consistency.ConsistencyCheckEngine` (golden-tested): **A `PAYMENT_CASH`** (`Σ` POSTED
+`Payment.amount` = net `KAS` from `PAYMENT` entries), **B `ALLOCATION_PAYMENT`** (`Σ` POSTED
+`PaymentAllocation.amount` = `Σ` `Payment.amount`, invariant 6), **C `RECEIVABLE_INSTALLMENT`** (`Σ`
+installment receivable residual = net `PIUTANG_POKOK + PIUTANG_BUNGA + PIUTANG_DENDA`). The `check_type`
+values are exactly the three already in the V1 `ck_recon_exception_type` CHECK, so **no migration** was
+needed. `ConsistencyCheckService` (one transaction per contract, isolation `REPEATABLE_READ` so all five
+reconciliation reads use one consistent snapshot — otherwise a `POST /payments` committing mid-check could
+make the ledger reads disagree with the payment/allocation reads and record false drift) gathers each
+check's two sides only through the owning modules' read ports (`02_TECH_SPEC.md` §1): the new
+`payment.application.PaymentReconciliationPort` (POSTED payment/allocation totals), the new
+`ledger.application.ContractLedgerBalancePort` (net `KAS`-from-PAYMENT and `PIUTANG_*` balances), and the
+new `contract.application.ReceivableReconciliationPort` (receivable residual, netting active adjustments
+through `EffectivePenaltyPort` — the same single "outstanding" formula as T15/T30, no second formula). The
+`ReconciliationException` writer entity + repository are owned by `penalty` (the sole writer). Recording is
+**idempotent** per `(contract_id, check_date, check_type)`: a same-date re-run of a still-drifting contract
+does not add a second OPEN row — the service skips the insert when an OPEN row for the key already exists,
+backed by the partial unique index `uq_recon_exception_open` (migration **V19**, partial on
+`status = 'OPEN'` so RESOLVED/INVESTIGATING history stays unconstrained). A-9 counting for this step:
+`records_processed` = contracts checked, `records_failed` = contracts that **drifted** (or threw a read
+error), so the `job_run` row is itself a portfolio drift alarm while a drift still commits its exception
+rows (not a transaction failure). Written as `SYSTEM`. No HTTP endpoint (the Finance read endpoint
+`GET /reports/reconciliation-exceptions` stays deferred to the `reporting` module), hence **no RBAC row**.
+The existing daily-job ITs were updated to expect four `job_run` rows per run. TS §1 gains the three
+`penalty →` consistency-read edges (one new consumer on the existing `penalty → payment` edge, plus the new
+`penalty → ledger` read seam and the new `penalty → contract` `ReceivableReconciliationPort`).
+
+**PR #12 review fixes (2026-10-15, CodeRabbit).** (1) `check` isolation raised to `REPEATABLE_READ` for a
+consistent snapshot across the five reads, removing false drift when a payment commits mid-check; (2)
+exception recording made idempotent per `(contract_id, check_date, check_type)` via an OPEN-row existence
+check plus the V19 partial unique index; (3) corrupted Markdown in this entry and `docs/PROGRESS.md`
+restored. The review's suggestion to record an A-n ambiguity between "specified" and "implemented" checks
+was **not** actioned: the three implemented checks (A `PAYMENT_CASH` / B `ALLOCATION_PAYMENT` /
+C `RECEIVABLE_INSTALLMENT`) match Addendum §7.1 exactly, so there is no discrepancy to flag.
+
+**Verification — 2026-10-15, Docker NOT available in this environment** (tech-stack steering fallback):
+`.\gradlew compileJava compileTestJava` passes (whole tree compiles with the fourth step, the three new read
+ports + implementations, the engine, the `ReconciliationException` writer, and the updated ITs).
+`.\gradlew test --tests "*Test"` (all pure unit suites, no Docker) = **BUILD SUCCESSFUL, 58 suites / 443
+tests / 0 failures / 0 errors** (up from 429), including the new `ConsistencyCheckEngineTest` (8) and the
+five new consistency cases in `DailyServicingOrchestratorTest` (now 24). **Not run:** the Testcontainers
+`*IT` suites — the new `ConsistencyCheckIT` (including the re-run-without-duplicate-OPEN case) and the
+updated `DailyServicingJobIT`/`DailyJobRobustnessIT`/`DailyServicingLockIT` — which compile but fail only at
+`DockerClientProviderStrategy` (no Docker daemon); CI must run them under Docker before the PR merges.
+
+**Original task spec (for reference).**
 
 **Scope.** Add a fourth step to the daily servicing job (after aging, per Addendum §7.3 billing → penalty →
 aging → consistency check): a read-only reconciliation that re-asserts the money invariants in aggregate and

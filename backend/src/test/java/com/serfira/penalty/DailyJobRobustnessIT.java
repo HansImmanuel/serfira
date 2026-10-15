@@ -77,8 +77,8 @@ class DailyJobRobustnessIT {
 		assertThat(statusCount("RUNNING")).isZero();
 		// The three seeded crash remnants are now ABANDONED with finished_at set.
 		assertThat(abandonedWithFinishedAtCount()).isEqualTo(3L);
-		// This run's own three rows completed normally.
-		assertThat(countForDate(BUSINESS_DATE, "COMPLETED")).isEqualTo(3L);
+		// This run's own four rows (billing, penalty-accrual, aging, consistency-check) completed normally.
+		assertThat(countForDate(BUSINESS_DATE, "COMPLETED")).isEqualTo(4L);
 	}
 
 	@Test
@@ -97,8 +97,9 @@ class DailyJobRobustnessIT {
 			assertThat(journalCount(contractId, "BILLING")).isEqualTo(1L);
 			assertThat(accrualCount(contractId)).isEqualTo(2L);
 		}
-		// Same three job_run rows and counters as a single batch would produce for five contracts.
-		assertJobRuns(BUSINESS_DATE, 5, 0, "COMPLETED", 3L);
+		// Same four job_run rows and counters as a single batch would produce for five contracts (the five
+		// reconcile clean, so the consistency-check row is processed=5, failed=0 like the servicing steps).
+		assertJobRuns(BUSINESS_DATE, 5, 0, "COMPLETED", 4L);
 	}
 
 	private void seedRunningRow(String jobName) {

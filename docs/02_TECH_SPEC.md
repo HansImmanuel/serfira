@@ -129,6 +129,26 @@ Aturan dependency:
     mengizinkannya (ADR-002, ADR-020 D1.2). Tidak ada `LedgerRefType` baru. Migrasi V18 melebarkan
     `uq_payment_idempotency` ke semua status agar key pembayaran yang di-void tetap "terpakai" setelah job
     pembersihan T18 (ADR-020 D3, ADR-017).
+- Sejak T17 (F1 consistency check, Addendum §7.1/§7.3) langkah keempat job harian — di host daily-job modul
+  `penalty` — mereka-reconcile tiga invariant uang per kontrak secara **read-only** dan mencatat drift ke
+  `reconciliation_exception` (tanpa koreksi). Ia membaca tiap sisi check hanya lewat port modul pemilik data,
+  masing-masing satu arah dan read-only; tidak ada modul yang query tabel modul lain:
+  - `penalty → payment` lewat `payment.application.PaymentReconciliationPort` (baru): `Σ` amount payment
+    POSTED dan `Σ` amount alokasi POSTED per kontrak (check A `PAYMENT_CASH`, check B `ALLOCATION_PAYMENT`).
+    Menambah satu konsumer ke edge `penalty → payment` yang sudah ada (sejak T15 `PenaltyAllocationPort`);
+    `payment` tetap pemilik `payment`/`payment_allocation`.
+  - `penalty → ledger` lewat `ledger.application.ContractLedgerBalancePort` (baru): saldo net
+    `Σ(debit − credit)` `KAS` dari entry `PAYMENT` (check A) dan net `PIUTANG_POKOK + PIUTANG_BUNGA +
+PIUTANG_DENDA` (check C `RECEIVABLE_INSTALLMENT`). `ledger` tidak bergantung ke modul lain; ini seam baca
+    tambahan di `ledger.application`, dan `penalty` sudah bergantung ke `ledger` untuk posting.
+  - `penalty → contract` lewat `contract.application.ReceivableReconciliationPort` (baru): residual
+    receivable kontrak (`Σ` principal + bunga recognized + denda effective residual), memakai kembali formula
+    "outstanding" tunggal `InstallmentBalance` yang di-net adjustment aktif lewat `EffectivePenaltyPort` —
+    tanpa formula kedua (ADR-019 D4). Arahnya sama dengan seam `contract` lain yang sudah dipakai job
+    (`ActiveContractListingPort`, `InstallmentPenaltyPort`); `contract` tetap pemilik `installment`.
+    Perbandingan expected-vs-actual ada di engine murni `ConsistencyCheckEngine`; tidak ada migrasi (tabel +
+    CHECK `ck_recon_exception_type` sudah di V1) dan tidak ada endpoint HTTP (job in-process `SYSTEM`;
+    `GET /reports/reconciliation-exceptions` ditunda ke modul `reporting`).
 
 Jika suatu saat di-split microservice, seam sudah siap di interface antar-module.
 
