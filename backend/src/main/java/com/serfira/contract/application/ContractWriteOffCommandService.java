@@ -151,8 +151,14 @@ public class ContractWriteOffCommandService {
 		penalty.accrueDuePenalty(contractId, businessDate);
 
 		List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
-		Map<UUID, BigDecimal> effectiveByInstallment = effectivePenaltyByInstallment(contractId);
-		Map<UUID, BigDecimal> paidPenaltyByInstallment = paidPenaltyByInstallment(contractId);
+		// One effective-penalty snapshot funds both the effective (remaining) and the paid-penalty terms:
+		// loading it twice would repeat the gross-penalty, adjustment-total and paid-penalty reads.
+		Map<UUID, BigDecimal> effectiveByInstallment = new HashMap<>();
+		Map<UUID, BigDecimal> paidPenaltyByInstallment = new HashMap<>();
+		for (InstallmentEffectivePenalty installment : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
+			effectiveByInstallment.put(installment.installmentId(), installment.effective());
+			paidPenaltyByInstallment.put(installment.installmentId(), installment.paidPenalty());
+		}
 
 		List<WriteOffLine> lines = WriteOffEngine.cap(toEngineInputs(schedule, effectiveByInstallment,
 				paidPenaltyByInstallment));
@@ -209,24 +215,6 @@ public class ContractWriteOffCommandService {
 					resolvedBeyondPenalty));
 		}
 		return inputs;
-	}
-
-	/** Effective (remaining) penalty per installment, through the {@code penalty}-owned port (invariant 9). */
-	private Map<UUID, BigDecimal> effectivePenaltyByInstallment(UUID contractId) {
-		Map<UUID, BigDecimal> totals = new HashMap<>();
-		for (InstallmentEffectivePenalty installment : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
-			totals.put(installment.installmentId(), installment.effective());
-		}
-		return totals;
-	}
-
-	/** Σ paid penalty per installment, from the same effective-penalty snapshot (payment-owned term). */
-	private Map<UUID, BigDecimal> paidPenaltyByInstallment(UUID contractId) {
-		Map<UUID, BigDecimal> totals = new HashMap<>();
-		for (InstallmentEffectivePenalty installment : effectivePenalty.loadEffectivePenalty(contractId).installments()) {
-			totals.put(installment.installmentId(), installment.paidPenalty());
-		}
-		return totals;
 	}
 
 	/**

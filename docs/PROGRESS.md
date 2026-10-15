@@ -252,7 +252,7 @@ AfterSettlement` menegaskan UPDATE/DELETE ditolak; (4) **MINOR** — ditambahkan
 
 Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
 
-- [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (ADMIN*OPERASIONAL, header
+- [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (`ADMIN_OPERASIONAL`, header
       `Idempotency-Key`, body `reason` opsional) membalik pembayaran POSTED. Jalur tulis
       (`payment.application.PaymentVoidApplicationService`, dibungkus `PaymentVoidRetryingService` — 3
       percobaan 50/150 ms di luar transaksi, meniru `PaymentRetryingService`) berjalan dalam satu use case
@@ -282,16 +282,15 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       `"(no reason given)"` untuk reason kosong/null agar tak melanggar CHECK V4 (`void_reason NOT NULL`);
       (3) recompute kini menambahkan kembali kredit yang diterapkan ke installment
       (`contract_credit_application`) agar void tak menjatuhkan resolusi berpendanaan kredit; (4) `paid_at`
-      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency \_void*
+      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency `void`
       belum single-use-forever (butuh migrasi baru; laten sampai T18) → **T31**.
       **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):**
-      `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"` (semua unit, tanpa Docker)
+      `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"`(semua unit, tanpa Docker)
       = **57 suite / 429 tes / 0 gagal / 0 error** (naik dari 427), termasuk
-      `InstallmentVoidRecomputeTest` (7), `PaymentVoidTest` (5), `ContractReopenFromMaturityTest` (3) dan
-      `PaymentVoidRetryingServiceTest` (4). **Tidak dijalankan:** suite Testcontainers `*IT` — `PaymentVoidIT`
-      baru (termasuk skenario kredit-tersisa-bertahan-saat-void) dan `EndpointRoleMatrixIT` yang diperluas —
-      dikompilasi tetapi gagal hanya di `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus
-      menjalankannya di Docker sebelum merge. Branch `t16-payment-void`.
+      `InstallmentVoidRecomputeTest`(7),`PaymentVoidTest`(5),`ContractReopenFromMaturityTest`(3) dan
+      `PaymentVoidRetryingServiceTest`(4). **Tidak dijalankan:** suite Testcontainers`\*IT`—`PaymentVoidIT` baru (termasuk skenario kredit-tersisa-bertahan-saat-void) dan`EndpointRoleMatrixIT`yang diperluas —
+      dikompilasi tetapi gagal hanya di`DockerClientProviderStrategy`(tanpa daemon Docker); CI harus
+      menjalankannya di Docker sebelum merge. Branch`t16-payment-void`.
 
 - [x] T19 — F5 Write-off. `POST /api/v1/contracts/{id}/write-off` (ADMIN_OPERASIONAL, header
       `Idempotency-Key`, body `reason` wajib) mencatat keputusan eksternal untuk berhenti menagih sebuah

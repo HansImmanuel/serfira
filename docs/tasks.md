@@ -887,10 +887,12 @@ leaves a `RUNNING` row that the next run marks `ABANDONED` (T26 behavior, unchan
 (Testcontainers): clean portfolio → COMPLETED; injected drift → FAILED + flagged, no mutation; `job_run`
 granularity matches A-9; isolation from the money steps. `FixedClock`.
 
-### T19 — F5 Write-off (3 pts) — DONE
+### T19 — F5 Write-off
 
-**Status: DONE** (branch `t19-write-off`). **Dependencies:** ADR-013 §1 (accrue-before-resolve), V4
-(record-state coherence), ADR-008 (posting). Independent of T16/T17/T18.
+Status: DONE (branch `t19-write-off`)
+Estimate: 3 pts
+Dependencies: ADR-013 §1 (accrue-before-resolve), V4 (record-state coherence), ADR-008 (posting).
+Independent of T16/T17/T18.
 
 **Implementation note (2026-10-15, branch `t19-write-off`).** `POST /api/v1/contracts/{id}/write-off`
 (ADMIN_OPERASIONAL, `Idempotency-Key` header, required `reason` body) records an external decision to stop
