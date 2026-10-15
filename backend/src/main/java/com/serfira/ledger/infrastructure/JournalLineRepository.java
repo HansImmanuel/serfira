@@ -74,6 +74,47 @@ public interface JournalLineRepository extends JpaRepository<JournalLine, UUID> 
 			@Param("refType") LedgerRefType refType,
 			Pageable pageable);
 
+	/**
+	 * Net movement {@code Σ(debit − credit)} of one contract's lines on a single account, across every
+	 * journal entry regardless of {@code ref_type} or reversal, for the daily consistency check (F1, task
+	 * T17, Addendum §7.1 check C, {@code RECEIVABLE_INSTALLMENT}). A reversal entry already carries its own
+	 * swapped line, so summing every line nets reversed events to zero without a {@code reversal_of_id}
+	 * filter. {@code coalesce} yields zero when the contract has no line on that account.
+	 *
+	 * @param contractId contract whose balance is needed
+	 * @param account    the chart-of-accounts account to sum (a {@code PIUTANG_*} receivable here)
+	 */
+	@Query("""
+			select coalesce(sum(line.debit - line.credit), 0)
+			from JournalLine line
+			where line.contractId = :contractId and line.account = :account
+			""")
+	BigDecimal netBalance(@Param("contractId") UUID contractId, @Param("account") LedgerAccount account);
+
+	/**
+	 * Net movement {@code Σ(debit − credit)} of one contract's lines on a single account, restricted to the
+	 * journal entries of one event type, for the daily consistency check (F1, task T17, Addendum §7.1 check
+	 * A, {@code PAYMENT_CASH}): the net {@code KAS} received through {@code PAYMENT} entries. A payment debits
+	 * {@code KAS}; its void posts a reversal that credits {@code KAS} back, so summing the PAYMENT-typed
+	 * {@code KAS} lines yields the cash of the still-POSTED payments — the same active view
+	 * {@link com.serfira.payment.application.PaymentReconciliationPort} reports. {@code coalesce} yields zero
+	 * when no such line exists.
+	 *
+	 * @param contractId contract whose balance is needed
+	 * @param account    the chart-of-accounts account to sum ({@code KAS} here)
+	 * @param refType    the single event type whose entries are summed ({@code PAYMENT} here)
+	 */
+	@Query("""
+			select coalesce(sum(line.debit - line.credit), 0)
+			from JournalLine line
+				join line.journalEntry entry
+			where line.contractId = :contractId
+				and line.account = :account
+				and entry.refType = :refType
+			""")
+	BigDecimal netBalanceByRefType(@Param("contractId") UUID contractId,
+			@Param("account") LedgerAccount account, @Param("refType") LedgerRefType refType);
+
 	/** One projected statement line: the posted {@code journal_line} plus its parent entry's event fields. */
 	interface StatementLineProjection {
 

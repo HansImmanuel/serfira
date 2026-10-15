@@ -40,22 +40,28 @@ class DailyServicingOrchestratorTest {
 
 	private final ActiveContractListingPort contracts = mock(ActiveContractListingPort.class);
 	private final DailyServicingContractProcessor processor = mock(DailyServicingContractProcessor.class);
+	private final ConsistencyCheckService consistencyCheck = mock(ConsistencyCheckService.class);
 	private final JobRunService jobRuns = mock(JobRunService.class);
 	private final AuditContext auditContext = new AuditContext();
 	private final FixedClock clock = new FixedClock(TODAY);
 	private final RecordingSleeper sleeper = new RecordingSleeper();
 	private final DailyServicingOrchestrator orchestrator = new DailyServicingOrchestrator(
-			contracts, processor, jobRuns, auditContext, clock, sleeper, BATCH_SIZE);
+			contracts, processor, consistencyCheck, jobRuns, auditContext, clock, sleeper, BATCH_SIZE);
 
 	private final UUID billingRun = UUID.randomUUID();
 	private final UUID penaltyRun = UUID.randomUUID();
 	private final UUID agingRun = UUID.randomUUID();
+	private final UUID consistencyRun = UUID.randomUUID();
 
 	@BeforeEach
 	void stubRunRows() {
 		when(jobRuns.start(DailyServicingOrchestrator.BILLING_JOB_NAME, TODAY)).thenReturn(billingRun);
 		when(jobRuns.start(DailyServicingOrchestrator.PENALTY_JOB_NAME, TODAY)).thenReturn(penaltyRun);
 		when(jobRuns.start(DailyServicingOrchestrator.AGING_JOB_NAME, TODAY)).thenReturn(agingRun);
+		when(jobRuns.start(DailyServicingOrchestrator.CONSISTENCY_JOB_NAME, TODAY)).thenReturn(consistencyRun);
+		// Default: every checked contract reconciles clean. Tests that assert drift override this.
+		when(consistencyCheck.check(any(), eq(TODAY)))
+				.thenReturn(ConsistencyCheckService.CheckOutcome.CLEAN);
 	}
 
 	@AfterEach
@@ -244,7 +250,7 @@ class DailyServicingOrchestratorTest {
 	@Test
 	void rejectsANonPositiveBatchSize() {
 		assertThatThrownBy(() -> new DailyServicingOrchestrator(
-				contracts, processor, jobRuns, auditContext, clock, sleeper, 0))
+				contracts, processor, consistencyCheck, jobRuns, auditContext, clock, sleeper, 0))
 				.isInstanceOf(IllegalArgumentException.class)
 				.hasMessageContaining("batch-size");
 	}
@@ -311,8 +317,98 @@ class DailyServicingOrchestratorTest {
 		order.verify(jobRuns).abandonStaleRuns(List.of(
 				DailyServicingOrchestrator.BILLING_JOB_NAME,
 				DailyServicingOrchestrator.PENALTY_JOB_NAME,
-				DailyServicingOrchestrator.AGING_JOB_NAME));
+				DailyServicingOrchestrator.AGING_JOB_NAME,
+				DailyServicingOrchestrator.CONSISTENCY_JOB_NAME));
 		order.verify(jobRuns).start(DailyServicingOrchestrator.BILLING_JOB_NAME, TODAY);
+	}
+
+	// --- F1 consistency step (T17) --------------------------------------------------------------------
+
+	@Test
+	void consistencyRunsAfterAgingForEachContract() {
+		UUID first = UUID.randomUUID();
+		UUID second = UUID.randomUUID();
+		stubActiveContracts(List.of(first, second));
+
+		orchestrator.run(TODAY);
+
+		InOrder order = inOrder(processor, consistencyCheck);
+		order.verify(processor).age(first, TODAY);
+		order.verify(consistencyCheck).check(first, TODAY);
+		order.verify(processor).age(second, TODAY);
+		order.verify(consistencyCheck).check(second, TODAY);
+		verify(jobRuns).complete(consistencyRun, 2, 0);
+	}
+
+	@Test
+	void aDriftedContractIsCountedAsBothCheckedAndFailedButStillCompletesTheRow() {
+		UUID clean = UUID.randomUUID();
+		UUID drifted = UUID.randomUUID();
+		stubActiveContracts(List.of(clean, drifted));
+		when(consistencyCheck.check(clean, TODAY)).thenReturn(ConsistencyCheckService.CheckOutcome.CLEAN);
+		when(consistencyCheck.check(drifted, TODAY)).thenReturn(ConsistencyCheckService.CheckOutcome.DRIFT);
+
+		orchestrator.run(TODAY);
+
+		// Both checked (processed=2); one drifted (failed=1); drift is not retried.
+		verify(consistencyCheck).check(drifted, TODAY);
+		verify(jobRuns).complete(consistencyRun, 2, 1);
+	}
+
+	@Test
+	void aContractSkippedByServicingIsNotConsistencyChecked() {
+		UUID closed = UUID.randomUUID();
+		stubActiveContracts(List.of(closed));
+		when(contracts.isActive(closed)).thenReturn(false);
+		doThrow(new ContractStateException("no longer active")).when(processor).process(closed, TODAY);
+
+		orchestrator.run(TODAY);
+
+		verify(consistencyCheck, never()).check(eq(closed), any());
+		verify(jobRuns).complete(consistencyRun, 0, 0);
+	}
+
+	@Test
+	void aContractThatBecameNonActiveDuringTheConsistencyCheckIsSkippedNotFailed() {
+		UUID contractId = UUID.randomUUID();
+		stubActiveContracts(List.of(contractId));
+		when(contracts.isActive(contractId)).thenReturn(false);
+		when(consistencyCheck.check(contractId, TODAY))
+				.thenThrow(new ContractStateException("no longer active"));
+
+		orchestrator.run(TODAY);
+
+		verify(consistencyCheck).check(contractId, TODAY);
+		verify(jobRuns).complete(consistencyRun, 0, 0);
+	}
+
+	@Test
+	void aDeterministicConsistencyFailureIsCountedAsFailed() {
+		UUID contractId = UUID.randomUUID();
+		stubActiveContracts(List.of(contractId));
+		when(contracts.isActive(contractId)).thenReturn(true);
+		when(consistencyCheck.check(contractId, TODAY))
+				.thenThrow(new ContractStateException("active without schedule"));
+
+		orchestrator.run(TODAY);
+
+		verify(consistencyCheck).check(contractId, TODAY);
+		verify(jobRuns).complete(consistencyRun, 0, 1);
+	}
+
+	@Test
+	void aConsistencyConflictIsRetriedThenRecovered() {
+		UUID contractId = UUID.randomUUID();
+		stubActiveContracts(List.of(contractId));
+		when(contracts.isActive(contractId)).thenReturn(true);
+		when(consistencyCheck.check(contractId, TODAY))
+				.thenThrow(new ObjectOptimisticLockingFailureException(Object.class, contractId))
+				.thenReturn(ConsistencyCheckService.CheckOutcome.CLEAN);
+
+		orchestrator.run(TODAY);
+
+		verify(consistencyCheck, times(2)).check(contractId, TODAY);
+		verify(jobRuns).complete(consistencyRun, 1, 0);
 	}
 
 	@Test
@@ -321,7 +417,7 @@ class DailyServicingOrchestratorTest {
 		UUID b = new UUID(0L, 2L);
 		UUID c = new UUID(0L, 3L);
 		DailyServicingOrchestrator paged = new DailyServicingOrchestrator(
-				contracts, processor, jobRuns, auditContext, clock, sleeper, 2);
+				contracts, processor, consistencyCheck, jobRuns, auditContext, clock, sleeper, 2);
 		when(contracts.findActiveContractIdsAfter(ZERO_UUID, 2)).thenReturn(List.of(a, b));
 		when(contracts.findActiveContractIdsAfter(b, 2)).thenReturn(List.of(c));
 
@@ -342,7 +438,7 @@ class DailyServicingOrchestratorTest {
 		UUID a = new UUID(0L, 1L);
 		UUID b = new UUID(0L, 2L);
 		DailyServicingOrchestrator paged = new DailyServicingOrchestrator(
-				contracts, processor, jobRuns, auditContext, clock, sleeper, 2);
+				contracts, processor, consistencyCheck, jobRuns, auditContext, clock, sleeper, 2);
 		when(contracts.findActiveContractIdsAfter(ZERO_UUID, 2)).thenReturn(List.of(a, b));
 		when(contracts.findActiveContractIdsAfter(b, 2)).thenReturn(List.of());
 
@@ -355,17 +451,18 @@ class DailyServicingOrchestratorTest {
 	@Test
 	void finalizesAllThreeRowsAsFailedWhenAnInfraCallEscapesTheLoop() {
 		UUID first = new UUID(0L, 1L);
-		DailyServicingOrchestrator paged = new DailyServicingOrchestrator(
-				contracts, processor, jobRuns, auditContext, clock, sleeper, 1);
 		RuntimeException infraFailure = new RuntimeException("db down");
+		DailyServicingOrchestrator pagedOrchestrator = new DailyServicingOrchestrator(
+				contracts, processor, consistencyCheck, jobRuns, auditContext, clock, sleeper, 1);
 		when(contracts.findActiveContractIdsAfter(ZERO_UUID, 1)).thenReturn(List.of(first));
 		when(contracts.findActiveContractIdsAfter(first, 1)).thenThrow(infraFailure);
 
-		assertThatThrownBy(() -> paged.run(TODAY)).isSameAs(infraFailure);
+		assertThatThrownBy(() -> pagedOrchestrator.run(TODAY)).isSameAs(infraFailure);
 
 		verify(jobRuns).failHard(eq(billingRun), anyInt(), anyInt());
 		verify(jobRuns).failHard(eq(penaltyRun), anyInt(), anyInt());
 		verify(jobRuns).failHard(eq(agingRun), anyInt(), anyInt());
+		verify(jobRuns).failHard(eq(consistencyRun), anyInt(), anyInt());
 		verify(jobRuns, never()).complete(any(), anyInt(), anyInt());
 	}
 

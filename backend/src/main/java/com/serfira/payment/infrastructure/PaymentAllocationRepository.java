@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
@@ -36,6 +37,23 @@ public interface PaymentAllocationRepository extends JpaRepository<PaymentAlloca
 
 	/** Every allocation row of one payment, for the void path (which installments it touched, its EXCESS). */
 	List<PaymentAllocation> findByPaymentId(UUID paymentId);
+
+	/**
+	 * {@code Σ} allocation amount (every type, EXCESS included) over the allocations of one contract's
+	 * payments in the given status, for the daily consistency check (F1, task T17, Addendum §7.1 check B,
+	 * {@code ALLOCATION_PAYMENT}). Called with {@code status = POSTED}, so the allocations of a voided
+	 * payment are excluded, matching {@link PaymentRepository#sumAmountByContractAndStatus}. By invariant 6
+	 * (every rupiah of a payment is allocated, EXCESS included) the two sums must be equal.
+	 * {@code coalesce} yields zero rather than {@code null} when the contract has no allocation in that
+	 * status.
+	 */
+	@Query("""
+			select coalesce(sum(a.amount), 0)
+			from PaymentAllocation a
+			where a.payment.contractId = :contractId and a.payment.status = :status
+			""")
+	BigDecimal sumAmountByContractAndStatus(@Param("contractId") UUID contractId,
+			@Param("status") PaymentStatus status);
 
 	/**
 	 * Resolved amount (penalty + interest + principal, EXCESS excluded) per installment, summed over the

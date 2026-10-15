@@ -252,7 +252,7 @@ AfterSettlement` menegaskan UPDATE/DELETE ditolak; (4) **MINOR** — ditambahkan
 
 Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
 
-- [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (ADMIN_OPERASIONAL, header
+- [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (ADMIN*OPERASIONAL, header
       `Idempotency-Key`, body `reason` opsional) membalik pembayaran POSTED. Jalur tulis
       (`payment.application.PaymentVoidApplicationService`, dibungkus `PaymentVoidRetryingService` — 3
       percobaan 50/150 ms di luar transaksi, meniru `PaymentRetryingService`) berjalan dalam satu use case
@@ -282,7 +282,7 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       `"(no reason given)"` untuk reason kosong/null agar tak melanggar CHECK V4 (`void_reason NOT NULL`);
       (3) recompute kini menambahkan kembali kredit yang diterapkan ke installment
       (`contract_credit_application`) agar void tak menjatuhkan resolusi berpendanaan kredit; (4) `paid_at`
-      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency _void_
+      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency \_void*
       belum single-use-forever (butuh migrasi baru; laten sampai T18) → **T31**.
       **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):**
       `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"` (semua unit, tanpa Docker)
@@ -292,3 +292,30 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       baru (termasuk skenario kredit-tersisa-bertahan-saat-void) dan `EndpointRoleMatrixIT` yang diperluas —
       dikompilasi tetapi gagal hanya di `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus
       menjalankannya di Docker sebelum merge. Branch `t16-payment-void`.
+
+- [x] T17 — F1 Consistency check job (Addendum §7.1/§7.3, story L-3). Langkah **keempat** job harian
+      (billing → penalty → aging → consistency check) ditambahkan ke `DailyServicingOrchestrator` tanpa
+      scheduler/lock/batching baru: reuse ShedLock, `job_run`, keyset paging, dan retry/backoff T3/T26. Langkah
+      ini **read-only** — mencatat drift sebagai baris `reconciliation_exception` dan tidak pernah mengoreksi
+      angka (Addendum §7.3). Tiga check independen di engine murni `penalty.domain.consistency.ConsistencyCheckEngine`:
+      **A `PAYMENT_CASH`** (`Σ` payment POSTED = net `KAS` dari entry `PAYMENT`), **B `ALLOCATION_PAYMENT`**
+      (`Σ` alokasi = `Σ` payment, invariant 6), **C `RECEIVABLE_INSTALLMENT`** (`Σ` residual receivable
+      installment = net `PIUTANG_POKOK + PIUTANG_BUNGA + PIUTANG_DENDA`). `check_type` memakai persis tiga nilai
+      yang sudah ada di CHECK V1 `ck_recon_exception_type`, jadi **tanpa migrasi**. `ConsistencyCheckService`
+      (satu transaksi per kontrak, isolasi seperti step aging T6) mengumpulkan tiap sisi lewat port modul
+      pemilik data saja (02*TECH_SPEC.md §1): `payment.application.PaymentReconciliationPort` (total
+      payment/alokasi POSTED), `ledger.application.ContractLedgerBalancePort` (saldo net `KAS`-dari-PAYMENT dan
+      `PIUTANG**`), dan `contract.application.ReceivableReconciliationPort`(residual receivable, net adjustment
+    aktif lewat`EffectivePenaltyPort`— formula "outstanding" tunggal yang sama dengan T15/T30, tanpa formula
+    kedua). Entitas penulis`ReconciliationException`+ repository dimiliki modul`penalty`(satu-satunya
+    penulis). Semantik A-9 khusus langkah ini:`records_processed`= kontrak diperiksa,`records_failed`=
+    kontrak yang **drift** (atau error baca), sehingga baris`job_run`sendiri menjadi alarm drift portofolio;
+    drift tetap commit baris exception-nya (bukan kegagalan transaksi). Ditulis sebagai`SYSTEM`. Tanpa
+    endpoint HTTP (job in-process; `GET /reports/reconciliation-exceptions`ditunda ke modul`reporting`),
+    jadi tanpa baris RBAC baru. ITs daily-job yang ada diperbarui ke 4 baris `job_run`per run.
+    **Verifikasi (Docker TIDAK tersedia, fallback steering tech-stack):**`.\gradlew compileJava
+      compileTestJava`pass;`.\gradlew test --tests "*Test"`(semua unit, tanpa Docker) = **58 suite / 443 tes
+    / 0 gagal / 0 error** (naik dari 429), termasuk`ConsistencyCheckEngineTest`(8) dan 5 kasus
+    consistency baru di`DailyServicingOrchestratorTest`(kini 24). **Tidak dijalankan:** suite Testcontainers
+   `\*IT`—`ConsistencyCheckIT`baru dan`DailyServicingJobIT`/`DailyJobRobustnessIT`/`DailyServicingLockIT`    yang diperbarui — dikompilasi tetapi gagal hanya di`DockerClientProviderStrategy`(tanpa daemon Docker);
+    CI harus menjalankannya di Docker sebelum merge. Branch`t17-consistency-check-job`.
