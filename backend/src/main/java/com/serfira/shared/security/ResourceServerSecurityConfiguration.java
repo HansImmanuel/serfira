@@ -169,6 +169,10 @@ public class ResourceServerSecurityConfiguration {
 								.hasRole(ADMIN)
 						.requestMatchers(HttpMethod.GET, "/api/v1/contracts/*/credit")
 								.hasAnyRole(ADMIN, FINANCE)
+						// Write-off is ADMIN_OPERASIONAL only (Addendum §3.4, T19, F5). Single-segment "*"
+						// means "/api/v1/contracts/*" above does not match "/*/write-off".
+						.requestMatchers(HttpMethod.POST, "/api/v1/contracts/*/write-off")
+								.hasRole(ADMIN)
 						// Penalty waive/reduce is ADMIN_OPERASIONAL only (Addendum §3.4, T15, ADR-019 D2).
 						.requestMatchers(HttpMethod.POST, "/api/v1/penalty-adjustments")
 								.hasRole(ADMIN)

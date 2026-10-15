@@ -252,7 +252,7 @@ AfterSettlement` menegaskan UPDATE/DELETE ditolak; (4) **MINOR** — ditambahkan
 
 Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
 
-- [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (ADMIN_OPERASIONAL, header
+- [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (ADMIN*OPERASIONAL, header
       `Idempotency-Key`, body `reason` opsional) membalik pembayaran POSTED. Jalur tulis
       (`payment.application.PaymentVoidApplicationService`, dibungkus `PaymentVoidRetryingService` — 3
       percobaan 50/150 ms di luar transaksi, meniru `PaymentRetryingService`) berjalan dalam satu use case
@@ -282,7 +282,7 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       `"(no reason given)"` untuk reason kosong/null agar tak melanggar CHECK V4 (`void_reason NOT NULL`);
       (3) recompute kini menambahkan kembali kredit yang diterapkan ke installment
       (`contract_credit_application`) agar void tak menjatuhkan resolusi berpendanaan kredit; (4) `paid_at`
-      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency _void_
+      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency \_void*
       belum single-use-forever (butuh migrasi baru; laten sampai T18) → **T31**.
       **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):**
       `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"` (semua unit, tanpa Docker)
@@ -292,3 +292,36 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       baru (termasuk skenario kredit-tersisa-bertahan-saat-void) dan `EndpointRoleMatrixIT` yang diperluas —
       dikompilasi tetapi gagal hanya di `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus
       menjalankannya di Docker sebelum merge. Branch `t16-payment-void`.
+
+- [x] T19 — F5 Write-off. `POST /api/v1/contracts/{id}/write-off` (ADMIN_OPERASIONAL, header
+      `Idempotency-Key`, body `reason` wajib) mencatat keputusan eksternal untuk berhenti menagih sebuah
+      kontrak ACTIVE. Jalur tulis (`contract.application.ContractWriteOffCommandService`, dibungkus
+      `ContractWriteOffRetryingService` — 3 percobaan 50/150 ms di luar transaksi, meniru
+      `SettlementExecutionRetryingService`) berjalan dalam satu use case `@Transactional` dengan urutan
+      validate → compute → write aggregate → post journal → commit: **accrue-before-resolve** dulu
+      (`InstallmentBillingPort.billDueInterest` lalu `PenaltyAccrualPort.accrueDuePenalty` pada satu tanggal
+      bisnis — ADR-013 §1), menghitung cap piutang yang diakui per installment lewat `WriteOffEngine` murni
+      (penalty efektif via `EffectivePenaltyPort` invariant 9, lalu bunga diakui yang belum dibayar, lalu
+      pokok belum dibayar — residual yang sama dengan jalur settlement; bunga masa depan tak pernah
+      dihapus-bukukan), memindahkan setiap installment terbuka ke `WRITTEN_OFF`
+      (`Installment.writeOff`, invariant 15), menutup kontrak `ACTIVE → TERMINATED` dengan aktor pencatat
+      (JWT `sub` via `AuditContext`, **bukan** body) dan reason (`Contract.terminateByWriteOff`), lalu
+      mem-posting **satu** jurnal `WRITE_OFF` berimbang (Dr `BIAYA_PENGHAPUSAN_PIUTANG` / Cr
+      `PIUTANG_POKOK`+`PIUTANG_BUNGA`+`PIUTANG_DENDA`; komponen nol tak memunculkan baris; `ref_id` = contract,
+      guard layanan `LedgerPostingService` menjaga satu entri non-reversal per `(WRITE_OFF, contractId)` —
+      ADR-008 d5, `WRITE_OFF` tetap di luar `uq_journal_entry_event`). Idempoten via `IdempotencyService`
+      persis `POST /payments` / `POST /settlements` (replay identik; key kedaluwarsa → 409
+      `IDEMPOTENCY_KEY_EXPIRED`; body beda → 409 `CONFLICT`). Kontrak non-ACTIVE → 409 `CONTRACT_STATE_INVALID`.
+      Migrasi **V19** (V18 tertinggi di `main`; bila V19 cabang T17 ter-merge lebih dulu, ini dinomori ulang
+      saat merge — forward-only) memperkuat V4 `ck_contract_terminated_coherence` menjadi TERMINATED ⇒ `write_off_reason`
+      **dan** `write_off_recorded_by` keduanya NOT NULL (tanpa `CREATE TABLE`, forward-only, aman karena belum
+      ada baris TERMINATED). Baris RBAC baru di `ResourceServerSecurityConfiguration` + `EndpointRoleMatrixIT`.
+      Tanpa modul baru; TS §1 menambah konsumen in-module `contract → penalty` (`EffectivePenaltyPort`) dan
+      penggunaan `contract → ledger` untuk jurnal WRITE_OFF (edge yang sudah ada).
+      **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):**
+      `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"` (semua unit, tanpa Docker)
+      = **60 suite / 448 tes / 0 gagal / 0 error** (naik dari 443), termasuk `WriteOffEngineTest` (5),
+      `InstallmentWriteOffTest` (8) dan `ContractTerminateByWriteOffTest` (6). **Tidak dijalankan:** suite
+      Testcontainers `*IT` — `ContractWriteOffIT` baru dan `EndpointRoleMatrixIT` yang diperluas — dikompilasi
+      tetapi gagal hanya di `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus menjalankannya di
+      Docker sebelum merge. Branch `t19-write-off`.
