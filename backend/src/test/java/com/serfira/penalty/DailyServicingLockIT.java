@@ -95,11 +95,12 @@ class DailyServicingLockIT {
 		}
 
 		assertThat(processor.invocations()).isEqualTo(1);
-		// One invocation writes one row per step: billing, penalty-accrual and aging (A-9, T6).
+		// One invocation writes one row per step: billing, penalty-accrual, aging and consistency-check
+		// (A-9, T6, T17). The one reconciled contract is processed=1, failed=0 on every step.
 		assertThat(jdbc.queryForObject("select count(*) from job_run where business_date = ?", Long.class,
-				BUSINESS_DATE)).isEqualTo(3L);
+				BUSINESS_DATE)).isEqualTo(4L);
 		assertThat(jdbc.queryForObject("select count(*) from job_run where status = 'COMPLETED' "
-				+ "and records_processed = 1 and records_failed = 0", Long.class)).isEqualTo(3L);
+				+ "and records_processed = 1 and records_failed = 0", Long.class)).isEqualTo(4L);
 	}
 
 	private void truncateDomainTables() {

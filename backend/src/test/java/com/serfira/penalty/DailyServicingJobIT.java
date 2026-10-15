@@ -86,8 +86,10 @@ class DailyServicingJobIT {
 		assertThat(financialJobWriteCount(closed)).isZero();
 		assertThat(financialJobWriteCount(terminated)).isZero();
 
-		// One invocation = one row per step: billing, penalty-accrual and aging (A-9; aging added by T6).
-		assertJobRuns(BUSINESS_DATE, 2, 0, "COMPLETED", 3L);
+		// One invocation = one row per step: billing, penalty-accrual, aging and consistency-check (A-9;
+		// aging added by T6, consistency-check by T17). The two ACTIVE contracts reconcile clean, so the
+		// consistency row has the same processed=2, failed=0 as the servicing steps.
+		assertJobRuns(BUSINESS_DATE, 2, 0, "COMPLETED", 4L);
 		assertThat(nonSystemFinancialAuditRows()).isZero();
 		assertThat(jdbc.queryForObject("select count(*) from job_run where created_by is distinct from ?",
 				Long.class, AuditContext.SYSTEM_USER_ID)).isZero();
@@ -106,8 +108,8 @@ class DailyServicingJobIT {
 		assertThat(journalCount(overdue, "BILLING")).isEqualTo(billingBefore);
 		assertThat(journalCount(overdue, "PENALTY_ACCRUAL")).isEqualTo(penaltyBefore);
 		assertThat(accrualCount(overdue)).isEqualTo(accrualBefore);
-		// Two invocations × three step rows (billing, penalty-accrual, aging).
-		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 6L);
+		// Two invocations × four step rows (billing, penalty-accrual, aging, consistency-check).
+		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 8L);
 	}
 
 	@Test
@@ -123,8 +125,8 @@ class DailyServicingJobIT {
 				LocalDate.of(2026, 3, 7), LocalDate.of(2026, 3, 8));
 		assertThat(journalCount(overdue, "BILLING")).isEqualTo(1L);
 		assertThat(journalCount(overdue, "PENALTY_ACCRUAL")).isEqualTo(5L);
-		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 3L);
-		assertJobRuns(BUSINESS_DATE.plusDays(3), 1, 0, "COMPLETED", 3L);
+		assertJobRuns(BUSINESS_DATE, 1, 0, "COMPLETED", 4L);
+		assertJobRuns(BUSINESS_DATE.plusDays(3), 1, 0, "COMPLETED", 4L);
 	}
 
 	@Test
@@ -141,8 +143,9 @@ class DailyServicingJobIT {
 		assertThat(accrualCount(healthy)).isEqualTo(2L);
 		assertThat(journalCount(broken, "BILLING")).isZero();
 		assertThat(accrualCount(broken)).isZero();
-		// The corrupt contract also fails the aging step (no schedule to age), so all three rows agree.
-		assertJobRuns(BUSINESS_DATE, 1, 1, "FAILED", 3L);
+		// The corrupt contract also fails the aging step (no schedule to age) and the consistency step (its
+		// receivable snapshot 409s on an ACTIVE contract with no schedule), so all four rows agree.
+		assertJobRuns(BUSINESS_DATE, 1, 1, "FAILED", 4L);
 	}
 
 	private UUID createContract(int sequence, LocalDate plannedStartDate, boolean activate) {

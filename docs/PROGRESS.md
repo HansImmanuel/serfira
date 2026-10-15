@@ -266,7 +266,7 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       `SELECT … FOR UPDATE` lalu hapus baris sub-ledger, D4), dan mem-posting **satu** jurnal reversal cermin
       (`LedgerPostingService.postReversal` — baris PAYMENT asli dengan Dr/Cr ditukar, `reversal_of_id` di-set,
       `(ref_type, ref_id)` sama, tanpa `LedgerRefType` baru, D1.2). Guard kelayakan (D5, dikoreksi di PR #11)
-      atas **setiap** installment terdampak: SETTLED/WRITTEN_OFF → 409 `PAYMENT_NOT_VOIDABLE`; kontrak harus
+      atas **setiap** installment terdampak: SETTLED/WRITTEN*OFF → 409 `PAYMENT_NOT_VOIDABLE`; kontrak harus
       ACTIVE **atau** CLOSED/MATURITY (agar void pembayaran terakhir bisa membuka kembali, D1.3), penutupan
       SETTLEMENT/write-off ditolak; kredit sudah dipakai → 409 `PAYMENT_CREDIT_CONSUMED`; semua tidak menulis
       apa pun. **Tanpa catch-up accrual**
@@ -282,7 +282,7 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       `"(no reason given)"` untuk reason kosong/null agar tak melanggar CHECK V4 (`void_reason NOT NULL`);
       (3) recompute kini menambahkan kembali kredit yang diterapkan ke installment
       (`contract_credit_application`) agar void tak menjatuhkan resolusi berpendanaan kredit; (4) `paid_at`
-      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency `void`
+      di-stamp ulang ke instant pembayaran tersisa paling awal. Satu temuan ditunda: key idempotency \_void*
       belum single-use-forever (butuh migrasi baru; laten sampai T18) → **T31**.
       **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):**
       `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"`(semua unit, tanpa Docker)
