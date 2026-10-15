@@ -292,41 +292,35 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       dikompilasi tetapi gagal hanya di`DockerClientProviderStrategy`(tanpa daemon Docker); CI harus
       menjalankannya di Docker sebelum merge. Branch`t16-payment-void`.
 
-- [x] T17 — F1 Consistency check job (Addendum §7.1/§7.3, story L-3). Langkah **keempat** job harian
-      (billing → penalty → aging → consistency check) ditambahkan ke `DailyServicingOrchestrator` tanpa
-      scheduler/lock/batching baru: reuse ShedLock, `job_run`, keyset paging, dan retry/backoff T3/T26. Langkah
-      ini **read-only** — mencatat drift sebagai baris `reconciliation_exception` dan tidak pernah mengoreksi
-      angka (Addendum §7.3). Tiga check independen di engine murni `penalty.domain.consistency.ConsistencyCheckEngine`:
-      **A `PAYMENT_CASH`** (`Σ` payment POSTED = net `KAS` dari entry `PAYMENT`), **B `ALLOCATION_PAYMENT`**
-      (`Σ` alokasi = `Σ` payment, invariant 6), **C `RECEIVABLE_INSTALLMENT`** (`Σ` residual receivable
-      installment = net `PIUTANG_POKOK + PIUTANG_BUNGA + PIUTANG_DENDA`). `check_type` memakai persis tiga nilai
-      yang sudah ada di CHECK V1 `ck_recon_exception_type`. `ConsistencyCheckService` (satu transaksi per
-      kontrak, isolasi `REPEATABLE_READ` agar kelima baca rekonsiliasi memakai satu snapshot konsisten — tanpa
-      itu `POST /payments` yang commit di tengah check bisa membuat baca ledger tidak sinkron dengan baca
-      payment/alokasi dan mencatat drift palsu) mengumpulkan tiap sisi lewat port modul pemilik data saja
-      (`02_TECH_SPEC.md` §1): `payment.application.PaymentReconciliationPort` (total payment/alokasi POSTED),
-      `ledger.application.ContractLedgerBalancePort` (saldo net `KAS`-dari-PAYMENT dan `PIUTANG_*`), dan
-      `contract.application.ReceivableReconciliationPort` (residual receivable, net adjustment aktif lewat
-      `EffectivePenaltyPort` — formula "outstanding" tunggal yang sama dengan T15/T30, tanpa formula kedua).
-      Entitas penulis `ReconciliationException` + repository dimiliki modul `penalty` (satu-satunya penulis).
-      Pencatatan drift **idempoten** per `(contract_id, check_date, check_type)`: run ulang tanggal yang sama
-      (workflow yang didukung) atas kontrak yang masih drift tidak menambah baris OPEN kedua — service melewati
-      insert bila baris OPEN sudah ada, dengan backstop index unik parsial `uq_recon_exception_open` (migrasi
-      **V19**, parsial pada `status = 'OPEN'` sehingga histori RESOLVED/INVESTIGATING tetap bebas). Semantik A-9
-      khusus langkah ini: `records_processed` = kontrak diperiksa, `records_failed` = kontrak yang **drift**
-      (atau error baca), sehingga baris `job_run` sendiri menjadi alarm drift portofolio; drift tetap commit
-      baris exception-nya (bukan kegagalan transaksi). Ditulis sebagai `SYSTEM`. Tanpa endpoint HTTP (job
-      in-process; `GET /reports/reconciliation-exceptions` ditunda ke modul `reporting`), jadi tanpa baris RBAC
-      baru. ITs daily-job yang ada diperbarui ke 4 baris `job_run` per run.
-      **Perbaikan review PR #12 (2026-10-15, CodeRabbit):** (1) isolasi `check` dinaikkan ke `REPEATABLE_READ`
-      untuk snapshot konsisten lintas kelima baca (menghilangkan drift palsu saat payment commit di tengah
-      check); (2) pencatatan exception dibuat idempoten per `(contract_id, check_date, check_type)` via
-      pengecekan baris OPEN + index unik parsial V19; (3) format Markdown entri dokumen dirapikan.
-      **Verifikasi (Docker TIDAK tersedia, fallback steering tech-stack):** `.\gradlew compileJava
-compileTestJava` pass; `.\gradlew test --tests "*Test"` (semua unit, tanpa Docker) = **58 suite / 443 tes
-      / 0 gagal / 0 error** (naik dari 429), termasuk `ConsistencyCheckEngineTest` (8) dan 5 kasus consistency
-      baru di `DailyServicingOrchestratorTest` (kini 24). **Tidak dijalankan:** suite Testcontainers `*IT` —
-      `ConsistencyCheckIT` baru (termasuk kasus run-ulang-tanpa-duplikat-OPEN) dan `DailyServicingJobIT`/
-      `DailyJobRobustnessIT`/`DailyServicingLockIT` yang diperbarui — dikompilasi tetapi gagal hanya di
-      `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus menjalankannya di Docker sebelum merge.
-      Branch `t17-consistency-check-job`.
+- [x] T19 — F5 Write-off. `POST /api/v1/contracts/{id}/write-off` (ADMIN_OPERASIONAL, header
+      `Idempotency-Key`, body `reason` wajib) mencatat keputusan eksternal untuk berhenti menagih sebuah
+      kontrak ACTIVE. Jalur tulis (`contract.application.ContractWriteOffCommandService`, dibungkus
+      `ContractWriteOffRetryingService` — 3 percobaan 50/150 ms di luar transaksi, meniru
+      `SettlementExecutionRetryingService`) berjalan dalam satu use case `@Transactional` dengan urutan
+      validate → compute → write aggregate → post journal → commit: **accrue-before-resolve** dulu
+      (`InstallmentBillingPort.billDueInterest` lalu `PenaltyAccrualPort.accrueDuePenalty` pada satu tanggal
+      bisnis — ADR-013 §1), menghitung cap piutang yang diakui per installment lewat `WriteOffEngine` murni
+      (penalty efektif via `EffectivePenaltyPort` invariant 9, lalu bunga diakui yang belum dibayar, lalu
+      pokok belum dibayar — residual yang sama dengan jalur settlement; bunga masa depan tak pernah
+      dihapus-bukukan), memindahkan setiap installment terbuka ke `WRITTEN_OFF`
+      (`Installment.writeOff`, invariant 15), menutup kontrak `ACTIVE → TERMINATED` dengan aktor pencatat
+      (JWT `sub` via `AuditContext`, **bukan** body) dan reason (`Contract.terminateByWriteOff`), lalu
+      mem-posting **satu** jurnal `WRITE_OFF` berimbang (Dr `BIAYA_PENGHAPUSAN_PIUTANG` / Cr
+      `PIUTANG_POKOK`+`PIUTANG_BUNGA`+`PIUTANG_DENDA`; komponen nol tak memunculkan baris; `ref_id` = contract,
+      guard layanan `LedgerPostingService` menjaga satu entri non-reversal per `(WRITE_OFF, contractId)` —
+      ADR-008 d5, `WRITE_OFF` tetap di luar `uq_journal_entry_event`). Idempoten via `IdempotencyService`
+      persis `POST /payments` / `POST /settlements` (replay identik; key kedaluwarsa → 409
+      `IDEMPOTENCY_KEY_EXPIRED`; body beda → 409 `CONFLICT`). Kontrak non-ACTIVE → 409 `CONTRACT_STATE_INVALID`.
+      Migrasi **V19** (V18 tertinggi di `main`; bila V19 cabang T17 ter-merge lebih dulu, ini dinomori ulang
+      saat merge — forward-only) memperkuat V4 `ck_contract_terminated_coherence` menjadi TERMINATED ⇒ `write_off_reason`
+      **dan** `write_off_recorded_by` keduanya NOT NULL (tanpa `CREATE TABLE`, forward-only, aman karena belum
+      ada baris TERMINATED). Baris RBAC baru di `ResourceServerSecurityConfiguration` + `EndpointRoleMatrixIT`.
+      Tanpa modul baru; TS §1 menambah konsumen in-module `contract → penalty` (`EffectivePenaltyPort`) dan
+      penggunaan `contract → ledger` untuk jurnal WRITE_OFF (edge yang sudah ada).
+      **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):**
+      `.\gradlew compileJava compileTestJava` pass; `.\gradlew test --tests "*Test"` (semua unit, tanpa Docker)
+      = **60 suite / 448 tes / 0 gagal / 0 error** (naik dari 443), termasuk `WriteOffEngineTest` (5),
+      `InstallmentWriteOffTest` (8) dan `ContractTerminateByWriteOffTest` (6). **Tidak dijalankan:** suite
+      Testcontainers `*IT` — `ContractWriteOffIT` baru dan `EndpointRoleMatrixIT` yang diperluas — dikompilasi
+      tetapi gagal hanya di `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus menjalankannya di
+      Docker sebelum merge. Branch `t19-write-off`.

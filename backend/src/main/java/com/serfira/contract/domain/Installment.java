@@ -248,6 +248,57 @@ public class Installment extends Auditable {
 	}
 
 	/**
+	 * Writes this installment off as part of a receivable write-off (F5, task T19, DM §1.4/§1.12,
+	 * invariant 15): raises {@code written_off_amount} by the recognized receivable the write-off caps,
+	 * stamps {@code written_off_at} the first time, and moves the installment to the terminal
+	 * {@code WRITTEN_OFF} state. From then on its outstanding is 0 and nothing more accrues or bills against
+	 * it (the billing/penalty steps skip {@code WRITTEN_OFF}).
+	 *
+	 * <p>This is the write-off analogue of {@link #settle} and is likewise <b>terminal</b>: a write-off
+	 * terminates the whole contract, so a written-off installment is never downgraded afterwards. A
+	 * {@code SETTLED} installment is rejected — the two terminal states never overwrite each other
+	 * (invariant 15). An installment already {@code WRITTEN_OFF} is a no-op (the caller only writes off open
+	 * installments, so this guard is defensive).
+	 *
+	 * <p>Writing {@code status = WRITTEN_OFF} together with a non-null {@code written_off_at} keeps the row
+	 * coherent for the V4 {@code ck_installment_written_off_coherence} CHECK (status WRITTEN_OFF ⇒
+	 * {@code written_off_at NOT NULL}) before the transaction commits; the resolved total stays within the
+	 * recognized receivable guarded by the V3 {@code assert_installment_amounts} trigger, because the caller
+	 * caps the written-off amount at the installment's outstanding receivable (future unrecognized interest
+	 * is never written off — it was never a receivable).
+	 *
+	 * @param amount       scale-2 money, {@code >= 0}; the recognized receivable this write-off caps on the
+	 *                     installment (0 for an installment with nothing left outstanding, which only moves
+	 *                     the status)
+	 * @param writtenOffAt business instant of the write-off; kept from the first write-off call
+	 * @throws ContractStateException   if the installment is already {@code SETTLED}
+	 * @throws IllegalArgumentException if the amount is negative
+	 * @throws ArithmeticException      if the amount is finer than scale 2
+	 */
+	public void writeOff(BigDecimal amount, OffsetDateTime writtenOffAt) {
+		Objects.requireNonNull(writtenOffAt, "writtenOffAt");
+		if (amount == null) {
+			throw new IllegalArgumentException("amount is required");
+		}
+		if (status == InstallmentStatus.SETTLED) {
+			throw new ContractStateException(
+					"installment " + periodNo + " is SETTLED and can no longer be written off");
+		}
+		if (status == InstallmentStatus.WRITTEN_OFF) {
+			return;
+		}
+		BigDecimal capped = amount.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
+		if (capped.signum() < 0) {
+			throw new IllegalArgumentException("a written-off amount must be >= 0 but was " + capped);
+		}
+		this.writtenOffAmount = this.writtenOffAmount.add(capped);
+		if (this.writtenOffAt == null) {
+			this.writtenOffAt = writtenOffAt;
+		}
+		this.status = InstallmentStatus.WRITTEN_OFF;
+	}
+
+	/**
 	 * Re-derives the resolution status after a penalty waiver/reduce (E5, task T15, ADR-019 D3): a waiver
 	 * lowers the recognized penalty but never touches the installment's amounts, so without this the status
 	 * stays {@code OVERDUE}/{@code PARTIALLY_PAID} even when the write-down clears the last amount owed,

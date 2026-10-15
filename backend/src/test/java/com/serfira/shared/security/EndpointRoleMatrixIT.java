@@ -114,6 +114,8 @@ class EndpointRoleMatrixIT {
 		// Credit (T14): apply is ADMIN_OPERASIONAL only; read is ADMIN_OPERASIONAL + FINANCE (Addendum §3.4).
 		allowedRoles.put("POST /api/v1/contracts/" + RANDOM_ID + "/credit/apply", List.of(ADMIN));
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/credit", List.of(ADMIN, FINANCE));
+		// Write-off (T19, F5): ADMIN_OPERASIONAL only (Addendum §3.4).
+		allowedRoles.put("POST /api/v1/contracts/" + RANDOM_ID + "/write-off", List.of(ADMIN));
 		// Penalty waive/reduce (T15): ADMIN_OPERASIONAL only (Addendum §3.4, ADR-019 D2).
 		allowedRoles.put("POST /api/v1/penalty-adjustments", List.of(ADMIN));
 		// Settlement quote (T12): ADMIN_OPERASIONAL only (Addendum §3.4, ADR-018).

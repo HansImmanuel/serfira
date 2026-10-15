@@ -248,6 +248,44 @@ public class Contract extends Auditable {
 		return true;
 	}
 
+	/**
+	 * Terminates an ACTIVE contract by a receivable write-off (F5, task T19, DM §1.3/§1.12): records the
+	 * external decision to stop collecting. Writes {@code status = TERMINATED}, the write-off
+	 * {@code reason}, the recording actor and {@code closed_at} in this single row update so the V4
+	 * {@code ck_contract_terminated_coherence} CHECK (TERMINATED ⇒ {@code write_off_reason} and
+	 * {@code write_off_recorded_by} both NOT NULL, strengthened by V19) always sees a coherent row.
+	 *
+	 * <p>Only an ACTIVE contract may be written off: a DRAFT contract was never disbursed, and a CLOSED
+	 * ({@code MATURITY}/{@code SETTLEMENT}) or already TERMINATED contract has no live receivable to cap.
+	 * {@code closed_reason} stays NULL — it is reserved for {@code CLOSED} (invariant: TERMINATED is its own
+	 * terminal status, not a close reason); the write-off reason lives on {@code write_off_reason}.
+	 *
+	 * <p>The recording actor is the authenticated JWT {@code sub}, never a request-body value (security:
+	 * audit actors come from the security context). The caller resolves it from {@code AuditContext} and
+	 * passes it here.
+	 *
+	 * @param reason     why the receivable is written off; required, non-blank
+	 * @param recordedBy the authenticated actor recording the write-off; required
+	 * @param writtenOffAt business instant of the write-off (its {@code closed_at})
+	 * @throws ContractStateException   if the contract is not ACTIVE
+	 * @throws IllegalArgumentException if the reason is blank
+	 */
+	public void terminateByWriteOff(String reason, UUID recordedBy, OffsetDateTime writtenOffAt) {
+		Objects.requireNonNull(recordedBy, "recordedBy");
+		Objects.requireNonNull(writtenOffAt, "writtenOffAt");
+		if (reason == null || reason.isBlank()) {
+			throw new IllegalArgumentException("a write-off reason is required");
+		}
+		if (status != ContractStatus.ACTIVE) {
+			throw new ContractStateException("contract " + contractNo + " is " + status
+					+ " and cannot be written off; only an ACTIVE contract can");
+		}
+		this.status = ContractStatus.TERMINATED;
+		this.writeOffReason = reason.trim();
+		this.writeOffRecordedBy = recordedBy;
+		this.closedAt = writtenOffAt;
+	}
+
 	public UUID getId() {
 		return id;
 	}
