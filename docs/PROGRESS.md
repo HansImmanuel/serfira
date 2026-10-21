@@ -264,17 +264,25 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17
       `IdempotencyKeyBatchDeleter` membungkus hapus satu halaman dalam `@Transactional(REQUIRES_NEW)` sebagai
       `@Service` terpisah (menghindari jebakan self-invocation proxy), memanggil query native keyset
       `IdempotencyKeyRepository.deleteExpiredBatch` (`DELETE … WHERE id IN (SELECT … WHERE expires_at < :now
+      AND endpoint IN ('POST /api/v1/contracts', 'POST /api/v1/payments', 'POST /api/v1/settlements')
       ORDER BY expires_at, id LIMIT :limit)`; `DELETE` PostgreSQL tak punya `LIMIT`). `LockedIdempotencyCleanupJob`
       (`@SchedulerLock(name="idempotency-cleanup")`, lock terpisah dari daily-servicing) dan
       `IdempotencyCleanupScheduler` (`@Scheduled` cron 01:30 Asia/Jakarta, setelah daily servicing 01:00).
       **A-9:** `records_processed` = jumlah baris terhapus, `records_failed = 0` saat sukses (hapus tak punya
-      notion gagal per-baris). Menghapus baris klaim **tidak** membuka kembali key: backstop baris bisnis
-      permanen (`uq_contract_idempotency`, `uq_payment_idempotency` semua-status dari V18) menahannya, jadi
+      notion gagal per-baris). **Review PR #14:** cleanup kini **di-scope** ke tiga endpoint create yang
+      punya backstop permanen (`POST /api/v1/contracts` → `uq_contract_idempotency`, `POST /api/v1/payments`
+      → `uq_payment_idempotency` semua-status V18, `POST /api/v1/settlements` → `uq_settlement_idempotency`)
+      lewat allow-list `endpoint IN (...)`; klaim write-off dan payment-void **dipertahankan** walau expired
+      karena tak punya backstop durabel — menghapusnya akan membuka kembali key untuk dipakai ulang terhadap
+      target berbeda (ADR-017 sekali-pakai-selamanya, ADR-020 D3). Untuk ketiga endpoint ber-backstop,
+      menghapus baris klaim **tidak** membuka kembali key: backstop baris bisnis permanen menahannya, jadi
       reuse key bekas tetap ditolak dengan 409 yang jujur — **tanpa probe permanent-key** (resolusi ADR-017
-      2026-10-11). Migrasi **V21** (`idx_idempotency_keys_expires_at`) hanya menambah index; tanpa `CREATE TABLE`,
-      tanpa perubahan constraint/backstop apa pun. Tiga kunci `serfira.jobs.idempotency-cleanup.*` di **kedua**
-      `application.properties` (cron tes `-`). Tanpa modul baru; hanya menyentuh tabel sendiri plus infra
-      `shared/job` + `shared/clock`.
+      2026-10-11). `jobRuns.complete` kini dipindah ke **dalam** boundary kegagalan job (kegagalan complete
+      difinalisasi lewat `failHard`, penyebab asli dipertahankan via `addSuppressed`, bukan meninggalkan
+      baris `RUNNING`). Migrasi **V21** (`idx_idempotency_keys_expires_at`) hanya menambah index; tanpa
+      `CREATE TABLE`, tanpa perubahan constraint/backstop apa pun. Tiga kunci
+      `serfira.jobs.idempotency-cleanup.*` di **kedua** `application.properties` (cron tes `-`). Tanpa modul
+      baru; hanya menyentuh tabel sendiri plus infra `shared/job` + `shared/clock`.
       **Verifikasi (Docker tersedia):** `.\gradlew compileJava compileTestJava` pass;
       `.\gradlew test --tests "*IdempotencyCleanupIT" --tests "*IdempotencyRetentionIT"` = **8 tes / 0 gagal**
       (`IdempotencyCleanupIT` 5: expired dihapus/live disimpan, `job_run` A-9, key kontrak/pembayaran bekas

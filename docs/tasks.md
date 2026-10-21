@@ -164,7 +164,7 @@ D3). Crash leaves a `RUNNING` row the next run marks `ABANDONED` (T26, unchanged
 granularity; after cleanup, a reused spent key cannot mint a second contract/payment; a voided payment's key
 still spent (ADR-020 D3). `FixedClock`.
 
-**Implementation note (DONE).** Additive, owned by `shared/idempotency` (cohesion with the table owner;
+**Implementation note (2026-10-21).** Additive, owned by `shared/idempotency` (cohesion with the table owner;
 no cross-module reach). New `IdempotencyCleanupJob` (non-transactional orchestration: run-as-SYSTEM,
 `abandonStaleRuns`, one `job_run` named `idempotency-cleanup`, keyset-paged delete, T26 backoff
 `{50,150,400,1000}`/5 attempts, `complete`/`failHard`), `IdempotencyKeyBatchDeleter` (`REQUIRES_NEW`
@@ -179,7 +179,16 @@ keys in both `application.properties` (test cron `-`). Verification: `Idempotenc
 showed 7 failures in unrelated suites (`BaselineSchemaIT`, `PaymentVoidIT`, `ConsistencyCheckIT`,
 `DailyServicingJobIT`) that reproduce identically on the clean branch tip with the T18 changes stashed —
 pre-existing shared-DB IT ordering pollution, not introduced by T18; `./gradlew check` therefore not green
-on this base. T18's own suite passes within the full run.
+on this base. T18's own suite passes within the full run. PR #14 review round: the cleanup
+`DELETE` is now scoped to the three permanently-backed create endpoints (`POST /api/v1/contracts`,
+`POST /api/v1/payments`, `POST /api/v1/settlements`) via an `endpoint IN (...)` allow-list, so write-off and
+payment-void claims are retained even once expired (they have no durable backstop — deleting them would
+re-open the key for reuse against a different target, ADR-017 single-use-forever / ADR-020 D3); and
+`jobRuns.complete` moved inside the job's failure boundary so a completion failure finalizes via `failHard`
+(with the original cause preserved via `addSuppressed`) instead of leaving a `RUNNING` row. New tests:
+`IdempotencyCleanupPagingIT` (multi-page keyset drain at batch-size 2) and an
+`IdempotencyCleanupIT` scoping regression asserting write-off/void claims survive while backed-create claims
+are deleted.
 
 ### T27a — Minimal CI gate: `./gradlew check` (1 pt)
 

@@ -87,14 +87,22 @@ public class IdempotencyCleanupJob {
 				page = deletePageWithRetry();
 				deleted += page;
 			} while (page == batchSize);
+
+			// complete runs inside the boundary: if its REQUIRES_NEW save throws, the catch below finalizes
+			// the row via failHard instead of leaving it RUNNING, and the failure still propagates.
+			jobRuns.complete(runId, deleted, 0);
 		} catch (RuntimeException failure) {
-			// An error escaping the retry loop finalizes the row FAILED with the partial tally, then rethrows
-			// so the failure is never swallowed. failHard (not complete) because an aborted run is not clean.
-			jobRuns.failHard(runId, deleted, 0);
+			// An error escaping the loop (or the complete above) finalizes the row FAILED with the partial
+			// tally, then rethrows so the failure is never swallowed. failHard (not complete) because an
+			// aborted run is not clean. A failHard that itself throws is attached as a suppressed exception so
+			// it never masks the original cause.
+			try {
+				jobRuns.failHard(runId, deleted, 0);
+			} catch (RuntimeException finalizationFailure) {
+				failure.addSuppressed(finalizationFailure);
+			}
 			throw failure;
 		}
-
-		jobRuns.complete(runId, deleted, 0);
 	}
 
 	/**

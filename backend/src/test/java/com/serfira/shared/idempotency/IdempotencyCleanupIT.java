@@ -200,15 +200,40 @@ class IdempotencyCleanupIT {
 		assertThat(count("payment")).isEqualTo(1L);
 	}
 
+	/**
+	 * Cleanup is scoped to the three permanently-backed create endpoints. Write-off and payment-void claims
+	 * have no durable business-row backstop, so their expired claim rows must be <strong>retained</strong>:
+	 * deleting them would re-open the key for reuse against a different target, violating ADR-017
+	 * single-use-forever and ADR-020 D3. This locks in the {@code endpoint IN (...)} filter in
+	 * {@code IdempotencyKeyRepository.deleteExpiredBatch}.
+	 */
+	@Test
+	void theJobRetainsWriteOffAndVoidClaimsButDeletesBackedCreateClaims() {
+		seedClaim("backed-create-key", "POST /api/v1/contracts", clock.now().minusDays(1));
+		seedClaim("write-off-key", "POST /api/v1/contracts/{id}/write-off", clock.now().minusDays(1));
+		seedClaim("void-key", "POST /api/v1/payments/{id}/void", clock.now().minusDays(1));
+
+		job.run();
+
+		assertThat(claimExists("backed-create-key")).isFalse();
+		assertThat(claimExists("write-off-key")).isTrue();
+		assertThat(claimExists("void-key")).isTrue();
+	}
+
 	// --- helpers ---------------------------------------------------------------------------------------
 
+	/** Seeds a claim under a backed create endpoint ({@code POST /api/v1/contracts}), which the scoped cleanup deletes. */
 	private void seedClaim(String key, java.time.OffsetDateTime expiresAt) {
+		seedClaim(key, "POST /api/v1/contracts", expiresAt);
+	}
+
+	private void seedClaim(String key, String endpoint, java.time.OffsetDateTime expiresAt) {
 		jdbc.update("""
 				insert into idempotency_keys
 					(id, key, endpoint, request_hash, status, expires_at, created_at, created_by, updated_at, updated_by)
-				values (gen_random_uuid(), ?, 'POST /api/v1/cleanup-probe', null, 'COMPLETED', ?,
+				values (gen_random_uuid(), ?, ?, null, 'COMPLETED', ?,
 					clock_timestamp(), ?, clock_timestamp(), ?)
-				""", key, expiresAt, SYSTEM_USER_ID, SYSTEM_USER_ID);
+				""", key, endpoint, expiresAt, SYSTEM_USER_ID, SYSTEM_USER_ID);
 	}
 
 	private boolean claimExists(String key) {
