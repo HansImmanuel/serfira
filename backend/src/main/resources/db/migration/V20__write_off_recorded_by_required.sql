@@ -1,13 +1,14 @@
 -- =====================================================================================
--- Serfira Core — V19: write-off requires a recording actor (F5, task T19)
+-- Serfira Core — V20: write-off requires a recording actor (F5, task T19)
 -- -------------------------------------------------------------------------------------
 -- Source of truth: 03_DOMAIN_MODEL.md §1.3/§1.12 (write-off terminal state),
 -- 04_GAPS_ADDENDUM.md §4.2/§13, 60-security (audit actors come from the security context).
 --
--- Numbering: V18 is the highest migration on main (T16); V19 is the next free number on
--- this branch. The T17 consistency-check branch also introduces a V19 independently; if
--- that merges first, this one is renumbered to the next free number at merge (forward-only,
--- as T13's V16->V17 note records).
+-- Numbering: this migration was authored as V19 on branch t19-write-off (V18 was the
+-- highest on main at the time). The T17 consistency-check branch (PR #12) merged first and
+-- also claimed V19 (V19__reconciliation_exception_open_uniqueness.sql), so this one is
+-- renumbered forward-only to V20 at merge, exactly as the branch header anticipated and as
+-- T13's V16->V17 note records.
 --
 -- V4 ck_contract_terminated_coherence only required write_off_reason when a contract is
 -- TERMINATED. The write-off endpoint also records WHO stopped collection

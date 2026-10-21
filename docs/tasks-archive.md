@@ -237,21 +237,21 @@ finding.
 
 Each row cites where it was resolved; detail lives in the cited ADR/task.
 
-| #    | Discrepancy                                                                      | Resolution                                        |
-| ---- | -------------------------------------------------------------------------------- | ------------------------------------------------- |
-| X-1  | Payment retries optimistic-lock up to 3× then 409 `CONCURRENT_MODIFICATION`      | T5 (`PaymentRetryingService`); constant tidied T24 (CR-13) |
-| X-2  | Daily jobs use ShedLock, retry per record up to 5×                               | T2/T3 (V9 lock, DB-time renewable lock)           |
-| X-3  | `X-Request-Id`, JSON logs, `request_id` on `idempotency_keys`                    | Open → T20                                         |
-| X-4  | DM §1.4 lacked `OVERDUE → PARTIALLY_PAID`                                         | A-5 → T1 (code wins; DM corrected)                |
-| X-5  | Void catch-up delta when expected > recognized                                   | A-3 → T1 (ADR-012 d7: catch-up only for date-less rows); E4/T16 |
-| X-6  | Penalty base = unpaid pokok+bunga only                                           | A-2 → T1 (ADR-012 d2 kept: paid penalty also reduces base); T10 DEFERRED |
-| X-7  | `penalty_accrual` append-only / `days_late >= 1`                                 | T2 (V9 trigger + CHECK)                           |
-| X-8  | Statement debit/credit per entry                                                 | A-8 → T1 (ledger-literal); built in T9            |
-| X-9  | TS §7 repo/package names                                                         | Doc-only, DEFERRED                                |
-| X-10 | Non-UUID `sub` fails closed                                                      | T7 (ADR-015 D5: 401 at decoder + defensive filter) |
-| X-11 | Idempotency key "may be claimed again" after retention                          | T24 (ADR-017: single-use forever; 409 `IDEMPOTENCY_KEY_EXPIRED`) |
-| X-12 | `system_parameter` append-only                                                   | T25 (V12 `block_modification()`)                  |
-| X-13 | Statement query 500 on PostgreSQL (`42P18`)                                      | T29 (`cast(...)`-typed nullable binds)            |
+| #    | Discrepancy                                                                 | Resolution                                                               |
+| ---- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| X-1  | Payment retries optimistic-lock up to 3× then 409 `CONCURRENT_MODIFICATION` | T5 (`PaymentRetryingService`); constant tidied T24 (CR-13)               |
+| X-2  | Daily jobs use ShedLock, retry per record up to 5×                          | T2/T3 (V9 lock, DB-time renewable lock)                                  |
+| X-3  | `X-Request-Id`, JSON logs, `request_id` on `idempotency_keys`               | Open → T20                                                               |
+| X-4  | DM §1.4 lacked `OVERDUE → PARTIALLY_PAID`                                   | A-5 → T1 (code wins; DM corrected)                                       |
+| X-5  | Void catch-up delta when expected > recognized                              | A-3 → T1 (ADR-012 d7: catch-up only for date-less rows); E4/T16          |
+| X-6  | Penalty base = unpaid pokok+bunga only                                      | A-2 → T1 (ADR-012 d2 kept: paid penalty also reduces base); T10 DEFERRED |
+| X-7  | `penalty_accrual` append-only / `days_late >= 1`                            | T2 (V9 trigger + CHECK)                                                  |
+| X-8  | Statement debit/credit per entry                                            | A-8 → T1 (ledger-literal); built in T9                                   |
+| X-9  | TS §7 repo/package names                                                    | Doc-only, DEFERRED                                                       |
+| X-10 | Non-UUID `sub` fails closed                                                 | T7 (ADR-015 D5: 401 at decoder + defensive filter)                       |
+| X-11 | Idempotency key "may be claimed again" after retention                      | T24 (ADR-017: single-use forever; 409 `IDEMPOTENCY_KEY_EXPIRED`)         |
+| X-12 | `system_parameter` append-only                                              | T25 (V12 `block_modification()`)                                         |
+| X-13 | Statement query 500 on PostgreSQL (`42P18`)                                 | T29 (`cast(...)`-typed nullable binds)                                   |
 
 ---
 
@@ -261,24 +261,24 @@ An external AI review of `848e8a3` reported 16 findings, renumbered CR-01…CR-1
 2026-09-29 F-numbers. Each was checked against source, migrations, CI and the upstream compatibility
 matrices on 2026-09-30 (suite not re-run for that check; last green run then was the T6 run, 460 tests).
 
-| ID    | Finding                                                   | Verdict / task                                                                                   |
-| ----- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| CR-01 | Non-UUID `sub` stays authenticated, writes as `SYSTEM`    | Fixed T7 (ADR-015 D5): decoder `sub`-is-UUID validator 401s; filter discards defensively         |
-| CR-02 | ShedLock 6.9.0 on Boot 4.1.1                              | Unsupported pairing; fixed T23 (→ 7.10.1)                                                         |
-| CR-03 | springdoc 2.8.9 on Boot 4                                 | Boot 4 needs springdoc v3; fixed T23 (→ 3.1.1), `OpenApiSmokeIT`                                  |
-| CR-04 | Retention takeover vs permanent business-row keys         | Severity lowered (no double execution); A-13 option A → T24                                       |
-| CR-05 | Ledger one-entry-per-event only in Java                   | Documented (ADR-008 d5); defense-in-depth DB guard T25, scoped to current ref types              |
-| CR-06 | Zero-line entry / zero-allocation payment bypass V3       | V3 triggers child-only; parent-side checks T25                                                   |
-| CR-07 | `job_run` stuck `RUNNING`                                 | Fixed T26 (`ABANDONED` + V13, loop-escape finalization)                                          |
-| CR-08 | All ACTIVE ids loaded at once                             | Fixed T26 (keyset paging, zero-UUID sentinel, batch size)                                        |
-| CR-09 | Daily retry without backoff                               | Fixed T26 (`Sleeper`, `{50,150,400,1000}` ms)                                                    |
-| CR-10 | No `iss`/`aud`/active-user/role checks                    | Roles + `exp` fixed T7; `iss`/`aud`/active-user need a real issuer → T21                          |
-| CR-11 | No key rotation                                           | Documented (ADR-007 consequences); → T28                                                          |
-| CR-12 | `system_parameter` append-only by convention only         | Fixed T25 (V12 `block_modification()`; `AppendOnlyTestCleanup`)                                   |
-| CR-13 | 50/150/400 ms documented, 50/150 ms real                  | `BACKOFF_MILLIS[2]` unreachable; corrected in the re-plan, constant tidied T24                    |
-| CR-14 | Outstanding formula differs across read and write paths   | Dormant (no `penalty_adjustment` write path); → T15                                              |
-| CR-15 | CI runs only `test` + compose build                       | → T23 (smoke IT) + T27                                                                            |
-| CR-16 | Committed dev keys in Compose, no production guard        | Documented (ADR-005, README); → T21                                                              |
+| ID    | Finding                                                 | Verdict / task                                                                           |
+| ----- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| CR-01 | Non-UUID `sub` stays authenticated, writes as `SYSTEM`  | Fixed T7 (ADR-015 D5): decoder `sub`-is-UUID validator 401s; filter discards defensively |
+| CR-02 | ShedLock 6.9.0 on Boot 4.1.1                            | Unsupported pairing; fixed T23 (→ 7.10.1)                                                |
+| CR-03 | springdoc 2.8.9 on Boot 4                               | Boot 4 needs springdoc v3; fixed T23 (→ 3.1.1), `OpenApiSmokeIT`                         |
+| CR-04 | Retention takeover vs permanent business-row keys       | Severity lowered (no double execution); A-13 option A → T24                              |
+| CR-05 | Ledger one-entry-per-event only in Java                 | Documented (ADR-008 d5); defense-in-depth DB guard T25, scoped to current ref types      |
+| CR-06 | Zero-line entry / zero-allocation payment bypass V3     | V3 triggers child-only; parent-side checks T25                                           |
+| CR-07 | `job_run` stuck `RUNNING`                               | Fixed T26 (`ABANDONED` + V13, loop-escape finalization)                                  |
+| CR-08 | All ACTIVE ids loaded at once                           | Fixed T26 (keyset paging, zero-UUID sentinel, batch size)                                |
+| CR-09 | Daily retry without backoff                             | Fixed T26 (`Sleeper`, `{50,150,400,1000}` ms)                                            |
+| CR-10 | No `iss`/`aud`/active-user/role checks                  | Roles + `exp` fixed T7; `iss`/`aud`/active-user need a real issuer → T21                 |
+| CR-11 | No key rotation                                         | Documented (ADR-007 consequences); → T28                                                 |
+| CR-12 | `system_parameter` append-only by convention only       | Fixed T25 (V12 `block_modification()`; `AppendOnlyTestCleanup`)                          |
+| CR-13 | 50/150/400 ms documented, 50/150 ms real                | `BACKOFF_MILLIS[2]` unreachable; corrected in the re-plan, constant tidied T24           |
+| CR-14 | Outstanding formula differs across read and write paths | Dormant (no `penalty_adjustment` write path); → T15                                      |
+| CR-15 | CI runs only `test` + compose build                     | → T23 (smoke IT) + T27                                                                   |
+| CR-16 | Committed dev keys in Compose, no production guard      | Documented (ADR-005, README); → T21                                                      |
 
 Corrections to the review itself: CR-04 is not HIGH (permanent backstops prevent any second business row;
 the defect was a misleading error plus wasted work). CR-05 ignored ADR-008 decision 5 (per-event DB guards
@@ -302,3 +302,180 @@ Point-in-time run records kept for audit; the live `tasks.md` carries only the l
   full `test` 621 / 0 failed; `check` pass.
 - **2026-10-05 (T11) — Docker available:** `check` pass; forced full `test --rerun-tasks` 80 suites / 633
   tests / 0 failures.
+
+---
+
+## Completed task detail — Sprint 5 (Settlement, Credit & Waiver, Epic E)
+
+Planned 2026-10-05 via `/grill-with-docs`; decisions in **ADR-018** (settlement) and **ADR-019**
+(effective-penalty port). Order was T14 → T15 → T12 → T13, then the T30 read-consistency follow-up. The
+full narrative is in `PROGRESS.md`; the one-line index is in `tasks.md`. New `settlement` module
+(`api/application/domain/infrastructure`, ADR-001) depending on `ledger`, `contract` (ports), `penalty`
+(`EffectivePenaltyPort`). No new tables (the settlement/credit tables and their V5 immutability exist since
+V1); migrations V14–V17 are thin behaviour backstops.
+
+### T14 — E3 Excess → `contract_credit` + credit-apply/read endpoints (DONE)
+
+Implementation note (branch `t14-contract-credit`). A payment's EXCESS allocation books one AVAILABLE
+`contract_credit` row (sub-ledger of `TITIPAN_NASABAH`, not a second journal) via the new
+`ContractCreditPort` (new `payment → contract` edge; `uk_contract_credit_source` = one credit per EXCESS
+allocation). `POST /api/v1/contracts/{id}/credit/apply` (ADMIN*OPERASIONAL) applies available credit to the
+oldest recognized-receivable installment through the pure `CreditApplicationEngine` (PENALTY → INTEREST →
+PRINCIPAL, oldest due first); partial application allowed, one credit may fund many applications, never
+auto-applied; reduces only recognized receivable via `InstallmentReceivablePort.applyPaymentResolution`;
+one `Dr TITIPAN_NASABAH / Cr PIUTANG*\*` journal per call (`ref_type=CREDIT_APPLICATION`, service guard per
+ADR-008 d5). `GET /api/v1/contracts/{id}/credit`(ADMIN_OPERASIONAL + FINANCE) returns balance + history.
+Status flips AVAILABLE → APPLIED at balance 0. V14 adds the deferred`Σ applications ≤ amount`cap
+(invariant 11) + status guard (no`CREATE TABLE`). `ContractCreditRetryingService`(3 attempts, 50/150 ms).
+Verification (Docker available):`CreditApplicationEngineTest`(16) +`ContractCreditIT`(10) +`EndpointRoleMatrixIT`+`OpenApiSmokeIT`pass; full`test`= 665 tests, 0 failures;`check` green.
+
+### T15 — E5 Penalty waive/reduce + `EffectivePenaltyPort` (DONE)
+
+Implementation note (branch `t15-penalty-waive-effective-port`). First writer of `penalty_adjustment`: new
+append-only `PenaltyAdjustment` entity (`penalty.domain`). `POST /api/v1/penalty-adjustments`
+(ADMIN_OPERASIONAL) records WAIVE/REDUCE and posts one `Dr BEBAN_WAIVER_DENDA / Cr PIUTANG_DENDA`
+(`ref_type=PENALTY_WAIVER`); `approved_by` from the JWT `sub`, never the body. `BEBAN_WAIVER_DENDA` is a new
+EXPENSE account seeded in V15 (not a reuse of `DISKON_PELUNASAN`, reserved for the settlement rebate,
+ADR-018 D3). New `EffectivePenaltyPort`/`EffectivePenaltyService` is the single effective-penalty source
+(invariant 9, clamped ≥ 0); the native `InstallmentRepository.sumPenaltyAdjustmentsByInstallmentIds` read
+in `contract` is removed and both call sites route through the port (new `contract → penalty` edge, closes
+CR-14). V15 seeds the account + the deferred `assert_penalty_adjustment_cap`; `uq_journal_entry_event` was
+NOT extended (service guard suffices, ADR-008 d5). A `PaymentApiIT` corrupt-snapshot test became
+`anOverWaiverExceedingAccruedPenaltyIsRejectedByTheDbCap` (invariant 9 intentionally changed; spec-driven
+expected-value change). Verification (Docker available): `EffectivePenaltyFormulaTest` (5) +
+`PenaltyAdjustmentIT` (7) + role/ledger ITs pass; full `test` = 680 tests / 84 suites / 0 failures; `check`
+green.
+
+**PR #7 fix-pass (F2/F3/F4/F5).** Effective penalty became `max(0, gross − Σ adjustment − Σ paid penalty)`,
+with the paid-penalty term read via a new `payment.application.PenaltyAllocationPort` and migration **V16**
+teaching the DB cap to subtract Σ PENALTY `payment_allocation` (V15 left as-is, forward-only). Waiver now
+recomputes installment resolution + MATURITY close via `InstallmentStatusRecomputePort`, and
+`PenaltyAdjustmentRetryingService` (3 attempts, 50/150 ms) serializes concurrent waivers → 409
+`CONCURRENT_MODIFICATION`. `F1` (schedule/aging read paths) was deferred to T30.
+
+### T30 — Schedule response + aging report through effective penalty (DONE)
+
+Implementation note (branch `t30-effective-penalty-reads`; closes ADR-019 D4 / PR #7 F1 and PR #8 F1–F4).
+Both `contract` read paths now net the per-installment `Σ adjustment` sourced through `EffectivePenaltyPort`
+(the same source as the receivable snapshot and the write-time cap, no second formula, no native
+`penalty_adjustment` read). `InstallmentResponse` reports the port's `effective` (remaining) penalty verbatim
+on `penalty_amount` (wire shape unchanged; meaning is remaining after adjustments and paid penalty) and nets
+only Σ adjustment into `outstanding`. `ContractQueryService.installments(...)` branches on status (DRAFT →
+empty, ACTIVE → `loadEffectivePenalty`, closed → `loadEffectivePenaltyAnyStatus`), every status 200.
+`AgingReportSourceService` uses one batch call `loadEffectivePenalty(Collection<UUID>)`. PR #8 fixes: F1
+report the port value verbatim (don't recompute and drop the paid term); F2 status-agnostic reads for closed
+contracts; F3 batch the aging call; F4 doc/OpenAPI drift. IT `EffectivePenaltyReadConsistencyIT` added.
+Verification (Docker available): narrowest ITs pass; full `test` = 87 suites / 697 tests / 0 failures;
+`check` green. No migration, no API-shape change.
+
+### T12 — E1 Settlement quote (DONE)
+
+Implementation note (branch `t12-settlement-quote`; ADR-018). New `settlement` module; `POST
+/api/v1/settlements/quote` (ADMIN_OPERASIONAL). `SettlementQuoteCommandService` runs accrue-before-resolve
+first (ADR-013/ADR-018 D8), then reads the settlement snapshot through the new `contract`
+`SettlementReceivablePort` (exposes scheduled `interestAmount` + `contract.version`, which
+`InstallmentReceivablePort` deliberately omits), effective penalty via `EffectivePenaltyPort`, and available
+credit via the new `ContractCreditPort.availableCredit`. The pure `SettlementQuoteEngine` prices components
+(ADR-018 D2/D6/D7): outstanding principal, unpaid billed interest, active-period running interest (ACT/30,
+cap 30 days), effective penalty, net future interest after the 50% rebate, plus admin fee; `credit_used = 0`
+(consumption is T13). Immutable `SettlementQuote` persisted QUOTED with `valid_until` and
+`contract_version`; no journal, no money move. `SettlementQuoteRetryingService` (3 attempts, 50/150 ms)
+retries the accrue-vs-job race → 409 `CONCURRENT_MODIFICATION`. No migration. RBAC row added. TS §1 gains
+the `settlement → contract` / `settlement → penalty` edges. PR #9 fixes: F1 (HIGH)
+`resolvedBeyondPenalty = max0(resolvedAmount − paidPenalty)` (the waiver was double-subtracted); F3 (MEDIUM)
+retry the `uk_penalty_accrual` race; F5 (LOW) restore markdown-corrupted identifiers; F2/F4 assessed
+(F2 credit-funded-penalty gap deferred to the port definition; F4 by design — TTL + D9 re-validation).
+Verification (Docker unavailable): compile pass; all `*Test` pass incl. `SettlementQuoteEngineTest` (5),
+`SettlementQuoteCommandServiceMappingTest` (3), `SettlementQuoteRetryingServiceTest` (6); `SettlementQuoteIT`
+compiles, run under Docker in CI.
+
+### T13 — E2 Settlement execution (DONE)
+
+Implementation note (branch `t13-settlement-execution`; ADR-018 D1/D4/D5/D9/D10). `POST /api/v1/settlements`
+(ADMIN*OPERASIONAL, `Idempotency-Key`, `quote_id` body) executes a QUOTED quote. The write path
+(`SettlementExecutionCommandService`, wrapped by `SettlementExecutionRetryingService` — 3 attempts,
+50/150 ms) re-runs accrue-before-resolve, re-prices with the same `SettlementQuoteEngine`, and revalidates
+every recomputed component and `contract.version` against the snapshot (D9): mismatch →
+`STALE_SETTLEMENT_QUOTE`; past `valid_until` → `SETTLEMENT_QUOTE_EXPIRED`; already-EXECUTED with a different
+key → `SETTLEMENT_QUOTE_ALREADY_EXECUTED` (`uk_settlement_quote_id`). Consumes all AVAILABLE credit (D10) via
+`ContractCreditPort.consumeAllAvailableCredit`; `available_credit > gross` → `CREDIT_EXCEEDS_SETTLEMENT`.
+Posts one balanced SETTLEMENT journal (D1/D4): Dr `KAS` + `TITIPAN_NASABAH`; Cr `PIUTANG*\*`+`PENDAPATAN_BUNGA`(accrued + future-charged) +`PENDAPATAN_ADMIN`; no `DISKON_PELUNASAN`(D3); zero
+components emit no line.`settlement_allocation`records receivable resolution only (pure`SettlementResolutionEngine`, PENALTY→INTEREST→PRINCIPAL oldest-first, D5); `settlement_credit_application`records each consumed source. Open installments → SETTLED and the contract closes SETTLEMENT via the
+contract-owned`SettlementClosePort`(never the MATURITY path, D10). Idempotent via`IdempotencyService`.
+Four new 409 `ErrorCode`s. Migration **V17** extends `uq_journal_entry_event`to SETTLEMENT and teaches the
+V14 credit cap/status guards to count`settlement_credit_application`. The superseded golden
+`AccountingInvariantsIT.settlementEventsMayStillPostSeveralEntries`was rewritten to assert the second
+non-reversal SETTLEMENT entry is rejected (spec intentionally changed, ADR-018 D1). PR #10 fixes (Docker
+available): (1) HIGH`assert_contract_credit_application_cap()`branches on`TG_TABLE_NAME`; (2) MAJOR
+`SettlementExecutionIT.seedAvailableCredit`wraps the seed in one transaction and sets EXCESS`installment_id = NULL`; (3) MEDIUM `settlement_credit_application`made append-only; (4) MINOR Σ consumed ==`credit_used`assertion. Full`test`= 744 tests, 0 failures;`check` green.
+
+---
+
+## Completed task detail — Sprint 6 (Void, Consistency & Write-off)
+
+Planned 2026-10-11 via `/grill-with-docs`; void semantics in **ADR-020**, the ADR-017 T18 probe item
+resolved (declined) in an ADR-017 addendum. Order was T16 → T17 → T19 (T18/T27a/T31 remain open in
+`tasks.md`). All three completed tasks are merged to `main`: T16 via PR #11, T17 via PR #12, T19 via PR #13.
+
+### T16 — E4 Payment void (DONE, merged PR #11)
+
+Implementation note (branch `t16-payment-void`; ADR-020 D1–D6). `POST /api/v1/payments/{id}/void`
+(ADMIN_OPERASIONAL, `Idempotency-Key`, optional `reason`) reverses a POSTED payment. The write path
+(`PaymentVoidApplicationService`, wrapped by `PaymentVoidRetryingService` — 3 attempts, 50/150 ms) flips the
+payment POSTED → VOIDED (`Payment.markVoided` — amount and allocations kept as history, D1), recomputes each
+affected installment from the remaining POSTED payments via `PaymentVoidPort.applyVoidRecomputation`
+(absolute paid totals via `Installment.resetPaidAmountForVoid`, demoting PAID → PARTIALLY_PAID → PENDING,
+`Contract.reopenFromMaturity` undoing a MATURITY close, D1.3), reverses the payment's EXCESS credit when it
+is still entirely AVAILABLE (`ContractCreditPort.reverseAvailableCreditFromAllocations`, row lock then
+delete, D4), and posts one mirrored reversal journal (`LedgerPostingService.postReversal`, Dr/Cr swapped,
+`reversal_of_id` set, no new `LedgerRefType`, D1.2). Eligibility guard (D5) over every affected installment:
+SETTLED/WRITTEN_OFF → 409 `PAYMENT_NOT_VOIDABLE`; consumed credit → 409 `PAYMENT_CREDIT_CONSUMED`. No
+catch-up accrual (D2). Idempotent. V18 drops the `WHERE status = 'POSTED'` predicate from
+`uq_payment_idempotency` (all statuses, fail-safe preflight, D3). PR #11 fixes: (1) MATURITY void allowed
+(ADR-020 D5 corrected to contradict-free with D1.3); (2) blank-reason default `"(no reason given)"` to
+satisfy V4; (3) recompute adds surviving applied credit; (4) `paid_at` re-stamped to the earliest surviving
+resolving instant. Deferred: void-key single-use-forever → T31. Verification (Docker unavailable): compile
+pass; `*Test` = 57 suites / 429 tests / 0 failures; `*IT` (`PaymentVoidIT`, extended `EndpointRoleMatrixIT`)
+compile, run under Docker in CI.
+
+### T17 — F1 Consistency check job (DONE, merged PR #12)
+
+Implementation note (branch `t17-consistency-check-job`; Addendum §7.1/§7.3). A fourth daily step
+(`consistency-check`) after aging, reusing the T3/T26 ShedLock, `job_run` lifecycle, keyset paging and
+backoff — no new scheduler/lock/batching. Read-only reconciliation: records drift as
+`reconciliation_exception` rows, never corrects money. Three checks in the pure `ConsistencyCheckEngine`:
+A `PAYMENT_CASH` (Σ POSTED `Payment.amount` = net `KAS` from PAYMENT entries), B `ALLOCATION_PAYMENT` (Σ
+POSTED `PaymentAllocation.amount` = Σ `Payment.amount`), C `RECEIVABLE_INSTALLMENT` (Σ residual = net
+`PIUTANG_*`). `check_type` values match the V1 `ck_recon_exception_type` CHECK, so no new CHECK. The three
+`check_type`s match Addendum §7.1 exactly. `ConsistencyCheckService` runs one `REPEATABLE_READ` transaction
+per contract (consistent snapshot across all five reads) and gathers each side only through the owning
+modules' read ports: the new `payment.application.PaymentReconciliationPort`, the new
+`ledger.application.ContractLedgerBalancePort`, and the new `contract.application.ReceivableReconciliationPort`
+(nets adjustments through `EffectivePenaltyPort`). `ReconciliationException` writer owned by `penalty`.
+Recording idempotent per `(contract_id, check_date, check_type)` via an OPEN-row existence check backed by
+migration **V19** (`uq_recon_exception_open`, partial on `status = 'OPEN'`). A-9: `records_processed` =
+contracts checked, `records_failed` = contracts that drifted or errored. No endpoint, no RBAC row (the
+Finance read endpoint stays deferred to `reporting`). The daily-job ITs were updated to expect four `job_run`
+rows. TS §1 gains the three `penalty →` consistency-read edges. PR #12 fixes: REPEATABLE_READ isolation,
+idempotent recording + V19, markdown restored. Verification (Docker unavailable): compile pass; `*Test` =
+58 suites / 443 tests / 0 failures incl. `ConsistencyCheckEngineTest` (8); `*IT` compile, run under Docker
+in CI.
+
+### T19 — F5 Write-off (DONE, merged PR #13)
+
+Implementation note (branch `t19-write-off`; DM §1.3/§1.12, ADR-013 §1). `POST /api/v1/contracts/{id}/write-off`
+(ADMIN*OPERASIONAL, `Idempotency-Key`, required `reason`). The write path (`ContractWriteOffCommandService`,
+wrapped by `ContractWriteOffRetryingService` — 3 attempts, 50/150 ms, retries optimistic-lock and the
+`uk_penalty_accrual` write-off-vs-job race) runs validate → compute → write → post → commit:
+accrue-before-resolve first, then the pure `WriteOffEngine` caps each open installment's recognized
+receivable (effective penalty via `EffectivePenaltyPort`, then unpaid recognized interest, then unpaid
+principal; future unrecognized interest is never written off), moves open installments to `WRITTEN_OFF`
+(`Installment.writeOff`, invariant 15), closes the contract ACTIVE → TERMINATED (`Contract.terminateByWriteOff`,
+actor from the JWT `sub`, never the body), and posts one balanced `WRITE_OFF` journal (Dr
+`BIAYA_PENGHAPUSAN_PIUTANG`; Cr `PIUTANG**`per component; zero component emits no line; service guard per
+ADR-008 d5,`WRITE_OFF`left out of`uq_journal_entry_event`). Idempotent; non-ACTIVE → 409
+`CONTRACT_STATE_INVALID`. No new `ErrorCode`. Migration authored as V19 on the branch was renumbered
+forward-only to **V20** at merge because T17's PR #12 claimed V19 first;
+`V20\_\_write_off_recorded_by_required.sql`strengthens`ck_contract_terminated_coherence`to require both`write_off_reason`and`write_off_recorded_by`on a TERMINATED contract. RBAC row added. Verification (Docker
+unavailable): compile pass;`*Test`= 60 suites / 448 tests / 0 failures incl.`WriteOffEngineTest`(5),`InstallmentWriteOffTest`(8),`ContractTerminateByWriteOffTest`(6);`\*IT` (`ContractWriteOffIT`, extended
+`EndpointRoleMatrixIT`) compile, run under Docker in CI.

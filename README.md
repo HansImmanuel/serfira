@@ -95,19 +95,19 @@ flowchart LR
     contract & payment & penalty & ledger --> DB[(PostgreSQL 16<br/>constraints + immutability triggers)]
 ```
 
-| Module       | Responsibility                                                        | Status  |
-| ------------ | --------------------------------------------------------------------- | ------- |
-| `contract`   | Contracts, customers, assets, activation, schedule engine             | Built   |
-| `payment`    | Payments, allocation engine, retry on contention                      | Built   |
-| `penalty`    | Penalty accrual, daily job (billing → penalty → aging)                | Built   |
-| `ledger`     | Double-entry journal, chart of accounts, posting                      | Built   |
-| `settlement` | Early settlement quote and execution                                  | Planned |
-| `reporting`  | Read-only reports (aging, statements)                                 | Planned |
-| `shared`     | Clock, audit, error envelope, idempotency, document numbers, security | Built   |
+| Module       | Responsibility                                                        | Status |
+| ------------ | --------------------------------------------------------------------- | ------ |
+| `contract`   | Contracts, customers, assets, activation, schedule engine             | Built  |
+| `payment`    | Payments, allocation engine, retry on contention                      | Built  |
+| `penalty`    | Penalty accrual + waiver, consistency-check, daily job                | Built  |
+| `ledger`     | Double-entry journal, chart of accounts, posting                      | Built  |
+| `settlement` | Early settlement quote and execution                                  | Built  |
+| `reporting`  | Read-only reports (aging)                                             | Built  |
+| `shared`     | Clock, audit, error envelope, idempotency, document numbers, security | Built  |
 
 Every module follows `com.serfira.<module>.{api, application, domain, infrastructure}`.
 Dependencies point one way: `ledger` depends on nothing, and `contract` does not know about
-`payment` or `penalty`.
+`payment` or `penalty`. The daily job runs billing → penalty → aging → consistency-check.
 
 ## Getting started
 
@@ -152,7 +152,19 @@ on writes), an `exp`, and a `roles` string array (for example `["ADMIN_OPERASION
 | `GET`  | `/api/v1/contracts`                   | List contracts (paged, filter by status, search)                   |
 | `GET`  | `/api/v1/contracts/{id}`              | Contract detail with outstanding balance                           |
 | `GET`  | `/api/v1/contracts/{id}/installments` | Installment schedule                                               |
+| `GET`  | `/api/v1/contracts/{id}/statement`    | Ledger statement for the contract                                  |
 | `POST` | `/api/v1/payments`                    | Receive, allocate, and post a payment (`Idempotency-Key` required) |
+| `POST` | `/api/v1/payments/{id}/void`          | Void a posted payment by reversal (`Idempotency-Key` required)     |
+| `POST` | `/api/v1/contracts/{id}/credit/apply` | Apply available customer credit to recognized receivable           |
+| `GET`  | `/api/v1/contracts/{id}/credit`       | Customer credit balance and application history                    |
+| `POST` | `/api/v1/penalty-adjustments`         | Waive or reduce accrued penalty                                    |
+| `POST` | `/api/v1/settlements/quote`           | Price an early-settlement quote (immutable, TTL)                   |
+| `POST` | `/api/v1/settlements`                 | Execute a quoted settlement (`Idempotency-Key` required)           |
+| `POST` | `/api/v1/contracts/{id}/write-off`    | Write off an active contract (`Idempotency-Key` required)          |
+| `GET`  | `/api/v1/reports/aging`               | Portfolio and per-contract aging buckets                           |
+
+Every mutation above is restricted to `ADMIN_OPERASIONAL`; read endpoints follow the role matrix
+(see Security below). The login endpoint is not built yet (planned for Sprint 6b).
 
 ## Security
 
@@ -177,12 +189,12 @@ on writes), an `exp`, and a `roles` string array (for example `["ADMIN_OPERASION
 
 ## Status and roadmap
 
-| Phase        | Scope                                                                                                         | Status                                                   |
-| ------------ | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| 1 — MVP      | Contracts, FLAT/EFFECTIVE schedules, payments and allocation, ledger, penalty and aging job                   | In progress: RBAC, aging report, and statement remaining |
-| 2            | Early settlement, customer credit, payment void/reversal, penalty waiver, consistency check, write-off, login | Planned                                                  |
-| 3            | Next.js dashboard, reporting, outbox event publisher, export                                                  | Planned                                                  |
-| 4 (optional) | Restructuring, payment gateway stub, maker-checker, microservice split demo                                   | Optional                                                 |
+| Phase        | Scope                                                                                                                      | Status                                 |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| 1 — MVP      | Contracts, FLAT/EFFECTIVE schedules, payments and allocation, ledger, penalty and aging job, RBAC, aging report, statement | Done                                   |
+| 2            | Early settlement, customer credit, payment void/reversal, penalty waiver, consistency check, write-off, login              | Built except login (planned Sprint 6b) |
+| 3            | Next.js dashboard, reporting, outbox event publisher, export                                                               | Planned                                |
+| 4 (optional) | Restructuring, payment gateway stub, maker-checker, microservice split demo                                                | Optional                               |
 
 Out of scope by design: loan origination (credit scoring, credit bureau checks, e-KYC), funding and
 treasury, field collection, real payment gateway integration, and multi-currency.

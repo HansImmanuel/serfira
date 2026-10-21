@@ -95,7 +95,7 @@ Sprint 4 (penalty, aging & phase-1 close) — **berjalan** (lihat [ADR-011](adr/
 
 Review eksternal 2026-09-30 (16 temuan, CR-01…CR-16) sudah diverifikasi terhadap kode dan dipetakan ke task di [tasks.md](tasks.md) → Planning Notes.
 
-Sprint 5 (settlement, credit application, void, consistency check, write-off, frontend) — **berjalan**:
+Sprint 5 (settlement, credit application & penalty waiver, Epic E) — **selesai** (T14, T15, T30, T12, T13 ter-merge ke `main` via PR #7–#10; void, consistency check, dan write-off pindah ke Sprint 6):
 
 - [x] T14 — E3 Excess → `contract_credit` + credit-apply endpoint (ADR-009, Addendum §2). Overpayment kini
       memesan satu baris `contract_credit` AVAILABLE (sub-ledger liability `TITIPAN_NASABAH`, bukan jurnal
@@ -250,7 +250,7 @@ AfterSettlement` menegaskan UPDATE/DELETE ditolak; (4) **MINOR** — ditambahkan
     `*SettlementExecutionRetryingServiceTest` hijau; full `.\gradlew test` = **744 tes, 0 gagal / 0 error**;
     `.\gradlew check` hijau.
 
-Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
+Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17/T19 ter-merge ke `main`; T18, T27a, T31 masih TODO — lihat [tasks.md](tasks.md)):
 
 - [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (`ADMIN_OPERASIONAL`, header
       `Idempotency-Key`, body `reason` opsional) membalik pembayaran POSTED. Jalur tulis
@@ -290,7 +290,7 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       `InstallmentVoidRecomputeTest`(7),`PaymentVoidTest`(5),`ContractReopenFromMaturityTest`(3) dan
       `PaymentVoidRetryingServiceTest`(4). **Tidak dijalankan:** suite Testcontainers`\*IT`—`PaymentVoidIT` baru (termasuk skenario kredit-tersisa-bertahan-saat-void) dan`EndpointRoleMatrixIT`yang diperluas —
       dikompilasi tetapi gagal hanya di`DockerClientProviderStrategy`(tanpa daemon Docker); CI harus
-      menjalankannya di Docker sebelum merge. Branch`t16-payment-void`.
+      menjalankannya di Docker sebelum merge. Branch`t16-payment-void`, **ter-merge ke `main` via PR #11**.
 
 - [x] T19 — F5 Write-off. `POST /api/v1/contracts/{id}/write-off` (ADMIN_OPERASIONAL, header
       `Idempotency-Key`, body `reason` wajib) mencatat keputusan eksternal untuk berhenti menagih sebuah
@@ -311,8 +311,9 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       ADR-008 d5, `WRITE_OFF` tetap di luar `uq_journal_entry_event`). Idempoten via `IdempotencyService`
       persis `POST /payments` / `POST /settlements` (replay identik; key kedaluwarsa → 409
       `IDEMPOTENCY_KEY_EXPIRED`; body beda → 409 `CONFLICT`). Kontrak non-ACTIVE → 409 `CONTRACT_STATE_INVALID`.
-      Migrasi **V19** (V18 tertinggi di `main`; bila V19 cabang T17 ter-merge lebih dulu, ini dinomori ulang
-      saat merge — forward-only) memperkuat V4 `ck_contract_terminated_coherence` menjadi TERMINATED ⇒ `write_off_reason`
+      Migrasi di-authored sebagai **V19** di cabang (V18 tertinggi di `main` saat itu); karena V19 cabang T17
+      (PR #12) ter-merge lebih dulu, migrasi ini **dinomori ulang forward-only menjadi V20 saat merge**
+      (`V20__write_off_recorded_by_required.sql`) memperkuat V4 `ck_contract_terminated_coherence` menjadi TERMINATED ⇒ `write_off_reason`
       **dan** `write_off_recorded_by` keduanya NOT NULL (tanpa `CREATE TABLE`, forward-only, aman karena belum
       ada baris TERMINATED). Baris RBAC baru di `ResourceServerSecurityConfiguration` + `EndpointRoleMatrixIT`.
       Tanpa modul baru; TS §1 menambah konsumen in-module `contract → penalty` (`EffectivePenaltyPort`) dan
@@ -323,4 +324,25 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan**:
       `InstallmentWriteOffTest` (8) dan `ContractTerminateByWriteOffTest` (6). **Tidak dijalankan:** suite
       Testcontainers `*IT` — `ContractWriteOffIT` baru dan `EndpointRoleMatrixIT` yang diperluas — dikompilasi
       tetapi gagal hanya di `DockerClientProviderStrategy` (tanpa daemon Docker); CI harus menjalankannya di
-      Docker sebelum merge. Branch `t19-write-off`.
+      Docker sebelum merge. Branch `t19-write-off`, **ter-merge ke `main` via PR #13**.
+
+- [x] T17 — F1 Consistency check job (Addendum §7.1/§7.3). Langkah keempat harian (`consistency-check`)
+      setelah aging, memakai ulang ShedLock/`job_run`/keyset/backoff T3/T26 — tanpa scheduler/lock/batching
+      baru. Rekonsiliasi **read-only**: mencatat drift sebagai baris `reconciliation_exception`, tidak pernah
+      mengoreksi uang. Tiga cek di engine murni `ConsistencyCheckEngine`: A `PAYMENT_CASH` (Σ `Payment.amount`
+      POSTED = net `KAS` dari entri PAYMENT), B `ALLOCATION_PAYMENT` (Σ `PaymentAllocation.amount` POSTED = Σ
+      `Payment.amount`), C `RECEIVABLE_INSTALLMENT` (Σ residual = net `PIUTANG_*`). Ketiga `check_type` persis
+      ada di CHECK V1 `ck_recon_exception_type`. `ConsistencyCheckService` menjalankan satu transaksi
+      `REPEATABLE_READ` per kontrak (snapshot konsisten lintas lima pembacaan) dan membaca tiap sisi hanya
+      lewat port modul pemilik: `payment.application.PaymentReconciliationPort`,
+      `ledger.application.ContractLedgerBalancePort`, dan `contract.application.ReceivableReconciliationPort`
+      (menetralkan adjustment via `EffectivePenaltyPort`). Writer `ReconciliationException` milik `penalty`.
+      Pencatatan idempoten per `(contract_id, check_date, check_type)` lewat cek baris OPEN + migrasi **V19**
+      (`uq_recon_exception_open`, partial pada `status = 'OPEN'`). A-9: `records_processed` = kontrak dicek,
+      `records_failed` = kontrak yang drift/error. Tanpa endpoint, tanpa baris RBAC (endpoint baca Finance
+      ditunda ke `reporting`). IT daily-job diperbarui untuk mengharapkan empat baris `job_run`. TS §1 menambah
+      tiga edge baca `penalty →` konsistensi. Perbaikan review PR #12: isolasi REPEATABLE_READ, pencatatan
+      idempoten + V19, markdown dipulihkan. **Verifikasi (Docker TIDAK tersedia):** `compileJava
+    compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes / 0 gagal / 0 error**,
+      termasuk `ConsistencyCheckEngineTest` (8); suite `*IT` dikompilasi, dijalankan di Docker di CI. Branch
+      `t17-consistency-check-job`, **ter-merge ke `main` via PR #12**.
