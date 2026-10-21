@@ -250,7 +250,40 @@ AfterSettlement` menegaskan UPDATE/DELETE ditolak; (4) **MINOR** — ditambahkan
     `*SettlementExecutionRetryingServiceTest` hijau; full `.\gradlew test` = **744 tes, 0 gagal / 0 error**;
     `.\gradlew check` hijau.
 
-Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17/T19 ter-merge ke `main`; T18, T27a, T31 masih TODO — lihat [tasks.md](tasks.md)):
+Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17/T19 ter-merge ke `main`; T18 DONE di cabang `t18-idempotency-cleanup`, PR menyusul; T27a, T31 masih TODO — lihat [tasks.md](tasks.md)):
+
+- [x] T18 — F4 Idempotency key cleanup job (ADR-017, ADR-020 D3). Job harian kedua yang **menghapus fisik**
+      baris `idempotency_keys` yang jendela retensinya sudah lewat (`expires_at < clock.now()`, Asia/Jakarta),
+      dimiliki `shared/idempotency` (kohesi dengan pemilik tabel, tanpa menjangkau tabel modul lain). Memakai
+      ulang infrastruktur job T3/T26 — ShedLock, satu baris `job_run`, keyset batching, backoff — tanpa
+      bean config baru. `IdempotencyCleanupJob` (orkestrasi non-transaksional: jalan sebagai SYSTEM via
+      `AuditContext.runAs`, `abandonStaleRuns(["idempotency-cleanup"])` menutup sisa crash `RUNNING → ABANDONED`
+      seperti T26, `start` satu baris `job_run` `job_name = "idempotency-cleanup"`, loop hapus per-halaman
+      hingga halaman pendek, `complete(runId, deleted, 0)` atau `failHard` saat error lolos), retry halaman
+      pada `DataAccessException` dengan backoff `{50,150,400,1000}` / 5 percobaan persis `DailyServicingOrchestrator`.
+      `IdempotencyKeyBatchDeleter` membungkus hapus satu halaman dalam `@Transactional(REQUIRES_NEW)` sebagai
+      `@Service` terpisah (menghindari jebakan self-invocation proxy), memanggil query native keyset
+      `IdempotencyKeyRepository.deleteExpiredBatch` (`DELETE … WHERE id IN (SELECT … WHERE expires_at < :now
+      ORDER BY expires_at, id LIMIT :limit)`; `DELETE` PostgreSQL tak punya `LIMIT`). `LockedIdempotencyCleanupJob`
+      (`@SchedulerLock(name="idempotency-cleanup")`, lock terpisah dari daily-servicing) dan
+      `IdempotencyCleanupScheduler` (`@Scheduled` cron 01:30 Asia/Jakarta, setelah daily servicing 01:00).
+      **A-9:** `records_processed` = jumlah baris terhapus, `records_failed = 0` saat sukses (hapus tak punya
+      notion gagal per-baris). Menghapus baris klaim **tidak** membuka kembali key: backstop baris bisnis
+      permanen (`uq_contract_idempotency`, `uq_payment_idempotency` semua-status dari V18) menahannya, jadi
+      reuse key bekas tetap ditolak dengan 409 yang jujur — **tanpa probe permanent-key** (resolusi ADR-017
+      2026-10-11). Migrasi **V21** (`idx_idempotency_keys_expires_at`) hanya menambah index; tanpa `CREATE TABLE`,
+      tanpa perubahan constraint/backstop apa pun. Tiga kunci `serfira.jobs.idempotency-cleanup.*` di **kedua**
+      `application.properties` (cron tes `-`). Tanpa modul baru; hanya menyentuh tabel sendiri plus infra
+      `shared/job` + `shared/clock`.
+      **Verifikasi (Docker tersedia):** `.\gradlew compileJava compileTestJava` pass;
+      `.\gradlew test --tests "*IdempotencyCleanupIT" --tests "*IdempotencyRetentionIT"` = **8 tes / 0 gagal**
+      (`IdempotencyCleanupIT` 5: expired dihapus/live disimpan, `job_run` A-9, key kontrak/pembayaran bekas
+      tak bisa mint lagi setelah cleanup, key pembayaran yang di-void tetap bekas — ADR-020 D3). Full
+      `.\gradlew test` menunjukkan **7 kegagalan di suite yang tidak terkait** (`BaselineSchemaIT`,
+      `PaymentVoidIT`, `ConsistencyCheckIT`, `DailyServicingJobIT`) yang **reproduksi identik di ujung cabang
+      bersih dengan perubahan T18 di-stash** — polusi urutan IT berbagi-DB yang sudah ada sebelumnya, bukan
+      akibat T18; karena itu `.\gradlew check` tidak hijau di base ini. Suite T18 sendiri lulus dalam run penuh.
+      Branch `t18-idempotency-cleanup`.
 
 - [x] T16 — E4 Payment void (ADR-020). `POST /api/v1/payments/{id}/void` (`ADMIN_OPERASIONAL`, header
       `Idempotency-Key`, body `reason` opsional) membalik pembayaran POSTED. Jalur tulis

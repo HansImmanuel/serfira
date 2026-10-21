@@ -21,8 +21,11 @@ import java.util.UUID;
  * <p>A key is single-use forever per endpoint (ADR-017, option A): the row is never taken over on
  * expiry. {@code expires_at} only bounds how long the stored response is replayed; once it has
  * passed, reusing the key is rejected (see {@code IdempotencyService}). Physical cleanup of expired
- * rows stays a separate job (story F4/T18), and even after a row is deleted the permanent
- * business-row backstops keep the key spent.
+ * rows is the separate hygiene job (story F4/T18): {@link #deleteExpiredBatch} deletes rows whose
+ * {@code expires_at} has passed in bounded keyset pages. Deleting a row never re-opens the key —
+ * the permanent business-row backstops ({@code uq_contract_idempotency}, the all-status
+ * {@code uq_payment_idempotency} from V18) keep it spent independently of the claim row
+ * (ADR-017 2026-10-11 resolution, ADR-020 D3), so the cleanup adds no permanent-key probe.
  */
 public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, UUID> {
 
@@ -43,4 +46,24 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 			@Param("actor") UUID actor);
 
 	Optional<IdempotencyKey> findByEndpointAndKey(String endpoint, String key);
+
+	/**
+	 * Deletes up to {@code limit} rows whose retention window has already passed (F4/T18, TS §2.5),
+	 * returning the number actually deleted. PostgreSQL {@code DELETE} has no {@code LIMIT}, so the
+	 * bounded page is selected by a keyset-ordered subquery ({@code expires_at, id}) backed by the
+	 * V21 {@code idx_idempotency_keys_expires_at} index; the cleanup job sums the per-page counts and
+	 * stops when a page deletes fewer than {@code limit} rows. Live rows ({@code expires_at >= :now})
+	 * are never touched, and the permanent business-row backstops keep a deleted key spent.
+	 */
+	@Modifying
+	@Query(value = """
+			DELETE FROM idempotency_keys
+			WHERE id IN (
+				SELECT id FROM idempotency_keys
+				WHERE expires_at < :now
+				ORDER BY expires_at, id
+				LIMIT :limit
+			)
+			""", nativeQuery = true)
+	int deleteExpiredBatch(@Param("now") OffsetDateTime now, @Param("limit") int limit);
 }
