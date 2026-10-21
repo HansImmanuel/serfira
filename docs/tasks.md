@@ -18,21 +18,22 @@ Completed Work index, open tasks, and open ambiguities.
 ## Current Project State
 
 **Snapshot:** `main` @ `1efd888`. Sprint 6 work T16 (payment void, PR #11), T17 (consistency-check job,
-PR #12) and T19 (write-off, PR #13) are all **merged to `main`**. The remaining Sprint 6 tasks are T18
-(idempotency-key cleanup job), T27a (minimal `./gradlew check` CI gate) and T31 (durable void idempotency
-key) — all TODO.
+PR #12) and T19 (write-off, PR #13) are all **merged to `main`**. T18 (idempotency-key cleanup job) is
+**DONE** on branch `t18-idempotency-cleanup` (PR pending). The remaining Sprint 6 tasks are T27a (minimal
+`./gradlew check` CI gate) and T31 (durable void idempotency key) — both TODO.
 
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `shared`. `frontend/` is
   empty.
-- Migrations **V1–V20**. V1 baseline + seeds/COA; V2 PII at rest; V3 deferred accounting invariants; V4
+- Migrations **V1–V21**. V1 baseline + seeds/COA; V2 PII at rest; V3 deferred accounting invariants; V4
   record-state coherence; V5 settlement immutability; V6/V7 contract-create safety; V8 SYSTEM hardening;
   V9 ShedLock + penalty-accrual integrity; V10 `job_run.business_date`; V11 statement index;
   V12 accounting backstops; V13 `ABANDONED` status; V14 credit-application cap; V15 penalty-waiver
   accounting (`BEBAN_WAIVER_DENDA` + cap); V16 penalty-adjustment cap includes paid; V17 settlement
   backstops; V18 all-status `uq_payment_idempotency`; V19 `reconciliation_exception` OPEN uniqueness (T17);
-  V20 write-off requires `write_off_recorded_by` (T19). (T19's migration was authored as V19 on its branch;
+  V20 write-off requires `write_off_recorded_by` (T19); V21 `idx_idempotency_keys_expires_at` for the T18
+  cleanup job's keyset delete. (T19's migration was authored as V19 on its branch;
   because T17's V19 merged first, T19 renumbered forward-only to V20 at merge.)
 - Daily servicing (T3, hardened T26, extended T17): one renewable ShedLock for cron + backfill; every
   ACTIVE contract processed atomically **billing → penalty → aging → consistency-check**, with backoff
@@ -42,6 +43,10 @@ key) — all TODO.
 - Payment path: lazy billing + accrual inside the idempotent transaction (T4, ADR-014); write-path conflict
   retry → 409 `CONCURRENT_MODIFICATION` (T5); single-use-forever idempotency keys → 409
   `IDEMPOTENCY_KEY_EXPIRED` past retention (T24, ADR-017); void (T16, ADR-020).
+- Idempotency-key cleanup (T18, F4): a second scheduled job in `shared/idempotency`, `job_name`
+  `idempotency-cleanup`, on its own ShedLock lock, deletes `idempotency_keys` rows past `expires_at` in
+  keyset pages (one `job_run` row, A-9), backed by V21's `expires_at` index. Pure hygiene: a deleted spent
+  key stays spent via the permanent backstops, so no permanent-key probe was added (ADR-017 2026-10-11).
 - Settlement (`settlement` module): quote (T12) and execution (T13), ADR-018. Credit (T14) and penalty
   waive/reduce (T15); effective penalty owned by `penalty` behind `EffectivePenaltyPort` (T15/T30, ADR-019).
 - Write-off (T19, F5): accrue-before-resolve, pure `WriteOffEngine` caps recognized receivable, open
@@ -95,6 +100,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T13   | E2 Settlement execution: `POST /settlements`, SETTLEMENT journal, V17                                              | ADR-018, PR #10                             |
 | T16   | E4 Payment void: `POST /payments/{id}/void`, reversal journal, recompute, V18                                      | ADR-020, PR #11                             |
 | T17   | F1 Consistency-check job: fourth daily step, read-only reconciliation, V19                                         | Addendum §7.1, PR #12                       |
+| T18   | F4 Idempotency key cleanup job: daily delete of expired `idempotency_keys`, one `job_run` row, V21 index | ADR-017, ADR-020 D3, `t18-idempotency-cleanup` |
 | T19   | F5 Write-off: `POST /contracts/{id}/write-off`, `WriteOffEngine`, V20                                              | DM §1.12, ADR-013 §1, PR #13                |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                  |
 
@@ -106,8 +112,9 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
   `tasks-archive.md`.
 - **Sprint 5 — Settlement, Credit & Waiver (Epic E):** COMPLETE. T14, T15, T30, T12, T13 DONE (ADR-018,
   ADR-019). Detail in `tasks-archive.md`.
-- **Sprint 6 — Void, Consistency & Write-off:** IN PROGRESS. T16, T17, T19 DONE and merged (ADR-020). T18,
-  T27a, T31 remain TODO (below). T20 and the heavier T27 move to Sprint 6b alongside T21.
+- **Sprint 6 — Void, Consistency & Write-off:** IN PROGRESS. T16, T17, T19 DONE and merged (ADR-020); T18
+  DONE on branch `t18-idempotency-cleanup` (PR pending). T27a and T31 remain TODO (below). T20 and the
+  heavier T27 move to Sprint 6b alongside T21.
 
 ### T10 — Component-exact penalty base (conditional, DEFERRED)
 
@@ -125,9 +132,9 @@ Depends on T1.a, T4. ADR-012 alternatives 5/6 list the rejected options.
 
 ### T18 — F4 Idempotency key cleanup job (2 pts)
 
-**Status: TODO.** **Dependencies:** T3/T26 daily-job infrastructure; ADR-017 (lifecycle, including the
-2026-10-11 probe resolution); ADR-020 D3 (the all-status `uq_payment_idempotency` that keeps a voided key
-spent after cleanup). First candidate to defer if Sprint 6 exceeds 13 pts.
+**Status: DONE** (branch `t18-idempotency-cleanup`). **Dependencies:** T3/T26 daily-job infrastructure;
+ADR-017 (lifecycle, including the 2026-10-11 probe resolution); ADR-020 D3 (the all-status
+`uq_payment_idempotency` that keeps a voided key spent after cleanup).
 
 **Scope.** Add a job that deletes `idempotency_keys` rows past their retention window (`expires_at` passed),
 reusing the T3/T26 job infrastructure (ShedLock, `job_run`, keyset batching, backoff). Owner: the daily-job
@@ -156,6 +163,32 @@ D3). Crash leaves a `RUNNING` row the next run marks `ABANDONED` (T26, unchanged
 **Tests.** IT `IdempotencyCleanupIT` (Testcontainers): expired rows deleted, live rows kept; `job_run`
 granularity; after cleanup, a reused spent key cannot mint a second contract/payment; a voided payment's key
 still spent (ADR-020 D3). `FixedClock`.
+
+**Implementation note (2026-10-21).** Additive, owned by `shared/idempotency` (cohesion with the table owner;
+no cross-module reach). New `IdempotencyCleanupJob` (non-transactional orchestration: run-as-SYSTEM,
+`abandonStaleRuns`, one `job_run` named `idempotency-cleanup`, keyset-paged delete, T26 backoff
+`{50,150,400,1000}`/5 attempts, `complete`/`failHard`), `IdempotencyKeyBatchDeleter` (`REQUIRES_NEW`
+per-page delete, separate `@Service` to dodge the self-invocation proxy pitfall), `LockedIdempotencyCleanupJob`
+(`@SchedulerLock(name="idempotency-cleanup")`) and `IdempotencyCleanupScheduler` (`@Scheduled` cron 01:30
+Asia/Jakarta, after the 01:00 daily servicing, distinct lock). `IdempotencyKeyRepository.deleteExpiredBatch`
+is a native keyset `DELETE … WHERE id IN (SELECT … WHERE expires_at < :now ORDER BY expires_at, id LIMIT
+:limit)`. Migration **V21** adds `idx_idempotency_keys_expires_at` only — no table/constraint/backstop
+change, and **no permanent-key probe** (ADR-017 2026-10-11 resolution). Three `serfira.jobs.idempotency-cleanup.*`
+keys in both `application.properties` (test cron `-`). Verification: `IdempotencyCleanupIT` (5 cases) +
+`IdempotencyRetentionIT` (3) green; `compileJava`/`compileTestJava` clean. The full `./gradlew test` run
+showed 7 failures in unrelated suites (`BaselineSchemaIT`, `PaymentVoidIT`, `ConsistencyCheckIT`,
+`DailyServicingJobIT`) that reproduce identically on the clean branch tip with the T18 changes stashed —
+pre-existing shared-DB IT ordering pollution, not introduced by T18; `./gradlew check` therefore not green
+on this base. T18's own suite passes within the full run. PR #14 review round: the cleanup
+`DELETE` is now scoped to the three permanently-backed create endpoints (`POST /api/v1/contracts`,
+`POST /api/v1/payments`, `POST /api/v1/settlements`) via an `endpoint IN (...)` allow-list, so write-off and
+payment-void claims are retained even once expired (they have no durable backstop — deleting them would
+re-open the key for reuse against a different target, ADR-017 single-use-forever / ADR-020 D3); and
+`jobRuns.complete` moved inside the job's failure boundary so a completion failure finalizes via `failHard`
+(with the original cause preserved via `addSuppressed`) instead of leaving a `RUNNING` row. New tests:
+`IdempotencyCleanupPagingIT` (multi-page keyset drain at batch-size 2) and an
+`IdempotencyCleanupIT` scoping regression asserting write-off/void claims survive while backed-create claims
+are deleted.
 
 ### T27a — Minimal CI gate: `./gradlew check` (1 pt)
 
@@ -249,7 +282,8 @@ tasks: CR-10/CR-16 → T21, CR-11 → T28, CR-15 → T27. CR-14 was closed by T1
 
 Resolved items (A-11, A-12, A-13) and the fully-resolved Phase-1 decisions (A-1…A-10) are recorded in
 ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). No ambiguity currently blocks
-an open task — T18, T27a and T31 have no open `A-n` dependency.
+an open task — T27a and T31 have no open `A-n` dependency (T18 is now DONE, so T31's T18 prerequisite is
+satisfied; its scope is unchanged).
 
 ### Dependency order (open tail)
 
