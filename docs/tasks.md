@@ -17,10 +17,11 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `330c90f`. Sprint 6 work T16 (payment void, PR #11), T17 (consistency-check job,
-PR #12), T19 (write-off, PR #13) and T18 (idempotency-key cleanup job, PR #14) are all **merged to `main`**.
-T27a (minimal `./gradlew check` CI gate) is **DONE** on branch `t27a-ci-check-gate` (PR pending). The
-remaining Sprint 6 task is T31 (durable void idempotency key) — TODO.
+**Snapshot:** `main` @ `83bdc2f`. Sprint 6 work T16 (payment void, PR #11), T17 (consistency-check job,
+PR #12), T19 (write-off, PR #13), T18 (idempotency-key cleanup job, PR #14) and T27a (minimal
+`./gradlew check` CI gate, PR #15) are all **merged to `main`**. T31 (durable single-use-forever void
+idempotency key) is **DONE** on branch `t31-durable-void-idempotency-key` (PR pending) — this completes
+Sprint 6. T20, T27 and T21 move to Sprint 6b.
 
 **Implemented (verified in source):**
 
@@ -33,7 +34,8 @@ remaining Sprint 6 task is T31 (durable void idempotency key) — TODO.
   accounting (`BEBAN_WAIVER_DENDA` + cap); V16 penalty-adjustment cap includes paid; V17 settlement
   backstops; V18 all-status `uq_payment_idempotency`; V19 `reconciliation_exception` OPEN uniqueness (T17);
   V20 write-off requires `write_off_recorded_by` (T19); V21 `idx_idempotency_keys_expires_at` for the T18
-  cleanup job's keyset delete. (T19's migration was authored as V19 on its branch;
+  cleanup job's keyset delete; V22 `payment_void_idempotency` durable void-key backstop
+  (`uq_payment_void_idempotency`, T31). (T19's migration was authored as V19 on its branch;
   because T17's V19 merged first, T19 renumbered forward-only to V20 at merge.)
 - Daily servicing (T3, hardened T26, extended T17): one renewable ShedLock for cron + backfill; every
   ACTIVE contract processed atomically **billing → penalty → aging → consistency-check**, with backoff
@@ -42,7 +44,9 @@ remaining Sprint 6 task is T31 (durable void idempotency key) — TODO.
   `reconciliation_exception` and never corrects money.
 - Payment path: lazy billing + accrual inside the idempotent transaction (T4, ADR-014); write-path conflict
   retry → 409 `CONCURRENT_MODIFICATION` (T5); single-use-forever idempotency keys → 409
-  `IDEMPOTENCY_KEY_EXPIRED` past retention (T24, ADR-017); void (T16, ADR-020).
+  `IDEMPOTENCY_KEY_EXPIRED` past retention (T24, ADR-017); void (T16, ADR-020). A void key is now
+  single-use-forever too, backed by the durable `payment_void_idempotency` table (V22, T31) so it stays
+  spent after the T18 cleanup deletes its claim row.
 - Idempotency-key cleanup (T18, F4): a second scheduled job in `shared/idempotency`, `job_name`
   `idempotency-cleanup`, on its own ShedLock lock, deletes `idempotency_keys` rows past `expires_at` in
   keyset pages (one `job_run` row, A-9), backed by V21's `expires_at` index. Pure hygiene: a deleted spent
@@ -77,32 +81,34 @@ package names — doc-only, DEFERRED). The resolved X-table with per-item detail
 These items are DONE and must not be re-implemented. Long-form notes are in `tasks-archive.md`; decisions
 are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 
-| Story | Title                                                                                                              | Reference / branch                             |
-| ----- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
-| A1–A4 | Repo/CI/compose/README; Clock + audit + error envelope; Flyway baseline + COA; doc-number gen                      | Sprint 0, ADR-003, V1                          |
-| B1–B5 | Entities, FLAT/EFFECTIVE engine, due dates, golden tests; contract create/activate/list/detail                     | Sprint 1–2, ADR-006/007, V6/V7                 |
-| C1–C4 | Ledger posting + disbursement journal; allocation engine; `POST /payments` + idempotency; billing + maturity close | Sprint 3, ADR-008/009/010/011                  |
-| D1    | Penalty calculator + per-date idempotent accrual                                                                   | ADR-012, ADR-014                               |
-| T1–T6 | Phase-1 decisions; V9 integrity/ShedLock; daily billing→penalty→aging job; lazy accrual; payment retry; aging step | ADR-013, ADR-014, V9/V10                       |
-| T23   | Spring Boot 4 dependency alignment (ShedLock 7.10.1, springdoc 3.1.1)                                              | PR #1, `OpenApiSmokeIT`                        |
-| T7    | RBAC enforcement + JWT identity hardening                                                                          | ADR-015                                        |
-| T8    | Aging report (`GET /api/v1/reports/aging`): read-only `reporting` module                                           | ADR-013 impl note T8                           |
-| T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger read port, V11                                 | ADR-013 impl note T9                           |
-| T24   | Idempotency key lifecycle: single-use forever, 409 `IDEMPOTENCY_KEY_EXPIRED`                                       | ADR-017                                        |
-| T25   | DB accounting backstops: V12 parent-side checks, scoped `uq_journal_entry_event`                                   | ADR-008 d5 note                                |
-| T26   | Daily job robustness: `ABANDONED` + V13, keyset batching, retry backoff                                            | ADR-013 A-9 note T26                           |
-| T29   | Fix contract statement query on PostgreSQL (X-13, `42P18`)                                                         | X-13 bug task                                  |
-| T11   | Phase-1 test hardening + exit verification                                                                         | commit `a8fa1a6`                               |
-| T14   | E3 Excess → `contract_credit` + credit-apply/read; V14 cap/status                                                  | ADR-009, `t14-contract-credit`                 |
-| T15   | E5 Penalty waive/reduce + `EffectivePenaltyPort`; V15/V16                                                          | ADR-019, `t15-penalty-waive-effective-port`    |
-| T30   | Route schedule + aging through effective penalty (ADR-019 D4, PR #7/#8 findings)                                   | ADR-019 D4, `t30-effective-penalty-reads`      |
-| T12   | E1 Settlement quote: new `settlement` module, `SettlementQuoteEngine`, `POST /settlements/quote`                   | ADR-018, `t12-settlement-quote`                |
-| T13   | E2 Settlement execution: `POST /settlements`, SETTLEMENT journal, V17                                              | ADR-018, PR #10                                |
-| T16   | E4 Payment void: `POST /payments/{id}/void`, reversal journal, recompute, V18                                      | ADR-020, PR #11                                |
-| T17   | F1 Consistency-check job: fourth daily step, read-only reconciliation, V19                                         | Addendum §7.1, PR #12                          |
-| T18   | F4 Idempotency key cleanup job: daily delete of expired `idempotency_keys`, one `job_run` row, V21 index           | ADR-017, ADR-020 D3, `t18-idempotency-cleanup` |
-| T19   | F5 Write-off: `POST /contracts/{id}/write-off`, `WriteOffEngine`, V20                                              | DM §1.12, ADR-013 §1, PR #13                   |
-| —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                     |
+| Story | Title                                                                                                              | Reference / branch                                      |
+| ----- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| A1–A4 | Repo/CI/compose/README; Clock + audit + error envelope; Flyway baseline + COA; doc-number gen                      | Sprint 0, ADR-003, V1                                   |
+| B1–B5 | Entities, FLAT/EFFECTIVE engine, due dates, golden tests; contract create/activate/list/detail                     | Sprint 1–2, ADR-006/007, V6/V7                          |
+| C1–C4 | Ledger posting + disbursement journal; allocation engine; `POST /payments` + idempotency; billing + maturity close | Sprint 3, ADR-008/009/010/011                           |
+| D1    | Penalty calculator + per-date idempotent accrual                                                                   | ADR-012, ADR-014                                        |
+| T1–T6 | Phase-1 decisions; V9 integrity/ShedLock; daily billing→penalty→aging job; lazy accrual; payment retry; aging step | ADR-013, ADR-014, V9/V10                                |
+| T23   | Spring Boot 4 dependency alignment (ShedLock 7.10.1, springdoc 3.1.1)                                              | PR #1, `OpenApiSmokeIT`                                 |
+| T7    | RBAC enforcement + JWT identity hardening                                                                          | ADR-015                                                 |
+| T8    | Aging report (`GET /api/v1/reports/aging`): read-only `reporting` module                                           | ADR-013 impl note T8                                    |
+| T9    | Contract statement (`GET /api/v1/contracts/{id}/statement`): ledger read port, V11                                 | ADR-013 impl note T9                                    |
+| T24   | Idempotency key lifecycle: single-use forever, 409 `IDEMPOTENCY_KEY_EXPIRED`                                       | ADR-017                                                 |
+| T25   | DB accounting backstops: V12 parent-side checks, scoped `uq_journal_entry_event`                                   | ADR-008 d5 note                                         |
+| T26   | Daily job robustness: `ABANDONED` + V13, keyset batching, retry backoff                                            | ADR-013 A-9 note T26                                    |
+| T29   | Fix contract statement query on PostgreSQL (X-13, `42P18`)                                                         | X-13 bug task                                           |
+| T11   | Phase-1 test hardening + exit verification                                                                         | commit `a8fa1a6`                                        |
+| T14   | E3 Excess → `contract_credit` + credit-apply/read; V14 cap/status                                                  | ADR-009, `t14-contract-credit`                          |
+| T15   | E5 Penalty waive/reduce + `EffectivePenaltyPort`; V15/V16                                                          | ADR-019, `t15-penalty-waive-effective-port`             |
+| T30   | Route schedule + aging through effective penalty (ADR-019 D4, PR #7/#8 findings)                                   | ADR-019 D4, `t30-effective-penalty-reads`               |
+| T12   | E1 Settlement quote: new `settlement` module, `SettlementQuoteEngine`, `POST /settlements/quote`                   | ADR-018, `t12-settlement-quote`                         |
+| T13   | E2 Settlement execution: `POST /settlements`, SETTLEMENT journal, V17                                              | ADR-018, PR #10                                         |
+| T16   | E4 Payment void: `POST /payments/{id}/void`, reversal journal, recompute, V18                                      | ADR-020, PR #11                                         |
+| T17   | F1 Consistency-check job: fourth daily step, read-only reconciliation, V19                                         | Addendum §7.1, PR #12                                   |
+| T18   | F4 Idempotency key cleanup job: daily delete of expired `idempotency_keys`, one `job_run` row, V21 index           | ADR-017, ADR-020 D3, `t18-idempotency-cleanup`          |
+| T19   | F5 Write-off: `POST /contracts/{id}/write-off`, `WriteOffEngine`, V20                                              | DM §1.12, ADR-013 §1, PR #13                            |
+| T27a  | Minimal CI gate: `ci.yml` runs `./gradlew check` instead of `test`                                                 | `t27a-ci-check-gate`, PR #15                            |
+| T31   | Durable void idempotency key: `payment_void_idempotency` side table, V22, closes ADR-020 finding #5                | ADR-017, ADR-020 D3, `t31-durable-void-idempotency-key` |
+| —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ---
 
@@ -112,9 +118,9 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
   `tasks-archive.md`.
 - **Sprint 5 — Settlement, Credit & Waiver (Epic E):** COMPLETE. T14, T15, T30, T12, T13 DONE (ADR-018,
   ADR-019). Detail in `tasks-archive.md`.
-- **Sprint 6 — Void, Consistency & Write-off:** IN PROGRESS. T16, T17, T19, T18 DONE and merged (ADR-020,
-  PR #14); T27a DONE on branch `t27a-ci-check-gate` (PR pending). T31 remains TODO (below). T20 and the
-  heavier T27 move to Sprint 6b alongside T21.
+- **Sprint 6 — Void, Consistency & Write-off:** COMPLETE. T16, T17, T19, T18 DONE and merged (ADR-020,
+  PR #14); T27a DONE and merged (PR #15); T31 DONE on branch `t31-durable-void-idempotency-key` (PR
+  pending). T20 and the heavier T27 move to Sprint 6b alongside T21.
 
 ### T10 — Component-exact penalty base (conditional, DEFERRED)
 
@@ -219,8 +225,9 @@ changed. Final green `./gradlew check` is confirmed by the PR's CI run.
 
 ### T31 — Durable single-use-forever void idempotency key (2 pts)
 
-**Status: TODO.** **Dependencies:** T16 (DONE, void path + V18), ADR-017, ADR-020 D3, T18 (the cleanup job
-that makes the hole reachable). Raised by the PR #11 review (Qodo finding #5).
+**Status: DONE** (branch `t31-durable-void-idempotency-key`, PR pending). **Dependencies:** T16 (DONE, void
+path + V18), ADR-017, ADR-020 D3, T18 (the cleanup job that makes the hole reachable). Raised by the PR #11
+review (Qodo finding #5).
 
 **Problem.** A payment-_creation_ key is kept spent forever by V18's all-status `uq_payment_idempotency`. A
 _void_ key has no such durable backstop — it lives only in the `IdempotencyService` claim row. Once T18
@@ -239,6 +246,32 @@ replays.
 
 **Tests.** IT (Testcontainers): void a payment, delete the claim row directly, then a reused-key void of a
 different payment is rejected; identical-key replay of the original void still returns the stored response.
+
+**Implementation note (2026-11-04).** Additive, owned entirely by `payment` (no cross-module reach). The
+void key is a **different**, endpoint-scoped key from the create key (which owns `payment.idempotency_key` /
+`uq_payment_idempotency`), so a durable column on the payment row is the wrong home — chose instead a small
+side table `payment_void_idempotency` keyed on `(endpoint, idempotency_key)`, mirroring the V18 precedent
+(a permanent business-row backstop that holds once the `idempotency_keys` claim row is gone). New
+**V22** (`V22__void_idempotency_durable_backstop.sql`): the table with `uq_payment_void_idempotency UNIQUE
+(endpoint, idempotency_key)`, an FK to `payment(id)`, immutable audit columns, a `payment_id` index, the
+same **data-preserving, fail-safe preflight** shape as V18 (fails the migration on a pre-existing collision,
+never deletes history), and a backfill that reconstructs rows for already-VOIDED payments from surviving
+claim rows. New `PaymentVoidIdempotency` entity (extends `ImmutableAuditable`; constructor guards mirror the
+V22 NOT NULL/length columns) and `PaymentVoidIdempotencyRepository`. `PaymentVoidApplicationService.reverse`
+now writes one durable row (step 0, inside the void transaction, ADR-020 D6) and flushes **before** any
+ledger work, so a reused key that already voided a different payment trips `uq_payment_void_idempotency` and
+is translated (`translateVoidKeyViolation`, matching `PaymentConflictClassifier`'s approach) to
+`IdempotencyKeyExpiredException` (409 `IDEMPOTENCY_KEY_EXPIRED`) with the whole void rolled back — writing
+nothing. An identical replay of the **original** void is unaffected: the payment is already VOIDED, so
+`reverse` returns the current representation before the durable insert and posts no second reversal. Other
+suites' `TRUNCATE … CASCADE` now lists `payment_void_idempotency`. New IT `VoidIdempotencyKeyDurabilityIT`
+(2 cases: reuse-for-a-different-payment rejected + writes nothing after a simulated T18 claim-row delete;
+identical replay still returns the stored response). **Verification (no Docker in this environment):**
+`.\gradlew compileJava compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` (pure unit
+suites) → BUILD SUCCESSFUL. The `*IT` suite — including `VoidIdempotencyKeyDurabilityIT` and the existing
+`PaymentVoidIT` — was **NOT run locally** because Docker/Testcontainers is unavailable here; CI is the gate
+for it (per the tech-steering no-Docker fallback). No change to the void's business behaviour beyond the new
+durable backstop; closes ADR-020 "Deferred finding #5".
 
 ---
 
@@ -293,15 +326,15 @@ tasks: CR-10/CR-16 → T21, CR-11 → T28, CR-15 → T27. CR-14 was closed by T1
 
 Resolved items (A-11, A-12, A-13) and the fully-resolved Phase-1 decisions (A-1…A-10) are recorded in
 ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). No ambiguity currently blocks
-an open task — T31 has no open `A-n` dependency (T18 is now DONE, so T31's T18 prerequisite is
-satisfied; its scope is unchanged).
+an open task. T31 (the last Sprint 6 task) is now DONE, so the open tail is entirely Sprint 6b (T20, T27,
+T21) and later.
 
 ### Dependency order (open tail)
 
 ```text
 T26 job robustness ─► T18 (idempotency cleanup)
 ADR-020 D3 (all-status uq_payment_idempotency) ─► T18 (voided key stays spent after cleanup)
-T16 (void) + T18 ─► T31 (durable void key)
-T27a (CI check gate) — DONE, independent Sprint 6 prerequisite
+T16 (void) + T18 ─► T31 (durable void key) — DONE, closes Sprint 6
+T27a (CI check gate) — DONE and merged (PR #15)
 Sprint 6b: T20 (observability), T27 (scans + smoke), T21 (auth) ─► T22, T28
 ```

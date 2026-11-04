@@ -13,17 +13,21 @@ import com.serfira.payment.domain.AllocationType;
 import com.serfira.payment.domain.Payment;
 import com.serfira.payment.domain.PaymentAllocation;
 import com.serfira.payment.domain.PaymentStatus;
+import com.serfira.payment.domain.PaymentVoidIdempotency;
 import com.serfira.payment.infrastructure.EarliestResolvingInstant;
 import com.serfira.payment.infrastructure.PaymentAllocationRepository;
 import com.serfira.payment.infrastructure.PaymentRepository;
+import com.serfira.payment.infrastructure.PaymentVoidIdempotencyRepository;
 import com.serfira.payment.infrastructure.ResolvedInstallmentTotal;
 import com.serfira.shared.clock.Clock;
+import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import com.serfira.shared.error.PaymentNotVoidableException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -70,8 +74,16 @@ public class PaymentVoidApplicationService {
 	/** Idempotency scope of the void endpoint (TS §2.2: keys are endpoint-scoped). */
 	static final String VOID_ENDPOINT = "POST /api/v1/payments/{id}/void";
 
+	/**
+	 * The durable void-key backstop's unique constraint (V22). A hit means this void key already voided a
+	 * payment, so it is spent even though the {@code idempotency_keys} claim row is gone (ADR-017), and the
+	 * reuse is an expired-key rejection, never a second reversal (ADR-020 D3).
+	 */
+	static final String VOID_IDEMPOTENCY_CONSTRAINT = "uq_payment_void_idempotency";
+
 	private final PaymentRepository payments;
 	private final PaymentAllocationRepository allocations;
+	private final PaymentVoidIdempotencyRepository voidIdempotency;
 	private final PaymentVoidPort contractVoid;
 	private final ContractCreditPort contractCredit;
 	private final LedgerPostingService ledger;
@@ -79,10 +91,12 @@ public class PaymentVoidApplicationService {
 	private final Clock clock;
 
 	public PaymentVoidApplicationService(PaymentRepository payments, PaymentAllocationRepository allocations,
-			PaymentVoidPort contractVoid, ContractCreditPort contractCredit, LedgerPostingService ledger,
-			IdempotencyService idempotency, Clock clock) {
+			PaymentVoidIdempotencyRepository voidIdempotency, PaymentVoidPort contractVoid,
+			ContractCreditPort contractCredit, LedgerPostingService ledger, IdempotencyService idempotency,
+			Clock clock) {
 		this.payments = payments;
 		this.allocations = allocations;
+		this.voidIdempotency = voidIdempotency;
 		this.contractVoid = contractVoid;
 		this.contractCredit = contractCredit;
 		this.ledger = ledger;
@@ -102,7 +116,7 @@ public class PaymentVoidApplicationService {
 		String reason = request == null ? null : request.reason();
 		IdempotentResult<PaymentResponse> result = idempotency.execute(
 				VOID_ENDPOINT, key, canonicalize(paymentId), PaymentResponse.class,
-				() -> reverse(paymentId, reason));
+				() -> reverse(paymentId, key, reason));
 		return result.response();
 	}
 
@@ -112,7 +126,7 @@ public class PaymentVoidApplicationService {
 	 * Runs inside the idempotency claim and the caller's transaction, so a replay skips all of it and any
 	 * later failure rolls everything back together.
 	 */
-	private PaymentResponse reverse(UUID paymentId, String reason) {
+	private PaymentResponse reverse(UUID paymentId, String idempotencyKey, String reason) {
 		Payment payment = payments.findById(paymentId)
 				.orElseThrow(() -> new PaymentNotFoundException(paymentId));
 		List<PaymentAllocation> paymentAllocations = allocations.findByPaymentId(paymentId);
@@ -131,6 +145,13 @@ public class PaymentVoidApplicationService {
 		assertVoidable(payment, contractId, affectedInstallmentIds);
 
 		OffsetDateTime voidedAt = clock.now();
+
+		// 0. Record the durable single-use-forever void-key association inside this transaction (T31, ADR-020
+		//    D3/D6). A reused key that already voided another payment violates uq_payment_void_idempotency and
+		//    is surfaced as an expired-key rejection — the authority once the T18 cleanup deletes the claim
+		//    row. Flush now so the violation is raised here (before any ledger work) and the whole void rolls
+		//    back, writing nothing.
+		recordDurableVoidKey(VOID_ENDPOINT, idempotencyKey, paymentId);
 
 		// 1. Flip POSTED -> VOIDED and flush, so the recompute's "remaining POSTED" query already excludes
 		//    this payment's allocations.
@@ -154,6 +175,39 @@ public class PaymentVoidApplicationService {
 
 		LOGGER.info("Voided payment {} (id={}, contract={})", payment.getPaymentNo(), payment.getId(), contractId);
 		return PaymentResponse.fromVoided(payment, paymentAllocations);
+	}
+
+	/**
+	 * Writes the durable void-key → voided-payment association and flushes, so a reused key that already
+	 * voided a different payment fails here on {@code uq_payment_void_idempotency} (V22) before any ledger
+	 * work. The violation is translated to {@link IdempotencyKeyExpiredException} (409
+	 * {@code IDEMPOTENCY_KEY_EXPIRED}, ADR-017/ADR-020 D3) — the spent-key semantics the create path's
+	 * {@code uq_payment_idempotency} already uses — rather than surfacing a raw 500.
+	 */
+	private void recordDurableVoidKey(String endpoint, String idempotencyKey, UUID paymentId) {
+		try {
+			voidIdempotency.saveAndFlush(new PaymentVoidIdempotency(endpoint, idempotencyKey, paymentId));
+		} catch (DataIntegrityViolationException ex) {
+			throw translateVoidKeyViolation(ex);
+		}
+	}
+
+	/**
+	 * Translates a durable void-key uniqueness violation into an expired-key rejection. A
+	 * {@code uq_payment_void_idempotency} hit means the key already voided a payment and its
+	 * {@code idempotency_keys} claim row has since been cleaned up (otherwise {@code IdempotencyService}
+	 * would have replayed or rejected the reuse first); the key is spent (ADR-017). Anything else keeps its
+	 * original type and is handled centrally by {@code GlobalExceptionHandler}.
+	 */
+	private static RuntimeException translateVoidKeyViolation(DataIntegrityViolationException ex) {
+		Throwable cause = ex.getMostSpecificCause();
+		String message = cause == null ? null : cause.getMessage();
+		if (message != null && message.contains(VOID_IDEMPOTENCY_CONSTRAINT)) {
+			LOGGER.warn("payment void rejected by {}", VOID_IDEMPOTENCY_CONSTRAINT);
+			return new IdempotencyKeyExpiredException(
+					"Idempotency-Key was already used for a payment void request");
+		}
+		return ex;
 	}
 
 	private void assertVoidable(Payment payment, UUID contractId, Set<UUID> affectedInstallmentIds) {

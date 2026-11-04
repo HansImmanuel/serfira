@@ -182,14 +182,22 @@ as `POST /payments` (identical key replays the stored response; expired key → 
   accepted).
 - **ADR-018's "void must account for settled installments" note is answered** by D5: settled/closed
   installments make the payment non-voidable in T16; reopening them is out of scope.
-- **Deferred (PR #11 review, finding #5): a void idempotency key is not yet single-use-forever.** V18's
-  all-status `uq_payment_idempotency` keeps a _payment-creation_ key spent, but a _void_ key lives only
-  in the `IdempotencyService` claim row. Once the T18 cleanup job deletes an expired claim, the same key
-  could be reused to void a _different_ payment (each such void still passes every eligibility guard and
-  posts its own legitimate reversal — it is not a second reversal of the same payment, so no invariant
-  is breached; it only weakens the ADR-017 single-use-forever contract for void keys). The hole is
-  latent until T18 ships. Closing it needs a durable, uniquely-constrained void-key association on the
-  voided payment (a new migration), tracked as a follow-up task rather than folded into T16.
+- **~~Deferred (PR #11 review, finding #5): a void idempotency key is not yet single-use-forever.~~
+  RESOLVED by T31 (2026-11-04).** V18's all-status `uq_payment_idempotency` keeps a _payment-creation_
+  key spent, but a _void_ key lived only in the `IdempotencyService` claim row. Once the T18 cleanup job
+  deletes an expired claim, the same key could be reused to void a _different_ payment (each such void
+  still passes every eligibility guard and posts its own legitimate reversal — it is not a second
+  reversal of the same payment, so no invariant is breached; it only weakened the ADR-017
+  single-use-forever contract for void keys). T31 closes the hole with a durable, uniquely-constrained,
+  endpoint-scoped void-key → voided-payment association: a new `payment_void_idempotency` side table
+  (migration V22, `uq_payment_void_idempotency UNIQUE (endpoint, idempotency_key)`), written inside the
+  void transaction (D6) before any ledger work. A reused key that already voided a different payment
+  violates the constraint and is surfaced as 409 `IDEMPOTENCY_KEY_EXPIRED` with the whole void rolled
+  back; an identical replay of the original void is unaffected (the payment is already VOIDED, so it
+  returns the current representation before the durable insert). The table mirrors the V18 backstop
+  pattern — a permanent business-row authority that holds once the claim row is gone — rather than a
+  column on the `payment` row, because a void key is a different, endpoint-scoped key from the create
+  key that owns `payment.idempotency_key`.
 - **Derived docs to update with this ADR** (per `80-documentation`): `02_TECH_SPEC.md` §1 (void is a
   `payment → contract`/`ledger` flow; no new module), `03_DOMAIN_MODEL.md` §1.7/§1.4 (Payment VOIDED
   recomputation; invariant 16 void-when-credit-consumed), `04_GAPS_ADDENDUM.md` §6 (void = reversal +
