@@ -193,11 +193,24 @@ as `POST /payments` (identical key replays the stored response; expired key → 
   (migration V22, `uq_payment_void_idempotency UNIQUE (endpoint, idempotency_key)`), written inside the
   void transaction (D6) before any ledger work. A reused key that already voided a different payment
   violates the constraint and is surfaced as 409 `IDEMPOTENCY_KEY_EXPIRED` with the whole void rolled
-  back; an identical replay of the original void is unaffected (the payment is already VOIDED, so it
-  returns the current representation before the durable insert). The table mirrors the V18 backstop
+  back. The durable void-key check runs **before** the already-VOIDED no-op return (PR #16 review,
+  finding 1), so a spent key reused against a _different_ payment that happens to be VOIDED already is
+  still 409, not a false 200 no-op; a replay distinguishes "this key already maps to **this** payment"
+  (allow, no second reversal) from "maps to a **different** payment" (reject). Because every successful
+  void — including a fresh key used on an already-VOIDED payment — now records a durable row, the T18
+  cleanup job also deletes expired void claims (PR #16, finding 2), leaving `uq_payment_void_idempotency`
+  as the post-cleanup authority. The table mirrors the V18 backstop
   pattern — a permanent business-row authority that holds once the claim row is gone — rather than a
   column on the `payment` row, because a void key is a different, endpoint-scoped key from the create
   key that owns `payment.idempotency_key`.
+- **Cap-trigger side of void semantics is corrected by ADR-021 (T31, 2026-11-05).** D1 keeps a
+  voided payment's `payment_allocation` rows as immutable history, marked no-longer-counting only by
+  the parent's VOIDED status. The V3/V16 per-installment cap triggers, however, still summed those
+  rows with no status filter, so a legitimate re-pay of an installment whose earlier payment was
+  voided tripped a deferred cap trigger (500). ADR-021 records the fix: both cap trigger functions
+  now join `payment_allocation → payment` and count only `status = 'POSTED'` rows (migration V23),
+  making the DB backstop numerically identical to the POSTED-only application ports and consistent
+  with this ADR's "reads net voided payments by status" rule.
 - **Derived docs to update with this ADR** (per `80-documentation`): `02_TECH_SPEC.md` §1 (void is a
   `payment → contract`/`ledger` flow; no new module), `03_DOMAIN_MODEL.md` §1.7/§1.4 (Payment VOIDED
   recomputation; invariant 16 void-when-credit-consumed), `04_GAPS_ADDENDUM.md` §6 (void = reversal +

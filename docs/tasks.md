@@ -35,7 +35,8 @@ Sprint 6. T20, T27 and T21 move to Sprint 6b.
   backstops; V18 all-status `uq_payment_idempotency`; V19 `reconciliation_exception` OPEN uniqueness (T17);
   V20 write-off requires `write_off_recorded_by` (T19); V21 `idx_idempotency_keys_expires_at` for the T18
   cleanup job's keyset delete; V22 `payment_void_idempotency` durable void-key backstop
-  (`uq_payment_void_idempotency`, T31). (T19's migration was authored as V19 on its branch;
+  (`uq_payment_void_idempotency`, T31); V23 `void_excludes_allocations_from_caps` (both cap triggers
+  count POSTED allocations only, T31/ADR-021). (T19's migration was authored as V19 on its branch;
   because T17's V19 merged first, T19 renumbered forward-only to V20 at merge.)
 - Daily servicing (T3, hardened T26, extended T17): one renewable ShedLock for cron + backfill; every
   ACTIVE contract processed atomically **billing → penalty → aging → consistency-check**, with backoff
@@ -299,6 +300,30 @@ assert void **is** now deleted and write-off retained). **Verification (no Docke
 SUCCESSFUL (468 unit tests, 0 failures). The `*IT` suites (`VoidIdempotencyKeyDurabilityIT`,
 `IdempotencyCleanupIT`, `PaymentVoidIT`) were **NOT run locally** — Docker/Testcontainers unavailable;
 CI is the gate.
+
+**Void-vs-caps DB-invariant correction (2026-11-05, branch `t31-pr16-review-fixes`).** Running the T31
+`*IT` suites with Docker for the first time surfaced a latent bug predating T31: the V3
+`assert_payment_allocation_component_caps()` and V16 `assert_penalty_adjustment_cap()` cap triggers
+summed `payment_allocation` rows with **no** owning-payment status filter. V16's comment even claimed
+parity with the POSTED-only application port "because void is T16" — false now that void (ADR-020) is
+live. A VOIDED payment's immutable allocation rows still counted against the per-installment caps, so a
+legitimate re-pay of an installment whose earlier payment was voided tripped the deferred trigger at
+COMMIT → HTTP 500 (`VoidIdempotencyKeyDurabilityIT.aFreshVoidKeyOnAnAlreadyVoidedPaymentStaysProtectedAfterCleanup`).
+Fixed by new forward-only migration **V23** (`V23__void_excludes_allocations_from_caps.sql`): both
+functions `CREATE OR REPLACE`d to join `payment_allocation → payment` and count only `status = 'POSTED'`
+rows, numerically identical to `sumActiveByInstallmentIds(PaymentStatus.POSTED, ...)`; the existing
+DEFERRABLE triggers stay wired, V3/V16 untouched. `assert_payment_allocation_totals()` (per-payment Σ =
+amount) is correct for voided payments and left alone. New `PaymentVoidIT` regression
+`repayingAnInstallmentAfterVoidingItsPaymentSucceeds` (pay → void → re-pay the same installment in full);
+ADR-021 records the decision and the ADR-020 cross-reference. **Verification (Docker available):**
+`.\gradlew test --tests "*VoidIdempotencyKeyDurabilityIT" --tests "*PaymentVoidIT" --tests "*PenaltyAdjustment*" --tests "*PaymentApiIT"` → BUILD SUCCESSFUL (46 tests, 0 failed;
+the void ITs including the former 500 repro now pass). Full `.\gradlew test` → 848 tests, 6 failed —
+all 6 are **pre-existing and unrelated to V23** (confirmed identical red on the clean branch tip with
+this change stashed): `BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey` (stale premise
+vs V18/ADR-020 D3 single-use-forever key) and `ConsistencyCheckIT` (4) + `DailyServicingJobIT` (1)
+whose bare fixtures trip the V12 parent-side backstops / `ck_contract_terminated_coherence`. These are
+the "merged before tested" ITs; they are being surfaced for a separate decision, not fixed under this
+void-caps task. `.\gradlew check` is red only on those pre-existing failures.
 
 ---
 

@@ -448,3 +448,26 @@ compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes /
     menjaga kunci tetap spent. **Verifikasi (Docker TIDAK tersedia):** `.\gradlew compileJava
     compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` → BUILD SUCCESSFUL (468 unit, 0
     gagal). Suite `*IT` tidak dijalankan lokal (butuh Docker); CI gerbangnya.
+
+  - **Koreksi invarian DB void-vs-caps (2026-11-05, branch `t31-pr16-review-fixes`):** menjalankan suite
+    `*IT` T31 dengan Docker untuk pertama kalinya mengungkap bug laten yang mendahului T31. Trigger cap V3
+    `assert_payment_allocation_component_caps()` dan V16 `assert_penalty_adjustment_cap()` menjumlahkan
+    baris `payment_allocation` **tanpa** filter status pembayaran pemiliknya (komentar V16 bahkan mengklaim
+    setara port aplikasi POSTED-only "karena void itu T16" — kini salah setelah void/ADR-020 aktif).
+    Baris alokasi pembayaran VOIDED yang immutable tetap dihitung terhadap cap per-installment, sehingga
+    membayar ulang installment yang pembayaran sebelumnya di-void memicu trigger deferred saat COMMIT → HTTP
+    500 (`VoidIdempotencyKeyDurabilityIT`). Diperbaiki migrasi forward-only **V23**
+    (`V23__void_excludes_allocations_from_caps.sql`): kedua fungsi `CREATE OR REPLACE`, join
+    `payment_allocation → payment` dan hanya hitung alokasi `status = 'POSTED'` — identik secara numerik
+    dengan `sumActiveByInstallmentIds(PaymentStatus.POSTED, ...)`; trigger DEFERRABLE tetap terpasang,
+    V3/V16 tak diubah. Regresi baru `PaymentVoidIT.repayingAnInstallmentAfterVoidingItsPaymentSucceeds`
+    (bayar → void → bayar ulang installment yang sama penuh); ADR-021 mencatat keputusannya.
+    **Verifikasi (Docker tersedia):** `.\gradlew test --tests "*VoidIdempotencyKeyDurabilityIT" --tests
+    "*PaymentVoidIT" --tests "*PenaltyAdjustment*" --tests "*PaymentApiIT"` → BUILD SUCCESSFUL (46 tes, 0
+    gagal; IT void termasuk repro 500 lama kini hijau). `.\gradlew test` penuh → 848 tes, 6 gagal — keenam
+    gagal **sudah ada sebelumnya & tak terkait V23** (dikonfirmasi merah identik di ujung branch bersih
+    dengan perubahan ini di-stash): `BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey`
+    (premis usang vs kunci sekali-pakai-selamanya V18/ADR-020 D3) dan `ConsistencyCheckIT` (4) +
+    `DailyServicingJobIT` (1) yang fixture-nya memicu backstop sisi-induk V12 /
+    `ck_contract_terminated_coherence`. Ini IT "merged sebelum dites"; diangkat untuk keputusan terpisah,
+    bukan diperbaiki di bawah task void-caps ini. `.\gradlew check` merah hanya pada kegagalan lama itu.
