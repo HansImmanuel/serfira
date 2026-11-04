@@ -469,5 +469,27 @@ compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes /
     dengan perubahan ini di-stash): `BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey`
     (premis usang vs kunci sekali-pakai-selamanya V18/ADR-020 D3) dan `ConsistencyCheckIT` (4) +
     `DailyServicingJobIT` (1) yang fixture-nya memicu backstop sisi-induk V12 /
-    `ck_contract_terminated_coherence`. Ini IT "merged sebelum dites"; diangkat untuk keputusan terpisah,
-    bukan diperbaiki di bawah task void-caps ini. `.\gradlew check` merah hanya pada kegagalan lama itu.
+    `ck_contract_terminated_coherence`. Ini IT "merged sebelum dites" (V12/T25 sudah aktif saat T17/PR #12
+    menambah tes-tes itu). Diselaraskan di commit terpisah (lihat butir berikut), bukan bagian dari
+    perubahan V23.
+
+  - **Penyelarasan IT usang dengan invarian V12/V18 (2026-11-05, commit terpisah di
+    `t31-pr16-review-fixes`):** keenam IT yang gagal di atas adalah ekspektasi TES yang usang terhadap
+    perilaku yang sudah di-merge & diputuskan — bukan perubahan produksi. Hanya kode/fixture tes yang
+    diubah; V12, mesin consistency-check, dan kode produksi lain tak disentuh.
+    (1) `BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey` kini menegaskan kunci TETAP
+    ditolak setelah void (V18/ADR-020 D3, sekali-pakai-selamanya lintas semua status).
+    (2) `ConsistencyCheckIT` entry receivable-nyasar (check C) + 2 barisnya kini di-insert dalam SATU CTE
+    (backstop sisi-induk V12 `assert_journal_entry_has_balanced_lines` berjalan saat COMMIT).
+    (3) `DailyServicingJobIT.terminateForFixture` kini mengisi `write_off_recorded_by` (V20/T19
+    memperketat `ck_contract_terminated_coherence`).
+    (4–6) tiga kasus drift `ConsistencyCheckIT` yang memakai pembayaran tanpa alokasi dipersempit ke drift
+    **check A saja** (pembayaran DENGAN alokasi EXCESS valid tetapi TANPA jurnal KAS). **Temuan penting:**
+    kondisi drift check B (Σ alokasi ≠ `payment.amount`) **tak bisa dipanggungkan end-to-end** karena
+    backstop DEFERRABLE V12 `assert_payment_has_allocations()` menolak saat COMMIT setiap pembayaran yang
+    alokasinya ≠ jumlahnya ("termasuk nol") — jadi pembayaran POSTED tanpa/kurang-alokasi tak bisa ada di
+    DB. Check B adalah guard defense-in-depth yang divalidasi di level mesin
+    (`ConsistencyCheckEngineTest.allocationDriftIsFlaggedWhenAllocationsDoNotSumToThePayment`), bukan
+    end-to-end. Rekonsiliasi backstop V12 vs desain IT check-A/B dicatat sebagai tindak lanjut terpisah di
+    `tasks.md` (tidak diimplementasikan di sini). **Verifikasi (Docker):** `.\gradlew test` → 848 tes, 0
+    gagal; `.\gradlew check` → BUILD SUCCESSFUL.

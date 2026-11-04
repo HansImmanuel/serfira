@@ -317,13 +317,24 @@ amount) is correct for voided payments and left alone. New `PaymentVoidIT` regre
 `repayingAnInstallmentAfterVoidingItsPaymentSucceeds` (pay → void → re-pay the same installment in full);
 ADR-021 records the decision and the ADR-020 cross-reference. **Verification (Docker available):**
 `.\gradlew test --tests "*VoidIdempotencyKeyDurabilityIT" --tests "*PaymentVoidIT" --tests "*PenaltyAdjustment*" --tests "*PaymentApiIT"` → BUILD SUCCESSFUL (46 tests, 0 failed;
-the void ITs including the former 500 repro now pass). Full `.\gradlew test` → 848 tests, 6 failed —
-all 6 are **pre-existing and unrelated to V23** (confirmed identical red on the clean branch tip with
-this change stashed): `BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey` (stale premise
-vs V18/ADR-020 D3 single-use-forever key) and `ConsistencyCheckIT` (4) + `DailyServicingJobIT` (1)
-whose bare fixtures trip the V12 parent-side backstops / `ck_contract_terminated_coherence`. These are
-the "merged before tested" ITs; they are being surfaced for a separate decision, not fixed under this
-void-caps task. `.\gradlew check` is red only on those pre-existing failures.
+the void ITs including the former 500 repro now pass). A full-suite run then surfaced 6 **pre-existing**
+IT failures unrelated to V23 (confirmed identical red on the clean branch tip with this change stashed):
+`BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey` (stale premise vs V18/ADR-020 D3
+single-use-forever key) and `ConsistencyCheckIT` (4) + `DailyServicingJobIT` (1) whose bare fixtures trip
+the V12 parent-side backstops / `ck_contract_terminated_coherence`. These "merged before tested" ITs were
+realigned to current invariants in a **separate commit** (test-only; see below), after which full
+`.\gradlew test` → 848 tests, 0 failed and `.\gradlew check` → BUILD SUCCESSFUL.
+
+**Stale-IT realignment (2026-11-05, separate commit, test-only).** The 6 pre-existing failures were stale
+TEST expectations, not production bugs; only test code/fixtures changed (V12, the consistency-check engine
+and all production code untouched). `BaselineSchemaIT` now asserts the voided idempotency key stays
+rejected; `ConsistencyCheckIT`'s stray-receivable fixture inserts entry + 2 lines in one CTE;
+`DailyServicingJobIT.terminateForFixture` sets `write_off_recorded_by`. The three `ConsistencyCheckIT`
+drift cases that used a zero-allocation payment were narrowed to **check-A-only** drift (a payment WITH a
+valid EXCESS allocation but WITHOUT its KAS journal). **Finding:** consistency check B's drift condition
+(Σ allocations ≠ `payment.amount`) is **unstageable end-to-end** because V12's DEFERRABLE
+`assert_payment_has_allocations()` rejects any such payment at COMMIT; check B is defense-in-depth,
+validated at the engine level (`ConsistencyCheckEngineTest`), not end-to-end. Logged as a follow-up below.
 
 ---
 
@@ -349,6 +360,7 @@ void-caps task. `.\gradlew check` is red only on those pre-existing failures.
 | Rate limiting, security headers, CORS policy                                                | No browser client or public deployment yet. Revisit with G2.                     |
 | Remove the unused Lombok dependency. Move the Sonar host out of `gradle-wrapper.properties` | Hygiene only. The Sonar change is uncommitted local work owned by the developer. |
 | Envelope-rendering `ErrorController` for container-level errors                             | Boot's default JSON leaks no internals. Low value until a browser client exists. |
+| Reconcile the V12 `assert_payment_has_allocations` backstop vs consistency check B's end-to-end IT | V12 (DEFERRABLE, rejects Σallocations≠amount at COMMIT, "zero included") makes check B's drift unstageable in the DB, so `ConsistencyCheckIT` only exercises check A; check B is covered at the engine level (`ConsistencyCheckEngineTest`). Decide whether check B needs an end-to-end guard given V12 already forecloses its drift, or document it as engine-only by design. Test-only follow-up; no production change implied. |
 | Fix TS §7 repo structure (X-9)                                                              | Documentation only.                                                              |
 | Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | Deployment concern. No deployment exists yet.                                    |
 

@@ -170,8 +170,11 @@ class DailyServicingJobIT {
 	}
 
 	private void terminateForFixture(UUID contractId) {
-		jdbc.update("update contract set status = 'TERMINATED', write_off_reason = 'test fixture' where id = ?",
-				contractId);
+		// V20 tightened ck_contract_terminated_coherence (T19) to require write_off_recorded_by as well as
+		// write_off_reason, so a TERMINATED fixture must set both coherent columns (the real write-off path
+		// records the JWT sub; the SYSTEM user stands in here).
+		jdbc.update("update contract set status = 'TERMINATED', write_off_reason = 'test fixture', "
+				+ "write_off_recorded_by = ? where id = ?", AuditContext.SYSTEM_USER_ID, contractId);
 	}
 
 	private long journalCount(UUID contractId, String refType) {
