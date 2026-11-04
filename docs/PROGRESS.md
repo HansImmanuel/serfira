@@ -432,3 +432,19 @@ compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes /
       Docker) → BUILD SUCCESSFUL. **Tidak dijalankan lokal:** suite `*IT` — `VoidIdempotencyKeyDurabilityIT`
       baru dan `PaymentVoidIT` yang ada — dikompilasi tetapi butuh Docker/Testcontainers; CI adalah gerbangnya
       sebelum merge. Branch `t31-durable-void-idempotency-key`, PR menyusul. Menutup Sprint 6.
+
+  - **Perbaikan review PR #16 (2026-11-05, branch `t31-pr16-review-fixes`):** lima temuan ditangani.
+    (1, HIGH) pengecekan void-key durable kini **sebelum** early-return "sudah VOIDED", sehingga kunci spent
+    yang dipakai ulang untuk pembayaran **berbeda** yang sudah VOIDED tetap 409 `IDEMPOTENCY_KEY_EXPIRED`
+    (bukan no-op 200 palsu); `recordDurableVoidKey` membedakan replay pembayaran yang sama (izinkan, tanpa
+    baris/reversal kedua) dari pemetaan ke pembayaran berbeda (tolak), dengan constraint UNIQUE DB tetap
+    otoritas balapan. (2, MED) endpoint void ditambahkan ke allow-list `deleteExpiredBatch` agar klaim void
+    kedaluwarsa dibersihkan (write-off tetap dikecualikan). (3, MED) backfill V22 join pada id pembayaran
+    **top-level** (`response_json::jsonb ->> 'id'`), bukan substring `LIKE`, plus preflight menolak klaim
+    tanpa id top-level. (4, LOW) backfill membawa `created_by` asli. (5, MED) trigger
+    `trg_payment_void_idempotency_immutable` memblokir UPDATE/DELETE baris (INSERT & TRUNCATE tetap jalan).
+    IT baru/diubah: pakai-ulang ke pembayaran berbeda yang sudah VOIDED → 409; kunci no-op segar tetap
+    terlindungi setelah cleanup; job cleanup nyata menghapus klaim void kedaluwarsa sementara baris durable
+    menjaga kunci tetap spent. **Verifikasi (Docker TIDAK tersedia):** `.\gradlew compileJava
+    compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` → BUILD SUCCESSFUL (468 unit, 0
+    gagal). Suite `*IT` tidak dijalankan lokal (butuh Docker); CI gerbangnya.

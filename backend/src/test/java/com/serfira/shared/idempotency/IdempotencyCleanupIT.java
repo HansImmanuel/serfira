@@ -201,14 +201,15 @@ class IdempotencyCleanupIT {
 	}
 
 	/**
-	 * Cleanup is scoped to the three permanently-backed create endpoints. Write-off and payment-void claims
-	 * have no durable business-row backstop, so their expired claim rows must be <strong>retained</strong>:
-	 * deleting them would re-open the key for reuse against a different target, violating ADR-017
-	 * single-use-forever and ADR-020 D3. This locks in the {@code endpoint IN (...)} filter in
-	 * {@code IdempotencyKeyRepository.deleteExpiredBatch}.
+	 * Cleanup is scoped to the endpoints with a durable business-row backstop: the three create endpoints
+	 * and, since V22/T31, payment-void ({@code uq_payment_void_idempotency}). For those, deleting an expired
+	 * claim leaves a durable row that keeps the key spent. Write-off still has no durable backstop, so its
+	 * expired claim must be <strong>retained</strong>: deleting it would re-open the key for reuse against a
+	 * different contract, violating ADR-017 single-use-forever and ADR-020 D3 (PR #16 finding 2). This locks
+	 * in the {@code endpoint IN (...)} filter in {@code IdempotencyKeyRepository.deleteExpiredBatch}.
 	 */
 	@Test
-	void theJobRetainsWriteOffAndVoidClaimsButDeletesBackedCreateClaims() {
+	void theJobRetainsWriteOffClaimsButDeletesBackedCreateAndVoidClaims() {
 		seedClaim("backed-create-key", "POST /api/v1/contracts", clock.now().minusDays(1));
 		seedClaim("write-off-key", "POST /api/v1/contracts/{id}/write-off", clock.now().minusDays(1));
 		seedClaim("void-key", "POST /api/v1/payments/{id}/void", clock.now().minusDays(1));
@@ -217,7 +218,35 @@ class IdempotencyCleanupIT {
 
 		assertThat(claimExists("backed-create-key")).isFalse();
 		assertThat(claimExists("write-off-key")).isTrue();
-		assertThat(claimExists("void-key")).isTrue();
+		assertThat(claimExists("void-key")).isFalse();
+	}
+
+	/**
+	 * T31 / PR #16 finding 2 end to end: the real cleanup job deletes an expired void claim now that V22
+	 * gives void a durable backstop, and the durable {@code uq_payment_void_idempotency} row keeps the key
+	 * spent, so reusing it to void a <strong>different</strong> payment is still rejected (409).
+	 */
+	@Test
+	void anExpiredVoidClaimIsCleanedUpAndItsKeyStaysSpentForADifferentPayment() throws Exception {
+		UUID contractId = activatedContract();
+		UUID paymentA = UUID.fromString(data(postPayment(contractId, "void-a-create", PERIOD_TOTAL))
+				.get("id").asText());
+		UUID paymentB = UUID.fromString(data(postPayment(contractId, "void-b-create", PERIOD_TOTAL))
+				.get("id").asText());
+
+		String sharedVoidKey = "shared-void-key";
+		assertThat(voidPayment(paymentA, sharedVoidKey).getResponse().getStatus()).isEqualTo(200);
+
+		// Expire the void claim and run the REAL cleanup job; V22 means void is now in the allow-list.
+		expireVoidClaim(sharedVoidKey);
+		job.run();
+		assertThat(claimExists(sharedVoidKey)).isFalse();
+
+		// The durable association (not the claim row) keeps the key spent: reusing it for payment B is 409.
+		MvcResult reused = voidPayment(paymentB, sharedVoidKey);
+		assertThat(reused.getResponse().getStatus()).isEqualTo(409);
+		assertThat(jdbc.queryForObject("select status from payment where id = ?", String.class, paymentB))
+				.isEqualTo("POSTED");
 	}
 
 	// --- helpers ---------------------------------------------------------------------------------------
@@ -257,6 +286,23 @@ class IdempotencyCleanupIT {
 				where endpoint = 'POST /api/v1/payments' and key = ?
 				""", clock.now().minusDays(1), key);
 		assertThat(updated).isEqualTo(1);
+	}
+
+	/** Pushes the claim row for a payment-void key into the past so the cleanup job deletes it (T31). */
+	private void expireVoidClaim(String key) {
+		int updated = jdbc.update("""
+				update idempotency_keys set expires_at = ?, updated_at = clock_timestamp()
+				where endpoint = 'POST /api/v1/payments/{id}/void' and key = ?
+				""", clock.now().minusDays(1), key);
+		assertThat(updated).isEqualTo(1);
+	}
+
+	private MvcResult voidPayment(UUID paymentId, String idempotencyKey) throws Exception {
+		return mockMvc.perform(post("/api/v1/payments/" + paymentId + "/void")
+						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", idempotencyKey)
+						.contentType(MediaType.APPLICATION_JSON).content("{}"))
+				.andReturn();
 	}
 
 	private MvcResult createContract(String idempotencyKey) throws Exception {
@@ -320,6 +366,7 @@ class IdempotencyCleanupIT {
 					reconciliation_exception, outbox_events,
 					settlement_credit_application, settlement_allocation, penalty_adjustment, penalty_accrual,
 					contract_credit_application, contract_credit, payment_allocation, payment,
+					payment_void_idempotency,
 					settlement_quote, settlement, installment, journal_line, journal_entry,
 					contract, asset, customer
 				CASCADE""");

@@ -135,6 +135,63 @@ class VoidIdempotencyKeyDurabilityIT {
 	}
 
 	@Test
+	void aReusedVoidKeyIsRejectedEvenWhenTheOtherPaymentIsAlreadyVoided() throws Exception {
+		// PR #16 finding 1: the durable void-key check must run BEFORE the already-VOIDED early return, so a
+		// spent key reused against a DIFFERENT, already-VOIDED payment is still 409 (the old order returned a
+		// 200 no-op and never consulted the durable association).
+		UUID paymentA = postedPayment("t31-a", "500000.00");
+		UUID paymentB = postedPayment("t31-b", "500000.00");
+		String keyForA = "t31-key-a";
+
+		assertThat(voidPayment(paymentA, keyForA, "{}").getResponse().getStatus()).isEqualTo(200);
+		// B is voided under its OWN key, so B is already VOIDED when keyForA is later reused against it.
+		assertThat(voidPayment(paymentB, "t31-key-b", "{}").getResponse().getStatus()).isEqualTo(200);
+
+		// The T18 cleanup deletes keyForA's expired claim row; only the durable V22 association remains.
+		jdbc.update("delete from idempotency_keys where endpoint = ? and key = ?", VOID_ENDPOINT, keyForA);
+		assertThat(idempotencyClaimCount(keyForA)).isZero();
+
+		long voidRowsBefore = count("payment_void_idempotency");
+
+		// keyForA maps durably to payment A; reusing it against the already-VOIDED payment B is a spent key.
+		MvcResult conflicting = voidPayment(paymentB, keyForA, "{}");
+
+		assertThat(conflicting.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(conflicting)).isEqualTo("IDEMPOTENCY_KEY_EXPIRED");
+		// Nothing written: no new durable row, and keyForA still maps to A, not B.
+		assertThat(count("payment_void_idempotency")).isEqualTo(voidRowsBefore);
+		assertThat(jdbc.queryForObject(
+				"select payment_id from payment_void_idempotency where endpoint = ? and idempotency_key = ?",
+				UUID.class, VOID_ENDPOINT, keyForA)).isEqualTo(paymentA);
+	}
+
+	@Test
+	void aFreshVoidKeyOnAnAlreadyVoidedPaymentStaysProtectedAfterCleanup() throws Exception {
+		// PR #16 finding 1 (b): a legitimate no-op — a FRESH key used on an already-VOIDED payment — must
+		// still record its durable association, so the key stays single-use-forever once its claim is gone.
+		UUID paymentId = postedPayment("t31-noop", "500000.00");
+		assertThat(voidPayment(paymentId, "t31-noop-first", "{}").getResponse().getStatus()).isEqualTo(200);
+
+		String freshNoOpKey = "t31-noop-fresh";
+		// A different, fresh key against the now-VOIDED payment: a no-op that returns the voided view (200)...
+		assertThat(voidPayment(paymentId, freshNoOpKey, "{}").getResponse().getStatus()).isEqualTo(200);
+		// ...and records a durable association so the fresh key is protected.
+		assertThat(jdbc.queryForObject(
+				"select payment_id from payment_void_idempotency where endpoint = ? and idempotency_key = ?",
+				UUID.class, VOID_ENDPOINT, freshNoOpKey)).isEqualTo(paymentId);
+
+		// Claim row gone (as T18 would): reusing the fresh no-op key against a DIFFERENT payment is 409.
+		jdbc.update("delete from idempotency_keys where endpoint = ? and key = ?", VOID_ENDPOINT, freshNoOpKey);
+		UUID otherPayment = postedPayment("t31-noop-other", "500000.00");
+
+		MvcResult conflicting = voidPayment(otherPayment, freshNoOpKey, "{}");
+
+		assertThat(conflicting.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(conflicting)).isEqualTo("IDEMPOTENCY_KEY_EXPIRED");
+		assertThat(statusOf(otherPayment)).isEqualTo("POSTED");
+	}
+
+	@Test
 	void anIdenticalVoidReplayStillReturnsTheStoredResponseAfterTheClaimRowIsCleanedUp() throws Exception {
 		UUID paymentId = postedPayment("t31-replay", "500000.00");
 		String voidKey = "t31-replay-void-key";

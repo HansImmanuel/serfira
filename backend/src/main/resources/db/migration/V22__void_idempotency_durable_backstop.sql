@@ -42,16 +42,24 @@
 -- -------------------------------------------------------------------------------------
 -- Before V22 ships, no void has ever written a durable association row (the table is created here), so
 -- the backfill below can only reconstruct one row per already-voided payment from its surviving claim
--- row in idempotency_keys. If two VOIDED payments were somehow voided under the SAME (endpoint, key) —
--- impossible under the live IdempotencyService, which already rejects a reused void key while the claim
--- lives, but checked here so the migration can never silently discard history — the UNIQUE constraint
--- backfill would fail. Detect that collision FIRST and fail the migration with a clear message, WITHOUT
--- deleting or rewriting any payment or idempotency history. An empty preflight is the expected state.
+-- row in idempotency_keys. The association is keyed on the void (endpoint, key); the payment it voided is
+-- read from the TOP-LEVEL id of the stored PaymentResponse envelope (see the backfill note below), not by
+-- a substring match, so one claim maps to exactly one payment. Two failure modes are checked FIRST and
+-- fail the migration with a clear message, WITHOUT deleting or rewriting any payment or idempotency
+-- history (both are empty in the expected state):
+--   (1) two void claim rows sharing the same (endpoint, key) — impossible under the live
+--       IdempotencyService, which rejects a reused void key while the claim lives, but checked so the
+--       UNIQUE constraint can never fail with a raw violation;
+--   (2) a void claim whose stored response has NO extractable top-level payment id (malformed/legacy
+--       JSON). Such a claim cannot be mapped to a payment unambiguously; it is reported here rather than
+--       silently skipped, so history is never guessed at. (The backfill itself also skips it, so even if
+--       this guard were relaxed the migration stays fail-safe.)
 DO $$
 DECLARE
-    collisions BIGINT;
+    duplicate_keys BIGINT;
+    unmappable_claims BIGINT;
 BEGIN
-    SELECT COUNT(*) INTO collisions
+    SELECT COUNT(*) INTO duplicate_keys
       FROM (
             SELECT k.endpoint, k.key
               FROM idempotency_keys k
@@ -60,12 +68,28 @@ BEGIN
             HAVING COUNT(*) > 1
            ) AS duplicate_void_keys;
 
-    IF collisions > 0 THEN
+    IF duplicate_keys > 0 THEN
         RAISE EXCEPTION
             'V22 preflight: % void (endpoint, key) pair(s) already map to more than one claim row; '
             'the durable void-key backstop cannot be built without discarding history. Resolve the '
             'duplicates manually before re-running (no rows were changed).',
-            collisions;
+            duplicate_keys;
+    END IF;
+
+    -- A COMPLETED void claim that resolved a payment must carry that payment's id at the top level of its
+    -- stored PaymentResponse JSON. One with a response but no extractable top-level id is ambiguous history.
+    SELECT COUNT(*) INTO unmappable_claims
+      FROM idempotency_keys k
+     WHERE k.endpoint = 'POST /api/v1/payments/{id}/void'
+       AND k.response_json IS NOT NULL
+       AND (k.response_json::jsonb ->> 'id') IS NULL;
+
+    IF unmappable_claims > 0 THEN
+        RAISE EXCEPTION
+            'V22 preflight: % void claim row(s) have a stored response with no top-level payment id; '
+            'the voided payment cannot be reconstructed unambiguously. Inspect those idempotency_keys '
+            'rows manually before re-running (no rows were changed).',
+            unmappable_claims;
     END IF;
 END;
 $$;
@@ -93,6 +117,17 @@ CREATE TABLE payment_void_idempotency (
 
 CREATE INDEX idx_payment_void_idempotency_payment ON payment_void_idempotency (payment_id);
 
+-- Append-only backstop: block row-level UPDATE/DELETE, matching every comparable immutable table in this
+-- schema (journal_entry, journal_line, payment_allocation, settlement_allocation, penalty_adjustment —
+-- V1; penalty_accrual — V9; settlement, settlement_quote — V5; settlement_credit_application — V17;
+-- system_parameter — V12). The entity's updatable=false column mappings do not stop a native SQL
+-- UPDATE/DELETE; this trigger does (PR #16 finding 5). INSERT stays allowed — the void service writes one
+-- row per completed void. block_modification() is a FOR EACH ROW trigger, so it does NOT fire on the
+-- statement-level TRUNCATE ... CASCADE the IT fixtures use to reset the schema (V1/V3 note).
+CREATE TRIGGER trg_payment_void_idempotency_immutable
+    BEFORE UPDATE OR DELETE ON payment_void_idempotency
+    FOR EACH ROW EXECUTE FUNCTION block_modification();
+
 -- -------------------------------------------------------------------------------------
 -- Backfill durable rows for any payment already voided before V22.
 -- -------------------------------------------------------------------------------------
@@ -102,11 +137,21 @@ CREATE INDEX idx_payment_void_idempotency_payment ON payment_void_idempotency (p
 -- already deleted cannot be reconstructed and is accepted as a pre-existing, now-closed gap (the window
 -- T31 removes going forward). The preflight above guarantees at most one claim per (endpoint, key), so no
 -- UNIQUE violation is possible here.
-INSERT INTO payment_void_idempotency (endpoint, idempotency_key, payment_id, created_at)
-SELECT k.endpoint, k.key, p.id, k.created_at
+--
+-- The payment is matched by the TOP-LEVEL id of the stored response, not by a substring. The stored
+-- response_json is the bare PaymentResponse record serialized by IdempotencyService (Jackson global
+-- SNAKE_CASE), BEFORE the controller wraps it in the {data, error} ApiResponse envelope — so the payment
+-- id is the top-level "id" field, read as response_json::jsonb ->> 'id'. Matching that exact id (a payment
+-- PK) to payment.id maps each claim to exactly one payment, where the old '%' || id || '%' LIKE could also
+-- match the id embedded in an allocation's installment_id, a contract id, etc. and map one claim to several
+-- payments — violating uq_payment_void_idempotency and failing the migration. created_by is carried over
+-- from the claim so the reconstructed association keeps the original actor (PR #16 finding 4). A claim with
+-- no extractable top-level id is skipped here and already rejected by the preflight above (fail-safe).
+INSERT INTO payment_void_idempotency (endpoint, idempotency_key, payment_id, created_at, created_by)
+SELECT k.endpoint, k.key, p.id, k.created_at, k.created_by
   FROM payment p
   JOIN idempotency_keys k
     ON k.endpoint = 'POST /api/v1/payments/{id}/void'
    AND k.response_json IS NOT NULL
-   AND k.response_json LIKE '%' || p.id::text || '%'
+   AND (k.response_json::jsonb ->> 'id') = p.id::text
  WHERE p.status = 'VOIDED';

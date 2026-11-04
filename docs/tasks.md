@@ -273,6 +273,33 @@ suites) → BUILD SUCCESSFUL. The `*IT` suite — including `VoidIdempotencyKeyD
 for it (per the tech-steering no-Docker fallback). No change to the void's business behaviour beyond the new
 durable backstop; closes ADR-020 "Deferred finding #5".
 
+**PR #16 review fixes (2026-11-05).** Five review findings addressed on branch `t31-pr16-review-fixes`.
+(1, HIGH) The durable void-key check now runs **before** the already-VOIDED early return in
+`reverse(...)`, so a spent key reused against a _different_ payment that is already VOIDED is correctly
+409 `IDEMPOTENCY_KEY_EXPIRED` instead of a false 200 no-op. `recordDurableVoidKey` now reads
+`PaymentVoidIdempotencyRepository.findByEndpointAndIdempotencyKey` to distinguish "this key already maps
+to **this** payment" (replay: allow, no second row/reversal) from "maps to a **different** payment"
+(reject); a fresh key on an already-VOIDED payment still records its durable row, and the DB UNIQUE
+constraint remains the concurrency-safe authority for the race. (2, MED) Now that every successful void
+has durable protection, `POST /api/v1/payments/{id}/void` was added to the `deleteExpiredBatch`
+allow-list so expired void claims are cleaned up (write-off still excluded — no backstop yet); Javadoc
+updated. (3, MED) The V22 backfill joins on the **top-level** payment id extracted from the stored
+response (`response_json::jsonb ->> 'id'`, the bare `PaymentResponse` serialized before the envelope
+wrap) instead of a `LIKE '%id%'` substring that could match an embedded id and map one claim to several
+payments; the preflight now also fails on a void claim whose response has no extractable top-level id.
+(4, LOW) The backfill carries `k.created_by` into `payment_void_idempotency.created_by`, keeping the
+original actor. (5, MED) A `trg_payment_void_idempotency_immutable` `BEFORE UPDATE OR DELETE` trigger on
+`block_modification()` makes the append-only table reject native UPDATE/DELETE, matching the other
+immutable tables (INSERT and statement-level TRUNCATE still work). New IT cases: a reused key against a
+different **already-VOIDED** payment → 409 writing nothing; a fresh no-op key on a VOIDED payment stays
+protected after cleanup (`VoidIdempotencyKeyDurabilityIT`); and the real cleanup job deletes an expired
+void claim while the durable row keeps the key spent (`IdempotencyCleanupIT`, retention test updated to
+assert void **is** now deleted and write-off retained). **Verification (no Docker in this environment):**
+`.\gradlew compileJava compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` → BUILD
+SUCCESSFUL (468 unit tests, 0 failures). The `*IT` suites (`VoidIdempotencyKeyDurabilityIT`,
+`IdempotencyCleanupIT`, `PaymentVoidIT`) were **NOT run locally** — Docker/Testcontainers unavailable;
+CI is the gate.
+
 ---
 
 ## Future / Deferred Work

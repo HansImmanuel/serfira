@@ -29,11 +29,15 @@ import java.util.UUID;
  * {@code POST /api/v1/payments} (the V18 all-status {@code uq_payment_idempotency}), and
  * {@code POST /api/v1/settlements} ({@code uq_settlement_idempotency}). For those, deleting a spent
  * claim row never re-opens the key — the backstop keeps it spent independently of the claim row
- * (ADR-017 2026-10-11 resolution, ADR-020 D3), so the cleanup adds no permanent-key probe. Write-off
+ * (ADR-017 2026-10-11 resolution, ADR-020 D3), so the cleanup adds no permanent-key probe. Payment-void
+ * ({@code PaymentVoidApplicationService.VOID_ENDPOINT}, {@code POST /api/v1/payments/{id}/void}) gained its
+ * own durable backstop in V22 ({@code uq_payment_void_idempotency}, T31), so it is now cleaned up too:
+ * every successfully claimed void key — including a fresh key used on an already-VOIDED payment — writes a
+ * durable association row, so deleting the expired claim leaves that row as the single-use-forever authority
+ * (ADR-020 D3, PR #16 findings 1-2). Write-off
  * ({@code ContractWriteOffCommandService.WRITE_OFF_ENDPOINT}, {@code POST /api/v1/contracts/{id}/write-off})
- * and payment-void ({@code PaymentVoidApplicationService.VOID_ENDPOINT}, {@code POST /api/v1/payments/{id}/void})
- * have <strong>no</strong> durable backstop, so their expired claim rows are intentionally retained:
- * deleting them would let the same key be reused against a different contract/payment, violating
+ * still has <strong>no</strong> durable backstop, so its expired claim rows are intentionally retained:
+ * deleting them would let the same key be reused against a different contract, violating
  * ADR-017 single-use-forever and ADR-020 D3. The scoping lives in the {@link #deleteExpiredBatch}
  * endpoint allow-list.
  */
@@ -65,14 +69,16 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 	 * stops when a page deletes fewer than {@code limit} rows. Live rows ({@code expires_at >= :now})
 	 * are never touched.
 	 *
-	 * <p>The subselect is restricted to the three permanently-backed create endpoints
-	 * ({@code POST /api/v1/contracts}, {@code POST /api/v1/payments}, {@code POST /api/v1/settlements}):
-	 * only there does a durable business-row backstop keep a deleted key spent. Write-off and
-	 * payment-void claims have no such backstop and are therefore retained even once expired, so a
-	 * reused key can never mint a second mutation against a different target (ADR-017 single-use-forever,
-	 * ADR-020 D3). The literals are repeated inline rather than referencing the owning modules'
-	 * endpoint constants, which are package-private and in {@code contract}/{@code payment}/{@code settlement} —
-	 * {@code shared} must not depend on a business module. Each literal matches its constant exactly.
+	 * <p>The subselect is restricted to the endpoints with a durable business-row backstop: the three
+	 * create endpoints ({@code POST /api/v1/contracts}, {@code POST /api/v1/payments},
+	 * {@code POST /api/v1/settlements}) and, since V22/T31, payment-void
+	 * ({@code POST /api/v1/payments/{id}/void}, backed by {@code uq_payment_void_idempotency}). For all four,
+	 * deleting an expired claim leaves a durable row that keeps the key spent, so a reused key can never mint
+	 * a second mutation against a different target (ADR-017 single-use-forever, ADR-020 D3, PR #16 finding 2).
+	 * Write-off has no such backstop and is therefore retained even once expired. The literals are repeated
+	 * inline rather than referencing the owning modules' endpoint constants, which are package-private and in
+	 * {@code contract}/{@code payment}/{@code settlement} — {@code shared} must not depend on a business
+	 * module. Each literal matches its constant exactly.
 	 */
 	@Modifying
 	@Query(value = """
@@ -80,7 +86,8 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 			WHERE id IN (
 				SELECT id FROM idempotency_keys
 				WHERE expires_at < :now
-					AND endpoint IN ('POST /api/v1/contracts', 'POST /api/v1/payments', 'POST /api/v1/settlements')
+					AND endpoint IN ('POST /api/v1/contracts', 'POST /api/v1/payments', 'POST /api/v1/settlements',
+						'POST /api/v1/payments/{id}/void')
 				ORDER BY expires_at, id
 				LIMIT :limit
 			)
