@@ -250,7 +250,7 @@ AfterSettlement` menegaskan UPDATE/DELETE ditolak; (4) **MINOR** — ditambahkan
     `*SettlementExecutionRetryingServiceTest` hijau; full `.\gradlew test` = **744 tes, 0 gagal / 0 error**;
     `.\gradlew check` hijau.
 
-Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17/T19 ter-merge ke `main`; T18 DONE di cabang `t18-idempotency-cleanup`, PR menyusul; T27a, T31 masih TODO — lihat [tasks.md](tasks.md)):
+Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17/T19/T18 ter-merge ke `main`, T18 via PR #14; T27a DONE di cabang `t27a-ci-check-gate`, PR menyusul; T31 masih TODO — lihat [tasks.md](tasks.md)):
 
 - [x] T18 — F4 Idempotency key cleanup job (ADR-017, ADR-020 D3). Job harian kedua yang **menghapus fisik**
       baris `idempotency_keys` yang jendela retensinya sudah lewat (`expires_at < clock.now()`, Asia/Jakarta),
@@ -264,8 +264,8 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17
       `IdempotencyKeyBatchDeleter` membungkus hapus satu halaman dalam `@Transactional(REQUIRES_NEW)` sebagai
       `@Service` terpisah (menghindari jebakan self-invocation proxy), memanggil query native keyset
       `IdempotencyKeyRepository.deleteExpiredBatch` (`DELETE … WHERE id IN (SELECT … WHERE expires_at < :now
-      AND endpoint IN ('POST /api/v1/contracts', 'POST /api/v1/payments', 'POST /api/v1/settlements')
-      ORDER BY expires_at, id LIMIT :limit)`; `DELETE` PostgreSQL tak punya `LIMIT`). `LockedIdempotencyCleanupJob`
+  AND endpoint IN ('POST /api/v1/contracts', 'POST /api/v1/payments', 'POST /api/v1/settlements')
+  ORDER BY expires_at, id LIMIT :limit)`; `DELETE` PostgreSQL tak punya `LIMIT`). `LockedIdempotencyCleanupJob`
       (`@SchedulerLock(name="idempotency-cleanup")`, lock terpisah dari daily-servicing) dan
       `IdempotencyCleanupScheduler` (`@Scheduled` cron 01:30 Asia/Jakarta, setelah daily servicing 01:00).
       **A-9:** `records_processed` = jumlah baris terhapus, `records_failed = 0` saat sukses (hapus tak punya
@@ -384,6 +384,20 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17
       ditunda ke `reporting`). IT daily-job diperbarui untuk mengharapkan empat baris `job_run`. TS §1 menambah
       tiga edge baca `penalty →` konsistensi. Perbaikan review PR #12: isolasi REPEATABLE_READ, pencatatan
       idempoten + V19, markdown dipulihkan. **Verifikasi (Docker TIDAK tersedia):** `compileJava
-    compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes / 0 gagal / 0 error**,
+compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes / 0 gagal / 0 error**,
       termasuk `ConsistencyCheckEngineTest` (8); suite `*IT` dikompilasi, dijalankan di Docker di CI. Branch
       `t17-consistency-check-job`, **ter-merge ke `main` via PR #12**.
+
+- [x] T27a — Gerbang CI minimal: `./gradlew check` (Sprint 6 prerequisite, CR-15 bagian minimal). Job `test`
+      di `.github/workflows/ci.yml` kini menjalankan `./gradlew check --no-daemon` (sebelumnya
+      `./gradlew test`), sehingga gerbang kualitas penuh berjalan di setiap PR dan push ke `main`. Risiko
+      "plugin tak terkonfigurasi menggagalkan build" nihil untuk build ini: `build.gradle.kts` hanya memakai
+      plugin `java`, `org.springframework.boot`, `io.spring.dependency-management`, dan `org.sonarqube`. Untuk
+      plugin `java`, `check` bergantung pada `test`; plugin `sonarqube` menambah task `sonar` yang berdiri
+      sendiri dan **tidak** terpasang ke `check`, jadi `check` tak pernah menghubungi host Sonar
+      `localhost:9000`; tak ada Checkstyle/PMD/SpotBugs. Jadi `check` di build ini setara `test` plus siklus
+      verifikasi `java` yang no-op — tanpa task gagal baru. Di luar scope (→ T27): scan kerentanan dependensi,
+      scan secret, dan gerbang runtime `docker compose up` → `/actuator/health` → `/v3/api-docs` → `down`.
+      **Verifikasi (Docker TIDAK tersedia di environment ini):** `./gradlew check --dry-run` mengonfigurasi
+      build dan menyusun graf task tanpa error; `check` penuh dengan suite `*IT` dijalankan di CI (yang punya
+      Docker). Tanpa perubahan kode aplikasi. Branch `t27a-ci-check-gate`, PR menyusul.
