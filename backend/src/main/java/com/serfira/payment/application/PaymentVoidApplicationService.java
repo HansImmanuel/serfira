@@ -37,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -131,9 +132,20 @@ public class PaymentVoidApplicationService {
 				.orElseThrow(() -> new PaymentNotFoundException(paymentId));
 		List<PaymentAllocation> paymentAllocations = allocations.findByPaymentId(paymentId);
 
+		// 0. The durable single-use-forever void-key check runs BEFORE the already-VOIDED early return (T31,
+		//    PR #16 finding 1, ADR-017/ADR-020 D3). Once the T18 cleanup deletes the claim row, this table is
+		//    the only authority that a spent key may not void a DIFFERENT payment — and that must hold even
+		//    when the requested payment happens to be VOIDED already, where the old order short-circuited the
+		//    check and wrongly returned a 200 no-op. recordDurableVoidKey distinguishes a replay of THIS
+		//    payment's own void (allow, no second row) from a reused key mapping to a different payment
+		//    (409 IDEMPOTENCY_KEY_EXPIRED). It records a fresh key even on the no-op path below, so a
+		//    legitimate void of an already-VOIDED payment stays protected after its claim is later removed.
+		recordDurableVoidKey(VOID_ENDPOINT, idempotencyKey, paymentId);
+
 		if (payment.getStatus() == PaymentStatus.VOIDED) {
-			// Already voided (e.g. a non-idempotent re-void, or a replay whose stored response is gone): the
-			// reversal has already happened, so return the current representation without reversing twice.
+			// Already voided (e.g. a replay whose stored response is gone, or a fresh key on an
+			// already-VOIDED payment): the reversal has already happened, so return the current
+			// representation without reversing twice. The durable key is already recorded above.
 			LOGGER.info("Payment {} is already VOIDED; void is a no-op", payment.getPaymentNo());
 			return PaymentResponse.fromVoided(payment, paymentAllocations);
 		}
@@ -145,13 +157,6 @@ public class PaymentVoidApplicationService {
 		assertVoidable(payment, contractId, affectedInstallmentIds);
 
 		OffsetDateTime voidedAt = clock.now();
-
-		// 0. Record the durable single-use-forever void-key association inside this transaction (T31, ADR-020
-		//    D3/D6). A reused key that already voided another payment violates uq_payment_void_idempotency and
-		//    is surfaced as an expired-key rejection — the authority once the T18 cleanup deletes the claim
-		//    row. Flush now so the violation is raised here (before any ledger work) and the whole void rolls
-		//    back, writing nothing.
-		recordDurableVoidKey(VOID_ENDPOINT, idempotencyKey, paymentId);
 
 		// 1. Flip POSTED -> VOIDED and flush, so the recompute's "remaining POSTED" query already excludes
 		//    this payment's allocations.
@@ -178,13 +183,37 @@ public class PaymentVoidApplicationService {
 	}
 
 	/**
-	 * Writes the durable void-key → voided-payment association and flushes, so a reused key that already
-	 * voided a different payment fails here on {@code uq_payment_void_idempotency} (V22) before any ledger
-	 * work. The violation is translated to {@link IdempotencyKeyExpiredException} (409
-	 * {@code IDEMPOTENCY_KEY_EXPIRED}, ADR-017/ADR-020 D3) — the spent-key semantics the create path's
-	 * {@code uq_payment_idempotency} already uses — rather than surfacing a raw 500.
+	 * Records (or recognizes) the durable void-key → voided-payment association, the single-use-forever
+	 * authority once the T18 cleanup deletes the {@code idempotency_keys} claim row (T31, ADR-017/ADR-020
+	 * D3/D6). The decision (PR #16 finding 1):
+	 * <ul>
+	 *   <li>a committed row already maps this key to <b>this</b> payment → a replay of its own original
+	 *       void: allow, insert nothing (re-inserting the identical row would wrongly trip the UNIQUE
+	 *       constraint and 409 a legitimate retry);</li>
+	 *   <li>a committed row maps this key to a <b>different</b> payment → the key is spent:
+	 *       {@link IdempotencyKeyExpiredException} (409 {@code IDEMPOTENCY_KEY_EXPIRED});</li>
+	 *   <li>no committed row → insert one and flush, so a racing reuse that maps the key to a different
+	 *       payment fails on {@code uq_payment_void_idempotency} (V22) before any ledger work and is
+	 *       translated to the same expired-key rejection — the DB UNIQUE constraint, not this read, is the
+	 *       concurrency-safe authority.</li>
+	 * </ul>
+	 * The explicit read handles the already-VOIDED same-payment replay deterministically; the flush-and-
+	 * translate handles the concurrent-reuse race. Both surface the spent-key semantics the create path's
+	 * {@code uq_payment_idempotency} already uses, rather than a raw 500.
 	 */
 	private void recordDurableVoidKey(String endpoint, String idempotencyKey, UUID paymentId) {
+		Optional<PaymentVoidIdempotency> existing =
+				voidIdempotency.findByEndpointAndIdempotencyKey(endpoint, idempotencyKey);
+		if (existing.isPresent()) {
+			if (existing.get().getPaymentId().equals(paymentId)) {
+				// Replay of this payment's own void: the association already exists, do not duplicate it.
+				return;
+			}
+			LOGGER.warn("payment void rejected by {}: key already voided a different payment",
+					VOID_IDEMPOTENCY_CONSTRAINT);
+			throw new IdempotencyKeyExpiredException(
+					"Idempotency-Key was already used for a payment void request");
+		}
 		try {
 			voidIdempotency.saveAndFlush(new PaymentVoidIdempotency(endpoint, idempotencyKey, paymentId));
 		} catch (DataIntegrityViolationException ex) {

@@ -30,6 +30,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -158,6 +159,41 @@ class PaymentVoidIT {
 		// The installment is recomputed from the remaining POSTED payments (now none): back to PENDING, 0 paid.
 		assertThat(installmentStatusOf(1)).isEqualTo("PENDING");
 		assertThat(paidAmountOf(1)).isEqualByComparingTo("0.00");
+	}
+
+	@Test
+	void repayingAnInstallmentAfterVoidingItsPaymentSucceeds() throws Exception {
+		// The voided payment's INTEREST/PRINCIPAL allocation rows remain immutable in the table, but a VOIDED
+		// payment must not count against the per-installment caps (ADR-020, ADR-021, V23) — otherwise the V3
+		// cap trigger would sum voided + fresh allocations and 500 at COMMIT. A dedicated penalty-path case is
+		// skipped deliberately (PaymentVoidIT has no overdue/penalty fixture and building accrued penalty +
+		// a waiver needs heavy scaffolding): the penalty cap's status filter is the same V23 change and is
+		// exercised by the shared assert_penalty_adjustment_cap() plus VoidIdempotencyKeyDurabilityIT.
+		UUID firstPaymentId = postedPayment("full-period-1", PERIOD_TOTAL);
+		assertThat(installmentStatusOf(1)).isEqualTo("PAID");
+
+		assertThat(voidPayment(firstPaymentId, "void-full-period-1", "{}")
+				.getResponse().getStatus()).isEqualTo(200);
+		assertThat(installmentStatusOf(1)).isEqualTo("PENDING");
+		assertThat(paidAmountOf(1)).isEqualByComparingTo("0.00");
+
+		// Re-pay the SAME installment in full. Before V23 this 500s: 240,000 (voided INTEREST) +
+		// 240,000 (fresh INTEREST) = 480,000 > recognized 240,000 trips the deferred cap trigger.
+		MvcResult repay = mockMvc.perform(post("/api/v1/payments")
+						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", "repay-after-void")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"contract_id\":\"" + contractId + "\",\"amount\":" + PERIOD_TOTAL
+								+ ",\"channel\":\"CASH\"}"))
+				.andReturn();
+
+		assertThat(repay.getResponse().getStatus()).isEqualTo(201);
+		assertThat(installmentStatusOf(1)).isEqualTo("PAID");
+		assertThat(paidAmountOf(1)).isEqualByComparingTo(PERIOD_TOTAL);
+		// Exactly one reversal entry from the void; the re-pay posts its own (non-reversal) PAYMENT.
+		assertThat(jdbc.queryForObject(
+				"select count(*) from journal_entry where ref_id = ? and reversal_of_id is not null",
+				Long.class, firstPaymentId)).isEqualTo(1L);
 	}
 
 	@Test
@@ -418,15 +454,20 @@ class PaymentVoidIT {
 
 	/** Pays each installment in full, walking the clock to each due date, until the contract matures. */
 	private void payEveryInstallmentToMaturity() throws Exception {
-		List<LocalDate> dueDates = jdbc.queryForList(
-				"select due_date from installment where contract_id = ? order by period_no", LocalDate.class,
-				contractId);
+		// Pay each installment's own recognized total (principal + scheduled interest), read from the row,
+		// so the final period's residual-absorbing principal (1,333,333.37, DM §4) is paid in full rather
+		// than underpaid by a flat PERIOD_TOTAL. Each payment bills its own due interest first, so the full
+		// period amount resolves and the final payment leaves every installment PAID (maturity close,
+		// invariant 17).
+		List<Map<String, Object>> schedule = jdbc.queryForList(
+				"select due_date, principal_amount, interest_amount from installment where contract_id = ? "
+						+ "order by period_no", contractId);
 		int period = 1;
-		for (LocalDate dueDate : dueDates) {
-			fixedClock().setDate(dueDate);
-			// Pay the full recognized total for the period (billed interest + principal). Each payment bills
-			// its own due interest first, so the full period amount resolves.
-			postedPayment("maturity-pay-" + period, PERIOD_TOTAL);
+		for (Map<String, Object> row : schedule) {
+			fixedClock().setDate(((java.sql.Date) row.get("due_date")).toLocalDate());
+			BigDecimal periodTotal = ((BigDecimal) row.get("principal_amount"))
+					.add((BigDecimal) row.get("interest_amount"));
+			postedPayment("maturity-pay-" + period, periodTotal.toPlainString());
 			period++;
 		}
 	}

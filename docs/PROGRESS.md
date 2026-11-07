@@ -432,3 +432,64 @@ compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes /
       Docker) → BUILD SUCCESSFUL. **Tidak dijalankan lokal:** suite `*IT` — `VoidIdempotencyKeyDurabilityIT`
       baru dan `PaymentVoidIT` yang ada — dikompilasi tetapi butuh Docker/Testcontainers; CI adalah gerbangnya
       sebelum merge. Branch `t31-durable-void-idempotency-key`, PR menyusul. Menutup Sprint 6.
+
+  - **Perbaikan review PR #16 (2026-11-05, branch `t31-pr16-review-fixes`):** lima temuan ditangani.
+    (1, HIGH) pengecekan void-key durable kini **sebelum** early-return "sudah VOIDED", sehingga kunci spent
+    yang dipakai ulang untuk pembayaran **berbeda** yang sudah VOIDED tetap 409 `IDEMPOTENCY_KEY_EXPIRED`
+    (bukan no-op 200 palsu); `recordDurableVoidKey` membedakan replay pembayaran yang sama (izinkan, tanpa
+    baris/reversal kedua) dari pemetaan ke pembayaran berbeda (tolak), dengan constraint UNIQUE DB tetap
+    otoritas balapan. (2, MED) endpoint void ditambahkan ke allow-list `deleteExpiredBatch` agar klaim void
+    kedaluwarsa dibersihkan (write-off tetap dikecualikan). (3, MED) backfill V22 join pada id pembayaran
+    **top-level** (`response_json::jsonb ->> 'id'`), bukan substring `LIKE`, plus preflight menolak klaim
+    tanpa id top-level. (4, LOW) backfill membawa `created_by` asli. (5, MED) trigger
+    `trg_payment_void_idempotency_immutable` memblokir UPDATE/DELETE baris (INSERT & TRUNCATE tetap jalan).
+    IT baru/diubah: pakai-ulang ke pembayaran berbeda yang sudah VOIDED → 409; kunci no-op segar tetap
+    terlindungi setelah cleanup; job cleanup nyata menghapus klaim void kedaluwarsa sementara baris durable
+    menjaga kunci tetap spent. **Verifikasi (Docker TIDAK tersedia):** `.\gradlew compileJava
+    compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` → BUILD SUCCESSFUL (468 unit, 0
+    gagal). Suite `*IT` tidak dijalankan lokal (butuh Docker); CI gerbangnya.
+
+  - **Koreksi invarian DB void-vs-caps (2026-11-05, branch `t31-pr16-review-fixes`):** menjalankan suite
+    `*IT` T31 dengan Docker untuk pertama kalinya mengungkap bug laten yang mendahului T31. Trigger cap V3
+    `assert_payment_allocation_component_caps()` dan V16 `assert_penalty_adjustment_cap()` menjumlahkan
+    baris `payment_allocation` **tanpa** filter status pembayaran pemiliknya (komentar V16 bahkan mengklaim
+    setara port aplikasi POSTED-only "karena void itu T16" — kini salah setelah void/ADR-020 aktif).
+    Baris alokasi pembayaran VOIDED yang immutable tetap dihitung terhadap cap per-installment, sehingga
+    membayar ulang installment yang pembayaran sebelumnya di-void memicu trigger deferred saat COMMIT → HTTP
+    500 (`VoidIdempotencyKeyDurabilityIT`). Diperbaiki migrasi forward-only **V23**
+    (`V23__void_excludes_allocations_from_caps.sql`): kedua fungsi `CREATE OR REPLACE`, join
+    `payment_allocation → payment` dan hanya hitung alokasi `status = 'POSTED'` — identik secara numerik
+    dengan `sumActiveByInstallmentIds(PaymentStatus.POSTED, ...)`; trigger DEFERRABLE tetap terpasang,
+    V3/V16 tak diubah. Regresi baru `PaymentVoidIT.repayingAnInstallmentAfterVoidingItsPaymentSucceeds`
+    (bayar → void → bayar ulang installment yang sama penuh); ADR-021 mencatat keputusannya.
+    **Verifikasi (Docker tersedia):** `.\gradlew test --tests "*VoidIdempotencyKeyDurabilityIT" --tests
+    "*PaymentVoidIT" --tests "*PenaltyAdjustment*" --tests "*PaymentApiIT"` → BUILD SUCCESSFUL (46 tes, 0
+    gagal; IT void termasuk repro 500 lama kini hijau). `.\gradlew test` penuh → 848 tes, 6 gagal — keenam
+    gagal **sudah ada sebelumnya & tak terkait V23** (dikonfirmasi merah identik di ujung branch bersih
+    dengan perubahan ini di-stash): `BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey`
+    (premis usang vs kunci sekali-pakai-selamanya V18/ADR-020 D3) dan `ConsistencyCheckIT` (4) +
+    `DailyServicingJobIT` (1) yang fixture-nya memicu backstop sisi-induk V12 /
+    `ck_contract_terminated_coherence`. Ini IT "merged sebelum dites" (V12/T25 sudah aktif saat T17/PR #12
+    menambah tes-tes itu). Diselaraskan di commit terpisah (lihat butir berikut), bukan bagian dari
+    perubahan V23.
+
+  - **Penyelarasan IT usang dengan invarian V12/V18 (2026-11-05, commit terpisah di
+    `t31-pr16-review-fixes`):** keenam IT yang gagal di atas adalah ekspektasi TES yang usang terhadap
+    perilaku yang sudah di-merge & diputuskan — bukan perubahan produksi. Hanya kode/fixture tes yang
+    diubah; V12, mesin consistency-check, dan kode produksi lain tak disentuh.
+    (1) `BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey` kini menegaskan kunci TETAP
+    ditolak setelah void (V18/ADR-020 D3, sekali-pakai-selamanya lintas semua status).
+    (2) `ConsistencyCheckIT` entry receivable-nyasar (check C) + 2 barisnya kini di-insert dalam SATU CTE
+    (backstop sisi-induk V12 `assert_journal_entry_has_balanced_lines` berjalan saat COMMIT).
+    (3) `DailyServicingJobIT.terminateForFixture` kini mengisi `write_off_recorded_by` (V20/T19
+    memperketat `ck_contract_terminated_coherence`).
+    (4–6) tiga kasus drift `ConsistencyCheckIT` yang memakai pembayaran tanpa alokasi dipersempit ke drift
+    **check A saja** (pembayaran DENGAN alokasi EXCESS valid tetapi TANPA jurnal KAS). **Temuan penting:**
+    kondisi drift check B (Σ alokasi ≠ `payment.amount`) **tak bisa dipanggungkan end-to-end** karena
+    backstop DEFERRABLE V12 `assert_payment_has_allocations()` menolak saat COMMIT setiap pembayaran yang
+    alokasinya ≠ jumlahnya ("termasuk nol") — jadi pembayaran POSTED tanpa/kurang-alokasi tak bisa ada di
+    DB. Check B adalah guard defense-in-depth yang divalidasi di level mesin
+    (`ConsistencyCheckEngineTest.allocationDriftIsFlaggedWhenAllocationsDoNotSumToThePayment`), bukan
+    end-to-end. Rekonsiliasi backstop V12 vs desain IT check-A/B dicatat sebagai tindak lanjut terpisah di
+    `tasks.md` (tidak diimplementasikan di sini). **Verifikasi (Docker):** `.\gradlew test` → 848 tes, 0
+    gagal; `.\gradlew check` → BUILD SUCCESSFUL.

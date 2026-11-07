@@ -97,23 +97,30 @@ class ConsistencyCheckIT {
 	}
 
 	@Test
-	void aPaymentWithoutCashOrAllocationsIsFlaggedByChecksAandBWithoutMutation() {
+	void aPaymentWithoutItsCashJournalIsFlaggedByCheckAWithoutMutation() {
 		UUID contractId = createActiveContract(3, LocalDate.of(2026, 1, 31));
-		// Corrupted fixture: a POSTED payment recorded with no cash journal and no allocations — the real
-		// write path cannot produce this (it posts a KAS journal and allocations atomically). It drifts
-		// check A (payment 750,000 vs KAS 0) and check B (payment 750,000 vs allocation 0).
-		insertBarePayment(contractId, new BigDecimal("750000.00"));
+		// Corrupted fixture: a POSTED payment recorded WITHOUT its KAS cash journal. The real write path
+		// posts the KAS journal and the allocations atomically; here the allocations are present (so the
+		// payment is committable and check B balances) but the KAS cash entry is missing, so only check A
+		// drifts (payment 750,000 vs KAS 0).
+		//
+		// Check B's drift condition (Σ allocations != payment.amount) is structurally impossible to stage
+		// end-to-end: V12's DEFERRABLE assert_payment_has_allocations() rejects at COMMIT any payment whose
+		// allocations do not sum to its amount ("zero included"), so a zero-allocation or under-allocated
+		// POSTED payment cannot exist in the DB. Check B is therefore validated at the engine level
+		// (ConsistencyCheckEngineTest), not end-to-end here. See docs/PROGRESS.md and the tasks.md backlog
+		// row for the V12-vs-check-B follow-up.
+		insertPaymentMissingCashJournal(contractId, new BigDecimal("750000.00"));
 
 		job.run(BUSINESS_DATE);
 
 		// The contract is still checked (processed) but failed a reconciliation, so the row is FAILED.
 		assertConsistencyRun(1, 1, "FAILED");
-		assertThat(reconciliationExceptionCount()).isEqualTo(2L);
+		assertThat(reconciliationExceptionCount()).isEqualTo(1L);
 		assertException(contractId, "PAYMENT_CASH", "750000.00", "0.00", "750000.00");
-		assertException(contractId, "ALLOCATION_PAYMENT", "750000.00", "0.00", "750000.00");
-		// "Report, do not fix": the stray payment row is untouched, no journal/allocation created.
+		// "Report, do not fix": the stray payment and its allocation are untouched, no KAS journal created.
 		assertThat(postedPaymentCount(contractId)).isEqualTo(1L);
-		assertThat(allocationCount(contractId)).isZero();
+		assertThat(allocationCount(contractId)).isEqualTo(1L);
 		assertThat(paymentJournalCount(contractId)).isZero();
 	}
 
@@ -141,32 +148,36 @@ class ConsistencyCheckIT {
 	void driftOnOneContractDoesNotStopOrFlagACleanContract() {
 		UUID clean = createActiveContract(5, LocalDate.of(2026, 3, 1));
 		UUID drifted = createActiveContract(6, LocalDate.of(2026, 1, 31));
-		insertBarePayment(drifted, new BigDecimal("100000.00"));
+		// A-only drift (missing KAS journal; see aPaymentWithoutItsCashJournalIsFlaggedByCheckAWithoutMutation
+		// for why check B cannot be staged under V12). This test proves per-contract isolation: one drifted
+		// contract must not stop or flag a clean one.
+		insertPaymentMissingCashJournal(drifted, new BigDecimal("100000.00"));
 
 		job.run(BUSINESS_DATE);
 
 		// Two contracts checked; one drifted. One job_run row, processed=2, failed=1 → FAILED (A-9).
 		assertConsistencyRun(2, 1, "FAILED");
 		assertThat(reconciliationExceptionCountFor(clean)).isZero();
-		assertThat(reconciliationExceptionCountFor(drifted)).isEqualTo(2L);
+		assertThat(reconciliationExceptionCountFor(drifted)).isEqualTo(1L);
 	}
 
 	@Test
 	void rerunningTheSameDateDoesNotDuplicateAnOpenException() {
 		UUID contractId = createActiveContract(8, LocalDate.of(2026, 1, 31));
-		// Drifts checks A and B, so the first run records exactly two OPEN rows.
-		insertBarePayment(contractId, new BigDecimal("750000.00"));
+		// A-only drift (missing KAS journal; check B is unstageable under V12 — see
+		// aPaymentWithoutItsCashJournalIsFlaggedByCheckAWithoutMutation). The first run records exactly one
+		// OPEN row (check A).
+		insertPaymentMissingCashJournal(contractId, new BigDecimal("750000.00"));
 
 		job.run(BUSINESS_DATE);
-		assertThat(reconciliationExceptionCount()).isEqualTo(2L);
+		assertThat(reconciliationExceptionCount()).isEqualTo(1L);
 
 		// A same-date re-run of a still-drifting contract (a supported workflow) must not add a second OPEN
 		// row for the same (contract, date, check): recording is idempotent per that key (PR #12 review).
 		job.run(BUSINESS_DATE);
 
-		assertThat(reconciliationExceptionCount()).isEqualTo(2L);
+		assertThat(reconciliationExceptionCount()).isEqualTo(1L);
 		assertException(contractId, "PAYMENT_CASH", "750000.00", "0.00", "750000.00");
-		assertException(contractId, "ALLOCATION_PAYMENT", "750000.00", "0.00", "750000.00");
 	}
 
 	@Test
@@ -194,37 +205,61 @@ class ConsistencyCheckIT {
 		return draft.id();
 	}
 
-	private void insertBarePayment(UUID contractId, BigDecimal amount) {
+	/**
+	 * Inserts a POSTED payment WITHOUT its KAS cash journal, so only consistency check A
+	 * ({@code payment vs KAS}) drifts. The payment carries a single EXCESS allocation summing to its amount
+	 * so V12's {@code assert_payment_has_allocations()} deferred backstop is satisfied (a zero-allocation
+	 * payment is uncommittable); EXCESS carries no installment and no component cap. The payment and its
+	 * allocation are inserted in ONE data-modifying CTE because the backstop fires at COMMIT and
+	 * JdbcTemplate auto-commits each statement.
+	 */
+	private void insertPaymentMissingCashJournal(UUID contractId, BigDecimal amount) {
 		jdbc.update("""
-				insert into payment (id, payment_no, contract_id, amount, channel, paid_at, status,
-					idempotency_key, version, created_at, created_by, updated_at, updated_by)
-				values (gen_random_uuid(), ?, ?, ?, 'CASH', clock_timestamp(), 'POSTED', ?, 0,
-					clock_timestamp(), ?, clock_timestamp(), ?)
+				with p as (
+					insert into payment (id, payment_no, contract_id, amount, channel, paid_at, status,
+						idempotency_key, version, created_at, created_by, updated_at, updated_by)
+					values (gen_random_uuid(), ?, ?, ?, 'CASH', clock_timestamp(), 'POSTED', ?, 0,
+						clock_timestamp(), ?, clock_timestamp(), ?)
+					returning id
+				)
+				insert into payment_allocation (id, payment_id, installment_id, allocation_type, amount,
+					created_at, created_by, updated_at, updated_by)
+				select gen_random_uuid(), p.id, null, 'EXCESS', ?, clock_timestamp(), ?, clock_timestamp(), ?
+				from p
 				""", "PAY-TEST-" + UUID.randomUUID().toString().substring(0, 8), contractId, amount,
-				"stray-" + UUID.randomUUID(), AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID);
+				"stray-" + UUID.randomUUID(), AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID,
+				amount, AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID);
 	}
 
 	private void insertStrayReceivableEntry(UUID contractId, BigDecimal amount) {
+		// The entry and its two balanced lines must be inserted in ONE statement (a data-modifying CTE):
+		// the V12 parent-side deferred backstop assert_journal_entry_has_balanced_lines() fires at COMMIT,
+		// and JdbcTemplate auto-commits each statement, so inserting the entry on its own would trip the
+		// "≥ 2 balanced lines" check before the lines exist. The resulting entry is balanced
+		// (Dr PIUTANG_POKOK / Cr PENDAPATAN_BUNGA) and so passes V3/V12 balance; it is "drift" only relative
+		// to the installment schedule, which is exactly what consistency check C targets.
 		UUID entryId = UUID.randomUUID();
 		jdbc.update("""
-				insert into journal_entry (id, entry_date, ref_type, ref_id, description, posted_at,
-					created_at, created_by, updated_at, updated_by)
-				values (?, clock_timestamp(), 'BILLING', gen_random_uuid(), 'stray test entry', clock_timestamp(),
-					clock_timestamp(), ?, clock_timestamp(), ?)
-				""", entryId, AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID);
-		insertStrayLine(entryId, "PIUTANG_POKOK", amount, BigDecimal.ZERO, contractId);
-		insertStrayLine(entryId, "PENDAPATAN_BUNGA", BigDecimal.ZERO, amount, contractId);
-	}
-
-	private void insertStrayLine(UUID entryId, String account, BigDecimal debit, BigDecimal credit,
-			UUID contractId) {
-		jdbc.update("""
+				with e as (
+					insert into journal_entry (id, entry_date, ref_type, ref_id, description, posted_at,
+						created_at, created_by, updated_at, updated_by)
+					values (?, clock_timestamp(), 'BILLING', gen_random_uuid(), 'stray test entry', clock_timestamp(),
+						clock_timestamp(), ?, clock_timestamp(), ?)
+					returning id
+				), l1 as (
+					insert into journal_line (id, journal_entry_id, entry_date, account_code, debit, credit,
+						contract_id, created_at, created_by, updated_at, updated_by)
+					select gen_random_uuid(), e.id, clock_timestamp(), 'PIUTANG_POKOK', ?, 0, ?,
+						clock_timestamp(), ?, clock_timestamp(), ? from e
+					returning journal_entry_id
+				)
 				insert into journal_line (id, journal_entry_id, entry_date, account_code, debit, credit,
 					contract_id, created_at, created_by, updated_at, updated_by)
-				values (gen_random_uuid(), ?, clock_timestamp(), ?, ?, ?, ?,
-					clock_timestamp(), ?, clock_timestamp(), ?)
-				""", entryId, account, debit, credit, contractId,
-				AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID);
+				select gen_random_uuid(), e.id, clock_timestamp(), 'PENDAPATAN_BUNGA', 0, ?, ?,
+					clock_timestamp(), ?, clock_timestamp(), ? from e
+				""", entryId, AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID,
+				amount, contractId, AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID,
+				amount, contractId, AuditContext.SYSTEM_USER_ID, AuditContext.SYSTEM_USER_ID);
 	}
 
 	private BigDecimal receivableResidualFromSchedule(UUID contractId) {

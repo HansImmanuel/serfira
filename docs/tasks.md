@@ -35,7 +35,8 @@ Sprint 6. T20, T27 and T21 move to Sprint 6b.
   backstops; V18 all-status `uq_payment_idempotency`; V19 `reconciliation_exception` OPEN uniqueness (T17);
   V20 write-off requires `write_off_recorded_by` (T19); V21 `idx_idempotency_keys_expires_at` for the T18
   cleanup job's keyset delete; V22 `payment_void_idempotency` durable void-key backstop
-  (`uq_payment_void_idempotency`, T31). (T19's migration was authored as V19 on its branch;
+  (`uq_payment_void_idempotency`, T31); V23 `void_excludes_allocations_from_caps` (both cap triggers
+  count POSTED allocations only, T31/ADR-021). (T19's migration was authored as V19 on its branch;
   because T17's V19 merged first, T19 renumbered forward-only to V20 at merge.)
 - Daily servicing (T3, hardened T26, extended T17): one renewable ShedLock for cron + backfill; every
   ACTIVE contract processed atomically **billing → penalty → aging → consistency-check**, with backoff
@@ -273,6 +274,68 @@ suites) → BUILD SUCCESSFUL. The `*IT` suite — including `VoidIdempotencyKeyD
 for it (per the tech-steering no-Docker fallback). No change to the void's business behaviour beyond the new
 durable backstop; closes ADR-020 "Deferred finding #5".
 
+**PR #16 review fixes (2026-11-05).** Five review findings addressed on branch `t31-pr16-review-fixes`.
+(1, HIGH) The durable void-key check now runs **before** the already-VOIDED early return in
+`reverse(...)`, so a spent key reused against a _different_ payment that is already VOIDED is correctly
+409 `IDEMPOTENCY_KEY_EXPIRED` instead of a false 200 no-op. `recordDurableVoidKey` now reads
+`PaymentVoidIdempotencyRepository.findByEndpointAndIdempotencyKey` to distinguish "this key already maps
+to **this** payment" (replay: allow, no second row/reversal) from "maps to a **different** payment"
+(reject); a fresh key on an already-VOIDED payment still records its durable row, and the DB UNIQUE
+constraint remains the concurrency-safe authority for the race. (2, MED) Now that every successful void
+has durable protection, `POST /api/v1/payments/{id}/void` was added to the `deleteExpiredBatch`
+allow-list so expired void claims are cleaned up (write-off still excluded — no backstop yet); Javadoc
+updated. (3, MED) The V22 backfill joins on the **top-level** payment id extracted from the stored
+response (`response_json::jsonb ->> 'id'`, the bare `PaymentResponse` serialized before the envelope
+wrap) instead of a `LIKE '%id%'` substring that could match an embedded id and map one claim to several
+payments; the preflight now also fails on a void claim whose response has no extractable top-level id.
+(4, LOW) The backfill carries `k.created_by` into `payment_void_idempotency.created_by`, keeping the
+original actor. (5, MED) A `trg_payment_void_idempotency_immutable` `BEFORE UPDATE OR DELETE` trigger on
+`block_modification()` makes the append-only table reject native UPDATE/DELETE, matching the other
+immutable tables (INSERT and statement-level TRUNCATE still work). New IT cases: a reused key against a
+different **already-VOIDED** payment → 409 writing nothing; a fresh no-op key on a VOIDED payment stays
+protected after cleanup (`VoidIdempotencyKeyDurabilityIT`); and the real cleanup job deletes an expired
+void claim while the durable row keeps the key spent (`IdempotencyCleanupIT`, retention test updated to
+assert void **is** now deleted and write-off retained). **Verification (no Docker in this environment):**
+`.\gradlew compileJava compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` → BUILD
+SUCCESSFUL (468 unit tests, 0 failures). The `*IT` suites (`VoidIdempotencyKeyDurabilityIT`,
+`IdempotencyCleanupIT`, `PaymentVoidIT`) were **NOT run locally** — Docker/Testcontainers unavailable;
+CI is the gate.
+
+**Void-vs-caps DB-invariant correction (2026-11-05, branch `t31-pr16-review-fixes`).** Running the T31
+`*IT` suites with Docker for the first time surfaced a latent bug predating T31: the V3
+`assert_payment_allocation_component_caps()` and V16 `assert_penalty_adjustment_cap()` cap triggers
+summed `payment_allocation` rows with **no** owning-payment status filter. V16's comment even claimed
+parity with the POSTED-only application port "because void is T16" — false now that void (ADR-020) is
+live. A VOIDED payment's immutable allocation rows still counted against the per-installment caps, so a
+legitimate re-pay of an installment whose earlier payment was voided tripped the deferred trigger at
+COMMIT → HTTP 500 (`VoidIdempotencyKeyDurabilityIT.aFreshVoidKeyOnAnAlreadyVoidedPaymentStaysProtectedAfterCleanup`).
+Fixed by new forward-only migration **V23** (`V23__void_excludes_allocations_from_caps.sql`): both
+functions `CREATE OR REPLACE`d to join `payment_allocation → payment` and count only `status = 'POSTED'`
+rows, numerically identical to `sumActiveByInstallmentIds(PaymentStatus.POSTED, ...)`; the existing
+DEFERRABLE triggers stay wired, V3/V16 untouched. `assert_payment_allocation_totals()` (per-payment Σ =
+amount) is correct for voided payments and left alone. New `PaymentVoidIT` regression
+`repayingAnInstallmentAfterVoidingItsPaymentSucceeds` (pay → void → re-pay the same installment in full);
+ADR-021 records the decision and the ADR-020 cross-reference. **Verification (Docker available):**
+`.\gradlew test --tests "*VoidIdempotencyKeyDurabilityIT" --tests "*PaymentVoidIT" --tests "*PenaltyAdjustment*" --tests "*PaymentApiIT"` → BUILD SUCCESSFUL (46 tests, 0 failed;
+the void ITs including the former 500 repro now pass). A full-suite run then surfaced 6 **pre-existing**
+IT failures unrelated to V23 (confirmed identical red on the clean branch tip with this change stashed):
+`BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey` (stale premise vs V18/ADR-020 D3
+single-use-forever key) and `ConsistencyCheckIT` (4) + `DailyServicingJobIT` (1) whose bare fixtures trip
+the V12 parent-side backstops / `ck_contract_terminated_coherence`. These "merged before tested" ITs were
+realigned to current invariants in a **separate commit** (test-only; see below), after which full
+`.\gradlew test` → 848 tests, 0 failed and `.\gradlew check` → BUILD SUCCESSFUL.
+
+**Stale-IT realignment (2026-11-05, separate commit, test-only).** The 6 pre-existing failures were stale
+TEST expectations, not production bugs; only test code/fixtures changed (V12, the consistency-check engine
+and all production code untouched). `BaselineSchemaIT` now asserts the voided idempotency key stays
+rejected; `ConsistencyCheckIT`'s stray-receivable fixture inserts entry + 2 lines in one CTE;
+`DailyServicingJobIT.terminateForFixture` sets `write_off_recorded_by`. The three `ConsistencyCheckIT`
+drift cases that used a zero-allocation payment were narrowed to **check-A-only** drift (a payment WITH a
+valid EXCESS allocation but WITHOUT its KAS journal). **Finding:** consistency check B's drift condition
+(Σ allocations ≠ `payment.amount`) is **unstageable end-to-end** because V12's DEFERRABLE
+`assert_payment_has_allocations()` rejects any such payment at COMMIT; check B is defense-in-depth,
+validated at the engine level (`ConsistencyCheckEngineTest`), not end-to-end. Logged as a follow-up below.
+
 ---
 
 ## Future / Deferred Work
@@ -297,6 +360,7 @@ durable backstop; closes ADR-020 "Deferred finding #5".
 | Rate limiting, security headers, CORS policy                                                | No browser client or public deployment yet. Revisit with G2.                     |
 | Remove the unused Lombok dependency. Move the Sonar host out of `gradle-wrapper.properties` | Hygiene only. The Sonar change is uncommitted local work owned by the developer. |
 | Envelope-rendering `ErrorController` for container-level errors                             | Boot's default JSON leaks no internals. Low value until a browser client exists. |
+| Reconcile the V12 `assert_payment_has_allocations` backstop vs consistency check B's end-to-end IT | V12 (DEFERRABLE, rejects Σallocations≠amount at COMMIT, "zero included") makes check B's drift unstageable in the DB, so `ConsistencyCheckIT` only exercises check A; check B is covered at the engine level (`ConsistencyCheckEngineTest`). Decide whether check B needs an end-to-end guard given V12 already forecloses its drift, or document it as engine-only by design. Test-only follow-up; no production change implied. |
 | Fix TS §7 repo structure (X-9)                                                              | Documentation only.                                                              |
 | Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | Deployment concern. No deployment exists yet.                                    |
 

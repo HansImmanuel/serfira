@@ -162,7 +162,7 @@ class BaselineSchemaIT {
 				""";
 		jdbc.update(firstPayment);
 
-		// same key while both are POSTED → rejected by the partial unique index
+		// same key while both are POSTED → rejected by the all-status unique index (V18, ADR-020 D3)
 		assertThatThrownBy(() -> jdbc.update(firstPayment
 				.replace("'PAY-X-0001'", "'PAY-X-0002'")
 				.replace("repeat('a', 64)", "repeat('b', 64)")
@@ -170,14 +170,17 @@ class BaselineSchemaIT {
 				.replace("'MF-TEST-0001'", "'MF-TEST-0002'")))
 				.isInstanceOf(DataAccessException.class);
 
-		// voiding the first payment frees the key for a retry
+		// Voiding the first payment does NOT free the key: V18 widened uq_payment_idempotency to be unique
+		// across ALL payment statuses (ADR-020 D3, single-use-forever), so a VOIDED payment still occupies
+		// the key and a retry with the same key is rejected.
 		jdbc.update("update payment set status = 'VOIDED', voided_at = clock_timestamp(), "
 				+ "void_reason = 'test' where payment_no = 'PAY-X-0001'");
-		jdbc.update(firstPayment
+		assertThatThrownBy(() -> jdbc.update(firstPayment
 				.replace("'PAY-X-0001'", "'PAY-X-0002'")
 				.replace("repeat('a', 64)", "repeat('b', 64)")
 				.replace("repeat('p', 64)", "repeat('q', 64)")
-				.replace("'MF-TEST-0001'", "'MF-TEST-0002'"));
+				.replace("'MF-TEST-0001'", "'MF-TEST-0002'")))
+				.isInstanceOf(DataAccessException.class);
 	}
 
 	@Test
