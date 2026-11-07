@@ -50,10 +50,15 @@
 --   (1) two void claim rows sharing the same (endpoint, key) — impossible under the live
 --       IdempotencyService, which rejects a reused void key while the claim lives, but checked so the
 --       UNIQUE constraint can never fail with a raw violation;
---   (2) a void claim whose stored response has NO extractable top-level payment id (malformed/legacy
---       JSON). Such a claim cannot be mapped to a payment unambiguously; it is reported here rather than
---       silently skipped, so history is never guessed at. (The backfill itself also skips it, so even if
---       this guard were relaxed the migration stays fail-safe.)
+--   (2) a void claim whose stored response does NOT map to exactly one VOIDED payment under the SAME
+--       matching criteria the backfill uses — its top-level id is NULL (malformed/legacy JSON), or it is
+--       non-null but matches no VOIDED payment.id (e.g. "id":"not-a-uuid", or a well-formed UUID that is
+--       not a VOIDED payment). Either way the claim cannot be mapped to a payment, so the backfill's JOIN
+--       would silently skip it, leaving its spent (endpoint, key) with NO durable backstop row — after the
+--       T18 cleanup deletes the claim that key could then void a DIFFERENT payment. It is reported here
+--       rather than silently skipped, so history is never guessed at and no spent key is left unbacked.
+--       (The backfill itself also skips such a claim, so even if this guard were relaxed the migration
+--       still never writes a wrong row — the guard's job is to refuse to ship rather than skip silently.)
 DO $$
 DECLARE
     duplicate_keys BIGINT;
@@ -76,19 +81,30 @@ BEGIN
             duplicate_keys;
     END IF;
 
-    -- A COMPLETED void claim that resolved a payment must carry that payment's id at the top level of its
-    -- stored PaymentResponse JSON. One with a response but no extractable top-level id is ambiguous history.
+    -- A COMPLETED void claim that resolved a payment must map to exactly one VOIDED payment under the SAME
+    -- criteria the backfill JOIN uses: its stored PaymentResponse JSON carries that payment's id at the top
+    -- level (response_json ->> 'id') and that id is a payment whose status is VOIDED. A claim with a stored
+    -- response whose top-level id is NULL (malformed/legacy JSON) OR is non-null but matches no VOIDED
+    -- payment is unmappable: the backfill would skip it, leaving its spent key with no durable backstop row.
+    -- Both are counted and reported here so no spent void key is ever left unbacked (NOT EXISTS mirrors the
+    -- backfill's INNER JOIN exactly, so the preflight passes iff every such claim backfills a row).
     SELECT COUNT(*) INTO unmappable_claims
       FROM idempotency_keys k
      WHERE k.endpoint = 'POST /api/v1/payments/{id}/void'
        AND k.response_json IS NOT NULL
-       AND (k.response_json::jsonb ->> 'id') IS NULL;
+       AND NOT EXISTS (
+            SELECT 1
+              FROM payment p
+             WHERE p.status = 'VOIDED'
+               AND p.id::text = (k.response_json::jsonb ->> 'id')
+           );
 
     IF unmappable_claims > 0 THEN
         RAISE EXCEPTION
-            'V22 preflight: % void claim row(s) have a stored response with no top-level payment id; '
-            'the voided payment cannot be reconstructed unambiguously. Inspect those idempotency_keys '
-            'rows manually before re-running (no rows were changed).',
+            'V22 preflight: % void claim row(s) have a stored response that maps to no VOIDED payment '
+            '(top-level id is missing, or present but matches no VOIDED payment); the voided payment '
+            'cannot be reconstructed, so the key would be left without a durable backstop. Inspect those '
+            'idempotency_keys rows manually before re-running (no rows were changed).',
             unmappable_claims;
     END IF;
 END;
