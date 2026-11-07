@@ -57,6 +57,15 @@ public class IdempotencyKey extends Auditable {
 	@Column(name = "expires_at", columnDefinition = "timestamptz")
 	private OffsetDateTime expiresAt;
 
+	/**
+	 * Correlation id of the request that first claimed this key (T20, Addendum §10). Written once at claim
+	 * time and never mutated, so a replayed retry can be traced back to the original request. Nullable: an
+	 * older row predating T20, or a claim made off a request thread, may have no id. Length mirrors the V1
+	 * {@code request_id VARCHAR(64)} column.
+	 */
+	@Column(name = "request_id", length = 64, updatable = false)
+	private String requestId;
+
 	protected IdempotencyKey() {
 		// JPA
 	}
@@ -87,6 +96,10 @@ public class IdempotencyKey extends Auditable {
 
 	public OffsetDateTime getExpiresAt() {
 		return expiresAt;
+	}
+
+	public String getRequestId() {
+		return requestId;
 	}
 
 	/** Stores the response of the completed mutation so an identical retry can be replayed. */

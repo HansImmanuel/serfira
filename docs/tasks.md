@@ -17,15 +17,13 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `83bdc2f`. **Sprint 6 is COMPLETE.** T16 (payment void, PR #11), T17
-(consistency-check job, PR #12), T19 (write-off, PR #13), T18 (idempotency-key cleanup job, PR #14) and
-T27a (minimal `./gradlew check` CI gate, PR #15) are all **merged to `main`**. T31 (durable
-single-use-forever void idempotency key) is **DONE** on branch `t31-durable-void-idempotency-key` (PR
-pending). No Sprint 6 implementation work remains; the only open action is opening/merging the T31 PR.
+**Snapshot:** `main` @ `95bb65b`. **Sprint 6 is COMPLETE** — T16 (PR #11), T17 (PR #12), T19 (PR #13), T18
+(PR #14), T27a (PR #15) and T31 (PR #16 + review fixes PR #17) are all **merged to `main`**. **Sprint 6b
+has started:** T20 (observability baseline) is **DONE** on branch `t20-observability-baseline` (PR pending).
 
-The live backlog is now **Sprint 6b** (Phase-2 security boundary + CI hardening), in dependency order:
-**T20** (observability) → **T21a** (auth foundation) → **T21b** (refresh rotation + lockout), with **T27**
-(CI & runtime gates) independent within the sprint. T22 and T28 remain later-sprint work.
+The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **T20** (observability) DONE
+→ **T21a** (auth foundation) is the frontier → **T21b** (refresh rotation + lockout), with **T27** (CI &
+runtime gates) independent within the sprint. T22 and T28 remain later-sprint work.
 
 **Implemented (verified in source):**
 
@@ -56,6 +54,10 @@ The live backlog is now **Sprint 6b** (Phase-2 security boundary + CI hardening)
   `idempotency-cleanup`, on its own ShedLock lock, deletes `idempotency_keys` rows past `expires_at` in
   keyset pages (one `job_run` row, A-9), backed by V21's `expires_at` index. Pure hygiene: a deleted spent
   key stays spent via the permanent backstops, so no permanent-key probe was added (ADR-017 2026-10-11).
+- Observability baseline (T20, Addendum §10, X-3): `X-Request-Id` correlation filter ahead of Spring
+  Security (new `shared/observability` package), Boot 4 native ECS JSON logs with `request_id` /
+  `contract_id` / `module` carried via the MDC, and `idempotency_keys.request_id` written at claim time so
+  a replayed retry is traceable to its originating request.
 - Settlement (`settlement` module): quote (T12) and execution (T13), ADR-018. Credit (T14) and penalty
   waive/reduce (T15); effective penalty owned by `penalty` behind `EffectivePenaltyPort` (T15/T30, ADR-019).
 - Write-off (T19, F5): accrue-before-resolve, pure `WriteOffEngine` caps recognized receivable, open
@@ -75,9 +77,9 @@ Full per-task implementation notes for all DONE work are in `tasks-archive.md`; 
 
 **Blockers and critical gaps:** none open.
 
-**Specification/implementation discrepancies:** X-1 … X-13 are all resolved except **X-3** (observability:
-`X-Request-Id`, JSON logs, `idempotency_keys.request_id` — open, owned by T20) and **X-9** (TS §7 repo/
-package names — doc-only, DEFERRED). The resolved X-table with per-item detail is in `tasks-archive.md`.
+**Specification/implementation discrepancies:** X-1 … X-13 are all resolved except **X-9** (TS §7 repo/
+package names — doc-only, DEFERRED). X-3 was resolved by T20. The resolved X-table with per-item detail is
+in `tasks-archive.md`.
 
 ---
 
@@ -113,6 +115,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T19   | F5 Write-off: `POST /contracts/{id}/write-off`, `WriteOffEngine`, V20                                              | DM §1.12, ADR-013 §1, PR #13                            |
 | T27a  | Minimal CI gate: `ci.yml` runs `./gradlew check` instead of `test`                                                 | `t27a-ci-check-gate`, PR #15                            |
 | T31   | Durable void idempotency key: `payment_void_idempotency` side table, V22, closes ADR-020 finding #5                | ADR-017, ADR-020 D3, `t31-durable-void-idempotency-key` |
+| T20   | Observability baseline: `X-Request-Id` filter, ECS JSON logs, `request_id` on idempotency claims (X-3)             | Addendum §10, `t20-observability-baseline`              |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ---
@@ -157,9 +160,31 @@ not restate them.
 
 ### T20 — Observability baseline (3 pts)
 
-**Status: IN PROGRESS** (branch `t20-observability-baseline`). **Dependencies:** none (do first). Owner: `shared` (new `shared/observability` concern) +
+**Status: DONE** (branch `t20-observability-baseline`, PR pending). **Dependencies:** none (do first). Owner: `shared` (new `shared/observability` concern) +
 `shared/idempotency` for the `request_id` write. Resolves discrepancy **X-3**. Not owned by any
 `05_SPRINT_PLAN.md` story; source is Addendum §10.
+
+Implementation note (2026-11-07): New `shared/observability` package. `CorrelationIdFilter`
+(`OncePerRequestFilter`) reads `X-Request-Id` or generates a UUID when absent/blank/longer than 64 chars,
+binds it in the MDC for the request, echoes it on the response header, and clears the MDC in `finally`;
+registered via `FilterRegistrationBean` at `SecurityFilterProperties.DEFAULT_FILTER_ORDER - 10`, ahead of
+Spring Security in both the embedded container and Boot 4 MockMvc (whose `ServletContextInitializerBeans`
+collection sorts registration beans — a bare `Filter` bean would run *after* the security chain in MockMvc
+and lose the id on authentication failures; Boot 4 note: `SecurityFilterProperties` lives in
+`spring-boot-security`, not the Boot 3 `spring-boot-autoconfigure` package). `LogContext` adds scoped
+`module`/`contract_id` MDC (`AutoCloseable`, ownership-tracked so nested scopes don't clobber). Structured
+logging is Boot 4 native ECS (`logging.structured.format.console=ecs`, `service.name=serfira-core`) — no
+logback XML, no new dependency; the test profile deliberately keeps plain-text console output. X-3:
+`IdempotencyService` captures `CorrelationId.current()` at claim time into
+`idempotency_keys.request_id` (the nullable column already existed in V1 — code-only change, no
+migration). Tests: `StructuredLoggingFormatTest` (2 — drives the public `StructuredLogEncoder` with an ECS
+format, asserts `@timestamp`, nested `log.level`, top-level MDC `request_id`/`contract_id`/`module`,
+`service.name`, and that a NIK logged via `PiiMasker.maskNik` never appears raw; masking stays the
+caller's duty, the encoder does not mask) and `CorrelationIdFilterIT` (6 — header on every response
+including a 401, client id echoed, blank/over-long replaced by a UUID, claim stores the originating id,
+replay traceable: the stored id is unchanged while the replay's own response echoes the retry's id).
+Verification (Docker available): `.\gradlew test` = 111 suites / 856 tests / 0 failed; `.\gradlew check`
+green. Resolves X-3.
 
 **Scope.** Add a correlation-id filter and structured logging, and persist the correlation id on the
 idempotency claim row so a retry can be traced end-to-end.

@@ -7,6 +7,7 @@ import com.serfira.shared.config.SystemParameterService;
 import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
 import com.serfira.shared.error.IdempotencyKeyExpiredException;
+import com.serfira.shared.observability.CorrelationId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -78,8 +79,11 @@ public class IdempotencyService {
 		int retentionDays = systemParameters.requireInt(SystemParameterKeys.IDEMPOTENCY_KEY_RETENTION_DAYS);
 		OffsetDateTime expiresAt = now.plusDays(retentionDays);
 		UUID actor = auditContext.actorId();
+		// Correlation id of the originating request (T20, Addendum §10), so a replayed retry can be traced
+		// back to the request that first created the resource. Null off a request thread (e.g. a job).
+		String requestId = CorrelationId.current();
 		int claimed = keys.claim(UUID.randomUUID(), key, endpoint, fingerprint, IdempotencyKey.STATUS_IN_PROGRESS,
-				expiresAt, now, actor);
+				expiresAt, requestId, now, actor);
 
 		if (claimed == 0) {
 			// The key already names a claim. Inside the retention window it is a retry (replay or
