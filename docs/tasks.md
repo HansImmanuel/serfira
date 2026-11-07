@@ -19,11 +19,12 @@ Completed Work index, open tasks, and open ambiguities.
 
 **Snapshot:** `main` @ `95bb65b`. **Sprint 6 is COMPLETE** — T16 (PR #11), T17 (PR #12), T19 (PR #13), T18
 (PR #14), T27a (PR #15) and T31 (PR #16 + review fixes PR #17) are all **merged to `main`**. **Sprint 6b
-has started:** T20 (observability baseline) is **DONE** on branch `t20-observability-baseline` (PR pending).
+has started:** T20 (observability baseline) is **DONE** on branch `t20-observability-baseline` (PR #18
+open).
 
 The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **T20** (observability) DONE
-→ **T21a** (auth foundation) is the frontier → **T21b** (refresh rotation + lockout), with **T27** (CI &
-runtime gates) independent within the sprint. T22 and T28 remain later-sprint work.
+(PR #18) → **T21a** (auth foundation) is the frontier → **T21b** (refresh rotation + lockout), with
+**T27** (CI & runtime gates) independent within the sprint. T22 and T28 remain later-sprint work.
 
 **Implemented (verified in source):**
 
@@ -115,7 +116,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T19   | F5 Write-off: `POST /contracts/{id}/write-off`, `WriteOffEngine`, V20                                              | DM §1.12, ADR-013 §1, PR #13                            |
 | T27a  | Minimal CI gate: `ci.yml` runs `./gradlew check` instead of `test`                                                 | `t27a-ci-check-gate`, PR #15                            |
 | T31   | Durable void idempotency key: `payment_void_idempotency` side table, V22, closes ADR-020 finding #5                | ADR-017, ADR-020 D3, `t31-durable-void-idempotency-key` |
-| T20   | Observability baseline: `X-Request-Id` filter, ECS JSON logs, `request_id` on idempotency claims (X-3)             | Addendum §10, `t20-observability-baseline`              |
+| T20   | Observability baseline: `X-Request-Id` filter, ECS JSON logs, `request_id` on idempotency claims (X-3)             | Addendum §10, `t20-observability-baseline`, PR #18      |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ---
@@ -160,7 +161,7 @@ not restate them.
 
 ### T20 — Observability baseline (3 pts)
 
-**Status: DONE** (branch `t20-observability-baseline`, PR pending). **Dependencies:** none (do first). Owner: `shared` (new `shared/observability` concern) +
+**Status: DONE** (branch `t20-observability-baseline`, PR #18 open). **Dependencies:** none (do first). Owner: `shared` (new `shared/observability` concern) +
 `shared/idempotency` for the `request_id` write. Resolves discrepancy **X-3**. Not owned by any
 `05_SPRINT_PLAN.md` story; source is Addendum §10.
 

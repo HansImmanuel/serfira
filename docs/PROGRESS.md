@@ -512,4 +512,4 @@ Sprint 6b (Phase-2 security boundary + CI hardening) — **berjalan**:
       (6; header di setiap respons termasuk 401, id klien di-echo, blank/kepanjangan → UUID, claim menyimpan
       id asal, replay tertelusur — id tersimpan tak berubah sementara respons replay meng-echo id retry).
       Verifikasi (Docker aktif): `.\gradlew test` = 111 suites / 856 tests / 0 gagal; `.\gradlew check`
-      hijau. Branch `t20-observability-baseline`, PR menyusul.
+      hijau. Branch `t20-observability-baseline`, PR #18.
