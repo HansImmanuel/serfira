@@ -264,8 +264,8 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **berjalan** (T16/T17
       `IdempotencyKeyBatchDeleter` membungkus hapus satu halaman dalam `@Transactional(REQUIRES_NEW)` sebagai
       `@Service` terpisah (menghindari jebakan self-invocation proxy), memanggil query native keyset
       `IdempotencyKeyRepository.deleteExpiredBatch` (`DELETE … WHERE id IN (SELECT … WHERE expires_at < :now
-  AND endpoint IN ('POST /api/v1/contracts', 'POST /api/v1/payments', 'POST /api/v1/settlements')
-  ORDER BY expires_at, id LIMIT :limit)`; `DELETE` PostgreSQL tak punya `LIMIT`). `LockedIdempotencyCleanupJob`
+AND endpoint IN ('POST /api/v1/contracts', 'POST /api/v1/payments', 'POST /api/v1/settlements')
+ORDER BY expires_at, id LIMIT :limit)`; `DELETE` PostgreSQL tak punya `LIMIT`). `LockedIdempotencyCleanupJob`
       (`@SchedulerLock(name="idempotency-cleanup")`, lock terpisah dari daily-servicing) dan
       `IdempotencyCleanupScheduler` (`@Scheduled` cron 01:30 Asia/Jakarta, setelah daily servicing 01:00).
       **A-9:** `records_processed` = jumlah baris terhapus, `records_failed = 0` saat sukses (hapus tak punya
@@ -400,4 +400,35 @@ compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes /
       scan secret, dan gerbang runtime `docker compose up` → `/actuator/health` → `/v3/api-docs` → `down`.
       **Verifikasi (Docker TIDAK tersedia di environment ini):** `./gradlew check --dry-run` mengonfigurasi
       build dan menyusun graf task tanpa error; `check` penuh dengan suite `*IT` dijalankan di CI (yang punya
-      Docker). Tanpa perubahan kode aplikasi. Branch `t27a-ci-check-gate`, PR menyusul.
+      Docker). Tanpa perubahan kode aplikasi. Branch `t27a-ci-check-gate`, **ter-merge ke `main` via PR #15**.
+
+- [x] T31 — Kunci idempotensi void yang durable & sekali-pakai-selamanya (menutup ADR-020 "Deferred finding
+      #5", temuan #5 review PR #11; ADR-017, ADR-020 D3/D6). Kunci _pembuatan_ pembayaran sudah dijaga spent
+      selamanya oleh indeks all-status `uq_payment_idempotency` (V18); kunci _void_ sebelumnya hanya hidup di
+      baris klaim `idempotency_keys`, yang dihapus job cleanup T18 saat kedaluwarsa — setelah itu kunci yang
+      sama bisa dipakai ulang untuk mem-void pembayaran **berbeda**. Tak ada invarian ledger yang dilanggar
+      (tiap void tetap lolos semua guard dan memposting reversal sah sendiri), tetapi kontrak
+      single-use-forever ADR-017 untuk kunci void melemah. T31 menutupnya dengan asosiasi void-key → payment
+      yang durable, unik, dan ber-scope endpoint. **Pilihan desain:** tabel samping
+      `payment_void_idempotency` ber-kunci `(endpoint, idempotency_key)` (bukan kolom di baris `payment`),
+      karena kunci void adalah kunci yang **berbeda** dan ber-scope endpoint dari kunci pembuatan (yang
+      memiliki `payment.idempotency_key` / `uq_payment_idempotency`) — meniru preseden backstop V18. Migrasi
+      **V22** (`V22__void_idempotency_durable_backstop.sql`): tabel dengan `uq_payment_void_idempotency UNIQUE
+    (endpoint, idempotency_key)`, FK ke `payment(id)`, kolom audit immutable, indeks `payment_id`, preflight
+      fail-safe yang data-preserving (menggagalkan migrasi bila ada tabrakan, tak pernah menghapus histori) dan
+      backfill dari baris klaim yang masih ada untuk pembayaran yang sudah VOIDED. Entitas
+      `PaymentVoidIdempotency` (extends `ImmutableAuditable`; guard konstruktor meniru kolom NOT NULL/length
+      V22) + `PaymentVoidIdempotencyRepository`. `PaymentVoidApplicationService.reverse` kini menulis satu
+      baris durable (langkah 0, di dalam transaksi void, D6) dan flush **sebelum** pekerjaan ledger apa pun;
+      pelanggaran `uq_payment_void_idempotency` diterjemahkan (`translateVoidKeyViolation`, meniru pendekatan
+      `PaymentConflictClassifier`) menjadi `IdempotencyKeyExpiredException` (409 `IDEMPOTENCY_KEY_EXPIRED`)
+      dengan seluruh void di-rollback — tak menulis apa pun. Replay identik void **asli** tak terpengaruh:
+      pembayaran sudah VOIDED, jadi `reverse` mengembalikan representasi kini sebelum insert durable, tanpa
+      reversal kedua. `TRUNCATE … CASCADE` suite lain kini memuat `payment_void_idempotency`. IT baru
+      `VoidIdempotencyKeyDurabilityIT` (2 kasus: pakai-ulang untuk pembayaran berbeda ditolak + tak menulis apa
+      pun setelah penghapusan baris klaim ala T18; replay identik tetap mengembalikan respons tersimpan).
+      **Verifikasi (Docker TIDAK tersedia di environment ini, fallback steering tech-stack):** `.\gradlew
+    compileJava compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` (semua unit, tanpa
+      Docker) → BUILD SUCCESSFUL. **Tidak dijalankan lokal:** suite `*IT` — `VoidIdempotencyKeyDurabilityIT`
+      baru dan `PaymentVoidIT` yang ada — dikompilasi tetapi butuh Docker/Testcontainers; CI adalah gerbangnya
+      sebelum merge. Branch `t31-durable-void-idempotency-key`, PR menyusul. Menutup Sprint 6.
