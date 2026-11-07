@@ -46,8 +46,10 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 	@Modifying
 	@Query(value = """
 			INSERT INTO idempotency_keys
-				(id, key, endpoint, request_hash, status, expires_at, created_at, created_by, updated_at, updated_by)
-			VALUES (:id, :key, :endpoint, :requestHash, :status, :expiresAt, :now, :actor, :now, :actor)
+				(id, key, endpoint, request_hash, status, expires_at, request_id,
+					created_at, created_by, updated_at, updated_by)
+			VALUES (:id, :key, :endpoint, :requestHash, :status, :expiresAt, :requestId,
+					:now, :actor, :now, :actor)
 			ON CONFLICT (endpoint, key) DO NOTHING
 			""", nativeQuery = true)
 	int claim(@Param("id") UUID id,
@@ -56,6 +58,7 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 			@Param("requestHash") String requestHash,
 			@Param("status") String status,
 			@Param("expiresAt") OffsetDateTime expiresAt,
+			@Param("requestId") String requestId,
 			@Param("now") OffsetDateTime now,
 			@Param("actor") UUID actor);
 

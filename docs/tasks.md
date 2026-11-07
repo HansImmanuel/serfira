@@ -17,11 +17,14 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `83bdc2f`. Sprint 6 work T16 (payment void, PR #11), T17 (consistency-check job,
-PR #12), T19 (write-off, PR #13), T18 (idempotency-key cleanup job, PR #14) and T27a (minimal
-`./gradlew check` CI gate, PR #15) are all **merged to `main`**. T31 (durable single-use-forever void
-idempotency key) is **DONE** on branch `t31-durable-void-idempotency-key` (PR pending) — this completes
-Sprint 6. T20, T27 and T21 move to Sprint 6b.
+**Snapshot:** `main` @ `95bb65b`. **Sprint 6 is COMPLETE** — T16 (PR #11), T17 (PR #12), T19 (PR #13), T18
+(PR #14), T27a (PR #15) and T31 (PR #16 + review fixes PR #17) are all **merged to `main`**. **Sprint 6b
+has started:** T20 (observability baseline) is **DONE** on branch `t20-observability-baseline` (PR #18
+open).
+
+The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **T20** (observability) DONE
+(PR #18) → **T21a** (auth foundation) is the frontier → **T21b** (refresh rotation + lockout), with
+**T27** (CI & runtime gates) independent within the sprint. T22 and T28 remain later-sprint work.
 
 **Implemented (verified in source):**
 
@@ -52,6 +55,10 @@ Sprint 6. T20, T27 and T21 move to Sprint 6b.
   `idempotency-cleanup`, on its own ShedLock lock, deletes `idempotency_keys` rows past `expires_at` in
   keyset pages (one `job_run` row, A-9), backed by V21's `expires_at` index. Pure hygiene: a deleted spent
   key stays spent via the permanent backstops, so no permanent-key probe was added (ADR-017 2026-10-11).
+- Observability baseline (T20, Addendum §10, X-3): `X-Request-Id` correlation filter ahead of Spring
+  Security (new `shared/observability` package), Boot 4 native ECS JSON logs with `request_id` /
+  `contract_id` / `module` carried via the MDC, and `idempotency_keys.request_id` written at claim time so
+  a replayed retry is traceable to its originating request.
 - Settlement (`settlement` module): quote (T12) and execution (T13), ADR-018. Credit (T14) and penalty
   waive/reduce (T15); effective penalty owned by `penalty` behind `EffectivePenaltyPort` (T15/T30, ADR-019).
 - Write-off (T19, F5): accrue-before-resolve, pure `WriteOffEngine` caps recognized receivable, open
@@ -71,9 +78,9 @@ Full per-task implementation notes for all DONE work are in `tasks-archive.md`; 
 
 **Blockers and critical gaps:** none open.
 
-**Specification/implementation discrepancies:** X-1 … X-13 are all resolved except **X-3** (observability:
-`X-Request-Id`, JSON logs, `idempotency_keys.request_id` — open, owned by T20) and **X-9** (TS §7 repo/
-package names — doc-only, DEFERRED). The resolved X-table with per-item detail is in `tasks-archive.md`.
+**Specification/implementation discrepancies:** X-1 … X-13 are all resolved except **X-9** (TS §7 repo/
+package names — doc-only, DEFERRED). X-3 was resolved by T20. The resolved X-table with per-item detail is
+in `tasks-archive.md`.
 
 ---
 
@@ -109,6 +116,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T19   | F5 Write-off: `POST /contracts/{id}/write-off`, `WriteOffEngine`, V20                                              | DM §1.12, ADR-013 §1, PR #13                            |
 | T27a  | Minimal CI gate: `ci.yml` runs `./gradlew check` instead of `test`                                                 | `t27a-ci-check-gate`, PR #15                            |
 | T31   | Durable void idempotency key: `payment_void_idempotency` side table, V22, closes ADR-020 finding #5                | ADR-017, ADR-020 D3, `t31-durable-void-idempotency-key` |
+| T20   | Observability baseline: `X-Request-Id` filter, ECS JSON logs, `request_id` on idempotency claims (X-3)             | Addendum §10, `t20-observability-baseline`, PR #18      |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ---
@@ -121,7 +129,8 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
   ADR-019). Detail in `tasks-archive.md`.
 - **Sprint 6 — Void, Consistency & Write-off:** COMPLETE. T16, T17, T19, T18 DONE and merged (ADR-020,
   PR #14); T27a DONE and merged (PR #15); T31 DONE on branch `t31-durable-void-idempotency-key` (PR
-  pending). T20 and the heavier T27 move to Sprint 6b alongside T21.
+  pending). No implementation work remains. Observability (T20), auth (T21a/T21b) and the heavier CI/runtime
+  gates (T27) are the Sprint 6b backlog below.
 
 ### T10 — Component-exact penalty base (conditional, DEFERRED)
 
@@ -135,7 +144,202 @@ Depends on T1.a, T4. ADR-012 alternatives 5/6 list the rejected options.
 
 ---
 
-## Open tasks
+## Open tasks — Sprint 6b (Phase-2 security boundary + CI hardening)
+
+**Goal (05_SPRINT_PLAN.md Sprint 6b):** a clear security boundary before the frontend is built — real
+authentication (login/refresh/logout, Argon2id, brute-force lockout), `created_by` sourced from a real
+`app_user`, and CI/runtime gates. The default-deny RBAC role matrix on all fifteen endpoints is already live
+(T7, ADR-015); Sprint 6b adds the identity *source* those matchers authorize against.
+
+**Dependency order:** T20 → T21a → T21b. T27 is independent within the sprint. Do T20 first: request-id
+plumbing is low-risk and makes every later auth flow traceable.
+
+**Estimated load:** T20 (3) + T21a (3) + T21b (2) + T27 (2) = **10 pts** (within the 8–13 target).
+
+Business rules live in `04_GAPS_ADDENDUM.md` §3, §10 and the cited ADRs; these tasks point to them and do
+not restate them.
+
+### T20 — Observability baseline (3 pts)
+
+**Status: DONE** (branch `t20-observability-baseline`, PR #18 open). **Dependencies:** none (do first). Owner: `shared` (new `shared/observability` concern) +
+`shared/idempotency` for the `request_id` write. Resolves discrepancy **X-3**. Not owned by any
+`05_SPRINT_PLAN.md` story; source is Addendum §10.
+
+Implementation note (2026-11-07): New `shared/observability` package. `CorrelationIdFilter`
+(`OncePerRequestFilter`) reads `X-Request-Id` or generates a UUID when absent/blank/longer than 64 chars,
+binds it in the MDC for the request, echoes it on the response header, and clears the MDC in `finally`;
+registered via `FilterRegistrationBean` at `SecurityFilterProperties.DEFAULT_FILTER_ORDER - 10`, ahead of
+Spring Security in both the embedded container and Boot 4 MockMvc (whose `ServletContextInitializerBeans`
+collection sorts registration beans — a bare `Filter` bean would run *after* the security chain in MockMvc
+and lose the id on authentication failures; Boot 4 note: `SecurityFilterProperties` lives in
+`spring-boot-security`, not the Boot 3 `spring-boot-autoconfigure` package). `LogContext` adds scoped
+`module`/`contract_id` MDC (`AutoCloseable`, ownership-tracked so nested scopes don't clobber). Structured
+logging is Boot 4 native ECS (`logging.structured.format.console=ecs`, `service.name=serfira-core`) — no
+logback XML, no new dependency; the test profile deliberately keeps plain-text console output. X-3:
+`IdempotencyService` captures `CorrelationId.current()` at claim time into
+`idempotency_keys.request_id` (the nullable column already existed in V1 — code-only change, no
+migration). Tests: `StructuredLoggingFormatTest` (2 — drives the public `StructuredLogEncoder` with an ECS
+format, asserts `@timestamp`, nested `log.level`, top-level MDC `request_id`/`contract_id`/`module`,
+`service.name`, and that a NIK logged via `PiiMasker.maskNik` never appears raw; masking stays the
+caller's duty, the encoder does not mask) and `CorrelationIdFilterIT` (6 — header on every response
+including a 401, client id echoed, blank/over-long replaced by a UUID, claim stores the originating id,
+replay traceable: the stored id is unchanged while the replay's own response echoes the retry's id).
+Verification (Docker available): `.\gradlew test` = 111 suites / 856 tests / 0 failed; `.\gradlew check`
+green. Resolves X-3.
+
+**Scope.** Add a correlation-id filter and structured logging, and persist the correlation id on the
+idempotency claim row so a retry can be traced end-to-end.
+
+- **Correlation id filter + MDC.** A servlet filter (ordered before security) reads `X-Request-Id` from the
+  request, or generates a UUID when absent, puts it in the SLF4J MDC for the request, echoes it back on the
+  response header, and clears the MDC in a `finally`. The generated/received id is the `request_id` used
+  everywhere below.
+- **Structured JSON logging (Addendum §10).** Switch the log encoder to JSON with the required fields:
+  `timestamp`, `level`, `request_id`, `contract_id` (when in scope), `module`. Put `contract_id`/`module`
+  into MDC where the code already has them (the daily job, the payment/contract write paths) rather than
+  inventing new plumbing. Dev may keep human-readable console logs; the JSON encoder is the committed
+  default (confirm the encoder choice follows existing Spring Boot logging config, not a new framework).
+- **Persist `request_id` on `idempotency_keys` (X-3, TS §2.5, DM).** The column already exists in the schema
+  (`idempotency_keys.request_id`); wire `IdempotencyService` to write the current request's id when it
+  claims a key, so a replayed retry carries the originating request id. New Flyway migration only if the
+  column is not yet present as a writable NULLable column — verify first; if present, this is a code-only
+  change.
+
+**Business rules.** Never log PII, tokens, secrets, NIK, or full financial payloads (steering `60-security`,
+`35-coding-standards`): log ids and safe metadata only. `request_id` is a correlation aid, not an auth or
+idempotency key — it never gates a decision. The MDC must be cleared per request so ids never leak across
+pooled threads.
+
+**Acceptance criteria.** Every response carries an `X-Request-Id`; a client-supplied id is preserved, an
+absent one is generated. Log lines are JSON with the required fields and a stable `request_id` within a
+request. A claimed idempotency key stores the originating `request_id`; a later replay of that key is
+traceable to the first request. No PII/secret appears in any log line.
+
+**Tests.** IT (MockMvc + Testcontainers): response has `X-Request-Id`; supplied id echoed, absent id
+generated; after a `POST /payments` the `idempotency_keys` row holds the request id; a replay is traceable.
+A unit/slice test asserts the JSON encoder emits the required fields and masks a sample PII-bearing log call.
+Keep the matrix tests green.
+
+### T21a — Auth foundation: app_user, login, JWT identity binding (3 pts)
+
+**Status: TODO.** **Dependencies:** T20 (request-id tracing in place), T7/ADR-015 (resource server + role
+matrix already enforced). Owner: new `auth` (or `shared/security`) module per the module layout rules.
+Source: Addendum §3.1–3.4, ADR-005, ADR-015; realises story **F2** (login half) and closes the T7-D2
+deferred active-user check.
+
+**Scope.** Introduce real users and issue tokens, and make `created_by` come from a real `app_user.id`
+instead of a raw `sub`.
+
+- **Schema (new Flyway migration).** `app_user (id, username UNIQUE, password_hash, full_name, role,
+  is_active, failed_login_attempts, locked_until, last_login_at, + audit cols)` and `refresh_token (id,
+  user_id, token_hash UNIQUE, expires_at, revoked_at, replaced_by_id NULL, + audit cols)` exactly per
+  Addendum §3.1. Seed the three demo users (Addendum §18.3) with **Argon2id** hashes generated in the
+  migration/seed — never plaintext, never committed secrets.
+- **`POST /api/v1/auth/login`** `{username, password}` → `{access_token, refresh_token}`. Access token is a
+  15-minute HS256 JWT (ADR-005 decoder bean, unchanged) whose `sub` is the `app_user.id` UUID and whose
+  `roles` is a **string array** (ADR-015). Refresh-token *issuance* here stores a hashed token (T21b owns
+  rotation). Verify the password with Argon2id; on success reset `failed_login_attempts` and set
+  `last_login_at`.
+- **Bind identity to a real user (closes T7-D2, Addendum §3.3).** The resource server now requires `sub` to
+  be the UUID of an **active** `app_user` (`is_active = true`); a `sub` that is unknown or inactive → 401.
+  `AuditActorBindingFilter` continues to bind `sub` to `AuditContext`, so `created_by`/`updated_by` carry a
+  real `app_user.id`. `SYSTEM` still never acts over HTTP (ADR-015 D4/D5).
+- **Role matrix.** Add `POST /auth/login` to the matrix (all three business roles allowed; §3.4). `/login`
+  is unauthenticated to *reach* (it mints the first token) but still goes through the matcher table ending
+  in `denyAll()` — add its row plus a test. `/auth/refresh` and `/auth/logout` rows come with T21b.
+
+**Business rules.** Argon2id only; never store or log plaintext passwords or hashes (steering `60-security`).
+Never trust identity from a request body — the audit actor comes from the authenticated context (ADR-015,
+Addendum §3.3). The access-token lifetime is 15 minutes (Addendum §3.3). Default-deny stays: a new endpoint
+is denied until it has a matrix row plus allowed-role and 403 tests in `EndpointRoleMatrixIT`.
+
+**Acceptance criteria.** A seeded user logs in and receives a 15-min access token with `sub = app_user.id`
+and a `roles` string array, plus a refresh token persisted hashed. A token whose `sub` is not an active
+`app_user` → 401. A financial write after login records `created_by = app_user.id`, not the raw claim string.
+`/auth/login` has a matrix row and role tests.
+
+**Tests.** IT (Testcontainers + MockMvc + `spring-security-test`): login happy path returns both tokens and
+the expected claims; wrong password → 401; a JWT with an unknown/inactive `sub` → 401; a mutation after
+login stamps the real `app_user.id` in `created_by`; `EndpointRoleMatrixIT` extended for `/auth/login`. Use
+`TestJwts`/`FixedClock`; do not assert on Argon2 hash values, only on verify behavior.
+
+### T21b — Refresh rotation, logout, brute-force lockout, dev-key guard (2 pts)
+
+**Status: TODO.** **Dependencies:** T21a (app_user, refresh_token, login all exist). Owner: same `auth`
+module. Source: Addendum §3.2–3.3, §18, ADR-005, CR-10/CR-16; completes story **F2**.
+
+**Scope.** The stateful half of auth: rotating refresh tokens, logout, lockout, and a production guard
+against the dev-only key fallbacks.
+
+- **`POST /api/v1/auth/refresh`** — rotate: validate the presented refresh token against its stored hash and
+  expiry, issue a new access + new refresh token, revoke the old row (`revoked_at`) and point it at the new
+  one via `replaced_by_id`. A reused/revoked refresh token is rejected (detect replay). Never stateless-only
+  for refresh (Addendum §3.3).
+- **`POST /api/v1/auth/logout`** — revoke the presented refresh token (`revoked_at`); idempotent.
+- **Brute-force lockout (Addendum §3.1/§3.3).** On failed login increment `failed_login_attempts`; past a
+  threshold set `locked_until`; a locked account is rejected until the window passes; a success resets the
+  counter. Choose the threshold/window in an ADR note (propose 5 attempts / 15 min; confirm at
+  implementation).
+- **Dev-key production guard (CR-16).** Fail fast at startup in a production profile if the JWT/PII keys are
+  still the documented `docker-compose` dev defaults, so a deployment cannot silently run on demo keys.
+- **Role matrix.** Add `/auth/refresh` and `/auth/logout` rows (§3.4) with allowed-role and 403 tests.
+
+**Business rules.** Refresh tokens are stored hashed and single-use via rotation; a revoked or already-rotated
+token never mints a new access token (replay detection). Logout must not error on an already-revoked token.
+Lockout state lives on `app_user` (`failed_login_attempts`, `locked_until`). The dev-key guard must not
+weaken dev ergonomics — it only trips under the production profile.
+
+**Acceptance criteria.** A refresh rotates both tokens, revokes the old, and links `replaced_by_id`; a reused
+old refresh token is rejected. Logout revokes and is idempotent. N failed logins lock the account for the
+window; a correct login afterward is still blocked until it expires; a success resets the counter. Under the
+production profile, startup fails if the keys are the dev defaults. `/auth/refresh` and `/auth/logout` have
+matrix rows and role tests.
+
+**Tests.** IT (Testcontainers): rotation happy path + old-token-rejected replay; logout idempotency; lockout
+after N failures and reset on success (`FixedClock` drives `locked_until`); a slice/context test that the
+production profile with dev keys fails to start. Extend `EndpointRoleMatrixIT` for the two endpoints.
+
+### T27 — CI & runtime gates: dependency + secret scan + Compose smoke (2 pts)
+
+**Status: TODO.** **Dependencies:** T27a (the `./gradlew check` gate, DONE). Owner: CI config
+(`.github/workflows/ci.yml`) + Gradle. Source: CR-15, steering `35-coding-standards` (justify each tool).
+
+**Scope.** Harden CI beyond `check` with two self-contained scanners and a runtime smoke test. **Sonar is
+explicitly out of scope** (2026-11-07 decision): it needs a running SonarQube/SonarCloud server, an external
+dependency not worth standing up for this portfolio repo; the `org.sonarqube` plugin stays local/manual and
+is never wired into `check` or CI (consistent with T27a).
+
+- **Dependency-vulnerability scan — OWASP Dependency-Check.** Add the Gradle `dependencyCheck` task (or the
+  GitHub Action) as a CI step. Justification: it is the de-facto OSS CVE scanner for JVM dependency trees,
+  runs self-contained in CI (no server), and matches a Gradle build. Fail the job on a high-severity finding;
+  allow a reviewed suppression file for accepted/false-positive CVEs.
+- **Secret scan — gitleaks.** Add gitleaks as a CI step over the repo/diff. Justification: single self-contained
+  binary, no server, strong default rule set; guards the "never commit secrets" rule (steering `60-security`)
+  given the repo deliberately carries dev-only keys in compose that must not spread to real secrets.
+- **Compose runtime smoke (CR-15).** A CI job: `docker compose up --build -d`, wait for
+  `/actuator/health` to go UP, assert `/v3/api-docs` (OpenAPI) responds, then `docker compose down`. This is
+  the runtime gate the minimal `check` cannot give. Keep it a separate job/step so a smoke failure is
+  distinguishable from a unit/IT failure.
+
+**Business rules.** Scanners must be self-contained (no external server) so CI stays hermetic and
+non-flaky. Each tool choice is justified in the task per `35-coding-standards`. No application code changes;
+this is CI/build config only. A suppression file for Dependency-Check is allowed but every suppression needs
+a one-line reason.
+
+**Acceptance criteria.** CI runs OWASP Dependency-Check and gitleaks and fails on a real high-severity CVE or
+a committed secret (prove each with a scratch positive, then remove it). The Compose smoke job brings the app
+up, sees `/actuator/health` UP and `/v3/api-docs` served, and tears down cleanly. A green run on a clean
+`main`.
+
+**Tests.** CI config change, verified by a green CI run on the PR plus a deliberate-failure spot check for
+each scanner (shown in the PR description, not committed). No unit/IT changes.
+
+---
+
+## Recently completed (full implementation notes)
+
+These Sprint 6 tasks are **DONE**; the notes are retained here for traceability and will migrate to
+`tasks-archive.md` at the next archive pass. They must not be re-implemented.
 
 ### T18 — F4 Idempotency key cleanup job (2 pts)
 
@@ -342,13 +546,18 @@ validated at the engine level (`ConsistencyCheckEngineTest`), not end-to-end. Lo
 
 ### Later sprints (planned, detailed at their sprint planning)
 
-| ID  | Story                                                              | Sprint | Status | Carry-forward requirements                                                                                                                                                                                                                              |
-| --- | ------------------------------------------------------------------ | ------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T20 | Observability baseline (Addendum §10)                              | 6b     | TODO   | `X-Request-Id` filter + MDC, JSON logs (`timestamp`, `level`, `request_id`, `contract_id`, `module`), write `idempotency_keys.request_id`. Not owned by any `05_SPRINT_PLAN.md` story (X-3).                                                            |
-| T21 | F2 Auth: login/refresh/logout, Argon2id, lockout, refresh rotation | 6b     | TODO   | Issue `roles` as a string array per ADR-015. Validate `iss`/`aud` once a real issuer exists; consider RS256 (ADR-005, CR-10). Revisit T7 D2 (active `app_user` check). Add a production guard against the dev-key compose fallbacks (CR-16).            |
-| T27 | CI & runtime gates — security scans + Compose smoke (CR-15)        | 6b     | TODO   | The minimal `./gradlew check` gate is split to **T27a** (Sprint 6). T27 keeps a dependency-vulnerability and a secret scan (justify each tool per `35-coding-standards`), and `docker compose up` → `/actuator/health` → `/v3/api-docs` smoke → `down`. |
-| T22 | G1–G6 Reporting, frontend, demo, outbox                            | 7–8    | TODO   | Unchanged from `05_SPRINT_PLAN.md`. NPL/AR depend on the DPD definition from T1.b.                                                                                                                                                                      |
-| T28 | PII / HMAC key rotation (CR-11)                                    | 7      | TODO   | Key id in the PII envelope (`v2:<kid>:…`), a key ring for decrypt and HMAC lookups, and a re-keying procedure for `nik_hash`/`phone_lookup` and `idempotency_keys.request_hash` (ADR-004, ADR-007 consequences). New ADR.                               |
+T20, T21a, T21b and T27 were promoted into the active **Sprint 6b** backlog (see "Open tasks" above); this
+table now carries only the later, not-yet-active sprints.
+
+| ID  | Story                                     | Sprint | Status | Carry-forward requirements                                                                                                                                                                                              |
+| --- | ----------------------------------------- | ------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T22 | G1–G6 Reporting, frontend, demo, outbox   | 7–8    | TODO   | Unchanged from `05_SPRINT_PLAN.md`. NPL/AR depend on the DPD definition from T1.b.                                                                                                                                       |
+| T28 | PII / HMAC key rotation (CR-11)           | 7      | TODO   | Key id in the PII envelope (`v2:<kid>:…`), a key ring for decrypt and HMAC lookups, and a re-keying procedure for `nik_hash`/`phone_lookup` and `idempotency_keys.request_hash` (ADR-004, ADR-007 consequences). New ADR. |
+
+> **iss/aud + RS256 (CR-10) and the T7-D2 active-user check** were part of the old T21 carry-forward. The
+> active-user check is now folded into **T21a**. `iss`/`aud` validation and an RS256 migration stay deferred
+> until a real external token issuer exists (ADR-005) — not needed while login mints HS256 tokens in-process;
+> revisit when an issuer is introduced.
 
 ### Deferred
 
@@ -356,8 +565,9 @@ validated at the engine level (`ConsistencyCheckEngineTest`), not end-to-end. Lo
 | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | PRD C-5 update DRAFT contract                                                               | Already deferred in `05_SPRINT_PLAN.md`.                                         |
 | R-3 cash-in report, R-4 CSV export, P-6 gateway stub, S-5 restructuring                     | P2 / Fase 4 per PRD.                                                             |
-| Require auth for OpenAPI/Swagger outside dev                                                | ADR-005 made it public by design. Revisit with T21.                              |
+| Require auth for OpenAPI/Swagger outside dev                                                | ADR-005 made it public by design. Revisit with T21a/T21b.                        |
 | Rate limiting, security headers, CORS policy                                                | No browser client or public deployment yet. Revisit with G2.                     |
+| SonarQube/SonarCloud in CI                                                                  | Decided out of scope for T27 (2026-11-07): needs a running server, an external dependency not worth it for this portfolio repo. The `org.sonarqube` plugin stays local/manual, never wired into `check` or CI. |
 | Remove the unused Lombok dependency. Move the Sonar host out of `gradle-wrapper.properties` | Hygiene only. The Sonar change is uncommitted local work owned by the developer. |
 | Envelope-rendering `ErrorController` for container-level errors                             | Boot's default JSON leaks no internals. Low value until a browser client exists. |
 | Reconcile the V12 `assert_payment_has_allocations` backstop vs consistency check B's end-to-end IT | V12 (DEFERRABLE, rejects Σallocations≠amount at COMMIT, "zero included") makes check B's drift unstageable in the DB, so `ConsistencyCheckIT` only exercises check A; check B is covered at the engine level (`ConsistencyCheckEngineTest`). Decide whether check B needs an end-to-end guard given V12 already forecloses its drift, or document it as engine-only by design. Test-only follow-up; no production change implied. |
@@ -384,14 +594,18 @@ concern therefore reduces to:
 
 The 2026-09-29 code review and the 2026-09-30 external review (16 findings, CR-01…CR-16) are resolved or
 mapped to tasks. The full CR verdict table is in `tasks-archive.md`. The still-open findings map to TODO
-tasks: CR-10/CR-16 → T21, CR-11 → T28, CR-15 → T27. CR-14 was closed by T15. All others are DONE.
+tasks: CR-10 → deferred (RS256/`iss`/`aud`, needs a real issuer), CR-16 → T21b (dev-key production guard),
+CR-11 → T28, CR-15 → T27. CR-14 was closed by T15. All others are DONE.
 
 ### Ambiguities
 
 Resolved items (A-11, A-12, A-13) and the fully-resolved Phase-1 decisions (A-1…A-10) are recorded in
-ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). No ambiguity currently blocks
-an open task. T31 (the last Sprint 6 task) is now DONE, so the open tail is entirely Sprint 6b (T20, T27,
-T21) and later.
+ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). Sprint 6 is DONE, so the open
+tail is Sprint 6b (T20 → T21a → T21b, plus T27) and later (T22, T28). Two decisions are deferred to
+implementation inside their tasks, neither blocking: the brute-force lockout threshold/window (T21b proposes
+5 attempts / 15 min, to be fixed in an ADR note) and the OWASP Dependency-Check severity threshold +
+suppression policy (T27). A new ADR should record the F2 auth decisions (Argon2id, 15-min HS256, hashed
+rotating refresh tokens) when T21a lands.
 
 ### Dependency order (open tail)
 
@@ -400,5 +614,11 @@ T26 job robustness ─► T18 (idempotency cleanup)
 ADR-020 D3 (all-status uq_payment_idempotency) ─► T18 (voided key stays spent after cleanup)
 T16 (void) + T18 ─► T31 (durable void key) — DONE, closes Sprint 6
 T27a (CI check gate) — DONE and merged (PR #15)
-Sprint 6b: T20 (observability), T27 (scans + smoke), T21 (auth) ─► T22, T28
+
+Sprint 6b (active):
+  T20 (observability) ─► T21a (auth foundation: app_user, login, identity binding) ─► T21b (refresh rotation,
+                         logout, lockout, dev-key guard)
+  T27a ─► T27 (OWASP Dependency-Check + gitleaks + Compose smoke)   [independent within 6b]
+
+  T21b ─► T22 (frontend login), T28 (key rotation)
 ```

@@ -241,7 +241,7 @@ Each row cites where it was resolved; detail lives in the cited ADR/task.
 | ---- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | X-1  | Payment retries optimistic-lock up to 3× then 409 `CONCURRENT_MODIFICATION` | T5 (`PaymentRetryingService`); constant tidied T24 (CR-13)               |
 | X-2  | Daily jobs use ShedLock, retry per record up to 5×                          | T2/T3 (V9 lock, DB-time renewable lock)                                  |
-| X-3  | `X-Request-Id`, JSON logs, `request_id` on `idempotency_keys`               | Open → T20                                                               |
+| X-3  | `X-Request-Id`, JSON logs, `request_id` on `idempotency_keys`               | T20 (`shared/observability` filter + Boot 4 ECS + claim write)           |
 | X-4  | DM §1.4 lacked `OVERDUE → PARTIALLY_PAID`                                   | A-5 → T1 (code wins; DM corrected)                                       |
 | X-5  | Void catch-up delta when expected > recognized                              | A-3 → T1 (ADR-012 d7: catch-up only for date-less rows); E4/T16          |
 | X-6  | Penalty base = unpaid pokok+bunga only                                      | A-2 → T1 (ADR-012 d2 kept: paid penalty also reduces base); T10 DEFERRED |
