@@ -6,6 +6,8 @@ import com.serfira.shared.audit.AuditContext;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.concurrency.Sleeper;
 import com.serfira.shared.job.application.JobRunService;
+import com.serfira.shared.observability.LogContext;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -50,6 +52,7 @@ public class DailyServicingOrchestrator {
 	static final long[] BACKOFF_MILLIS = {50L, 150L, 400L, 1000L};
 
 	private static final String BILLING_AND_PENALTY_STEP = "billing+penalty";
+	private static final String LOG_MODULE = "daily-servicing";
 
 	/** Keyset cursor for the first page: strictly below every generated id, so no untyped null (X-13). */
 	private static final UUID ZERO_UUID = new UUID(0L, 0L);
@@ -116,30 +119,33 @@ public class DailyServicingOrchestrator {
 			do {
 				page = contracts.findActiveContractIdsAfter(cursor, batchSize);
 				for (UUID contractId : page) {
-					ProcessingOutcome servicingOutcome = runWithRetry(contractId, BILLING_AND_PENALTY_STEP,
-							() -> processor.process(contractId, businessDate));
-					servicing.record(servicingOutcome);
+					try (LogContext ignored = LogContext.forModule(LOG_MODULE).withContract(contractId)) {
 
-					// SKIPPED means the contract was observed non-ACTIVE; ACTIVE is never re-entered
-					// (DM §1.3), so aging would only be skipped again. A FAILED servicing step does not
-					// stop aging.
-					ProcessingOutcome agingOutcome = servicingOutcome == ProcessingOutcome.SKIPPED
-							? ProcessingOutcome.SKIPPED
-							: runWithRetry(contractId, AGING_JOB_NAME,
-									() -> processor.age(contractId, businessDate));
-					aging.record(agingOutcome);
+						ProcessingOutcome servicingOutcome = runWithRetry(contractId, BILLING_AND_PENALTY_STEP,
+								() -> processor.process(contractId, businessDate));
+						servicing.record(servicingOutcome);
 
-					// Consistency check (F1, T17): read-only reconciliation after aging. A contract already
-					// observed non-ACTIVE is skipped (its receivable residual read would 409 anyway). Unlike
-					// the other steps, a reconciled-but-drifted contract is counted as a check failure
-					// (records_failed) while still committing its exception rows, so the job_run row flags
-					// portfolio drift; a genuine read error is also a failure, via the retry wrapper.
-					ProcessingOutcome consistencyOutcome = servicingOutcome == ProcessingOutcome.SKIPPED
-							? ProcessingOutcome.SKIPPED
-							: runConsistencyWithRetry(contractId, businessDate);
-					consistency.record(consistencyOutcome);
+						// SKIPPED means the contract was observed non-ACTIVE; ACTIVE is never re-entered
+						// (DM §1.3), so aging would only be skipped again. A FAILED servicing step does not
+						// stop aging.
+						ProcessingOutcome agingOutcome = servicingOutcome == ProcessingOutcome.SKIPPED
+								? ProcessingOutcome.SKIPPED
+								: runWithRetry(contractId, AGING_JOB_NAME,
+										() -> processor.age(contractId, businessDate));
+						aging.record(agingOutcome);
 
-					cursor = contractId;
+						// Consistency check (F1, T17): read-only reconciliation after aging. A contract already
+						// observed non-ACTIVE is skipped (its receivable residual read would 409 anyway). Unlike
+						// the other steps, a reconciled-but-drifted contract is counted as a check failure
+						// (records_failed) while still committing its exception rows, so the job_run row flags
+						// portfolio drift; a genuine read error is also a failure, via the retry wrapper.
+						ProcessingOutcome consistencyOutcome = servicingOutcome == ProcessingOutcome.SKIPPED
+								? ProcessingOutcome.SKIPPED
+								: runConsistencyWithRetry(contractId, businessDate);
+						consistency.record(consistencyOutcome);
+
+						cursor = contractId;
+					}
 				}
 			} while (page.size() == batchSize);
 		} catch (RuntimeException loopFailure) {

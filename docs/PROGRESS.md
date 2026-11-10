@@ -493,3 +493,23 @@ compileTestJava` pass; `.\gradlew test --tests "*Test"` = **58 suite / 443 tes /
     end-to-end. Rekonsiliasi backstop V12 vs desain IT check-A/B dicatat sebagai tindak lanjut terpisah di
     `tasks.md` (tidak diimplementasikan di sini). **Verifikasi (Docker):** `.\gradlew test` → 848 tes, 0
     gagal; `.\gradlew check` → BUILD SUCCESSFUL.
+Sprint 6b (Phase-2 security boundary + CI hardening) — **berjalan**:
+
+- [x] T20 — Observability baseline (Addendum §10; menutup X-3). Paket `shared/observability` baru:
+      `CorrelationIdFilter` membaca `X-Request-Id` atau membangkitkan UUID bila absen/blank/>64 char,
+      mengikatnya di MDC selama request, meng-echo di header respons, dan membersihkan MDC di `finally`;
+      terdaftar via `FilterRegistrationBean` ber-order `SecurityFilterProperties.DEFAULT_FILTER_ORDER - 10`,
+      di depan Spring Security baik di embedded container maupun MockMvc Boot 4 (koleksi
+      `ServletContextInitializerBeans` mengurutkan registration bean — bean `Filter` telanjang akan berjalan
+      *setelah* rantai security di MockMvc dan kehilangan id pada kegagalan auth). `LogContext` menambah MDC
+      terlingkup `module`/`contract_id` (`AutoCloseable`, ownership dilacak). Logging terstruktur memakai ECS
+      native Boot 4 (`logging.structured.format.console=ecs`, `service.name=serfira-core`) — tanpa logback
+      XML, tanpa dependensi baru; profil tes sengaja tetap plain-text. X-3: `IdempotencyService` menulis
+      `CorrelationId.current()` ke `idempotency_keys.request_id` saat claim (kolom sudah ada sejak V1 —
+      code-only, tanpa migrasi). Tes: `StructuredLoggingFormatTest` (2; mengendarai `StructuredLogEncoder`
+      publik, menegaskan `@timestamp`, `log.level` nested, field MDC top-level, `service.name`, dan NIK lewat
+      `PiiMasker.maskNik` tak pernah muncul mentah — masking tetap tugas caller) dan `CorrelationIdFilterIT`
+      (6; header di setiap respons termasuk 401, id klien di-echo, blank/kepanjangan → UUID, claim menyimpan
+      id asal, replay tertelusur — id tersimpan tak berubah sementara respons replay meng-echo id retry).
+      Verifikasi (Docker aktif): `.\gradlew test` = 111 suites / 856 tests / 0 gagal; `.\gradlew check`
+      hijau. Branch `t20-observability-baseline`, PR #18.

@@ -36,6 +36,8 @@ import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
 import com.serfira.shared.money.DecimalBounds;
+import com.serfira.shared.observability.LogContext;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -83,6 +85,8 @@ import java.util.UUID;
 public class PaymentApplicationService {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(PaymentApplicationService.class);
+
+	static final String LOG_MODULE = "payment";
 
 	/** Idempotency scope of the payment endpoint (TS §2.2: keys are endpoint-scoped). */
 	static final String CREATE_ENDPOINT = "POST /api/v1/payments";
@@ -144,11 +148,17 @@ public class PaymentApplicationService {
 	@Transactional
 	public PaymentResponse create(String idempotencyKey, PaymentRequest request) {
 		BigDecimal amount = requireAmount(request);
-		String key = idempotencyKey == null ? null : idempotencyKey.trim();
-		IdempotentResult<PaymentResponse> result = idempotency.execute(
+
+		try (LogContext ignored = LogContext.forModule(LOG_MODULE).withContract(request.contractId())) {
+
+			String key = idempotencyKey == null ? null : idempotencyKey.trim();
+		
+			IdempotentResult<PaymentResponse> result = idempotency.execute(
 				CREATE_ENDPOINT, key, canonicalize(request, amount), PaymentResponse.class,
 				() -> receive(key, request, amount));
+				
 		return result.response();
+		}
 	}
 
 	/**

@@ -30,6 +30,8 @@ import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
 import com.serfira.shared.error.CreditNotApplicableException;
 import com.serfira.shared.money.DecimalBounds;
+import com.serfira.shared.observability.LogContext;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -76,6 +78,7 @@ public class ContractCreditCommandService {
 
 	private static final int MONEY_SCALE = 2;
 	private static final BigDecimal ZERO_MONEY = BigDecimal.ZERO.setScale(MONEY_SCALE);
+	private static final String LOG_MODULE = "contract";
 
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
@@ -114,49 +117,55 @@ public class ContractCreditCommandService {
 	 */
 	@Transactional
 	public CreditApplicationResponse apply(UUID contractId, BigDecimal requestedAmount) {
-		Contract contract = contracts.findById(contractId)
+		try (LogContext ignored = LogContext.forModule(LOG_MODULE).withContract(contractId)) {
+		
+			Contract contract = contracts.findById(contractId)
 				.orElseThrow(() -> new ContractNotFoundException(contractId));
-		if (!contract.isActive()) {
-			throw new ContractStateException("contract " + contract.getContractNo() + " is " + contract.getStatus()
-					+ " and cannot have credit applied; only an ACTIVE contract can");
+
+
+			if (!contract.isActive()) {
+				throw new ContractStateException("contract " + contract.getContractNo() + " is " + contract.getStatus()
+						+ " and cannot have credit applied; only an ACTIVE contract can");
+			}
+
+			List<ContractCredit> availableCredits =
+					credits.findByContractIdAndStatusOrderByCreatedAtAsc(contractId, ContractCreditStatus.AVAILABLE);
+			Map<UUID, BigDecimal> balanceByCredit = availableBalances(availableCredits);
+			BigDecimal availableBalance = sum(balanceByCredit.values());
+			if (availableBalance.signum() == 0) {
+				throw new CreditNotApplicableException(
+						"contract " + contract.getContractNo() + " has no available credit to apply");
+			}
+
+			BigDecimal amountToApply = resolveRequestedAmount(requestedAmount, availableBalance,
+					contract.getContractNo());
+
+			List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
+			CreditAllocationResult allocation = CreditApplicationEngine.allocate(amountToApply, clock.today(),
+					toAllocationInputs(contractId, schedule));
+			if (allocation.appliedTotal().signum() == 0) {
+				throw new CreditNotApplicableException("contract " + contract.getContractNo()
+						+ " has no due installment with recognized receivable to apply credit against");
+			}
+
+			OffsetDateTime appliedAt = clock.now();
+			List<ContractCreditApplication> created =
+					consumeCredits(availableCredits, balanceByCredit, allocation, appliedAt);
+			applications.flush();
+
+			receivables.applyPaymentResolution(contractId, resolvedByInstallment(allocation), appliedAt);
+
+			UUID refId = created.get(0).getId();
+			ledger.post(LedgerPosting.of(LedgerRefType.CREDIT_APPLICATION, refId, appliedAt,
+					"Credit application for contract " + contract.getContractNo(),
+					journalLines(contractId, allocation)));
+
+			BigDecimal balanceAfter = availableBalance.subtract(allocation.appliedTotal());
+			LOGGER.info("Applied credit {} to contract {} ({} application(s), balance {} -> {})",
+					allocation.appliedTotal(), contract.getContractNo(), created.size(), availableBalance, balanceAfter);
+			return new CreditApplicationResponse(allocation.appliedTotal(), balanceAfter, toHistory(created));
+
 		}
-
-		List<ContractCredit> availableCredits =
-				credits.findByContractIdAndStatusOrderByCreatedAtAsc(contractId, ContractCreditStatus.AVAILABLE);
-		Map<UUID, BigDecimal> balanceByCredit = availableBalances(availableCredits);
-		BigDecimal availableBalance = sum(balanceByCredit.values());
-		if (availableBalance.signum() == 0) {
-			throw new CreditNotApplicableException(
-					"contract " + contract.getContractNo() + " has no available credit to apply");
-		}
-
-		BigDecimal amountToApply = resolveRequestedAmount(requestedAmount, availableBalance,
-				contract.getContractNo());
-
-		List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
-		CreditAllocationResult allocation = CreditApplicationEngine.allocate(amountToApply, clock.today(),
-				toAllocationInputs(contractId, schedule));
-		if (allocation.appliedTotal().signum() == 0) {
-			throw new CreditNotApplicableException("contract " + contract.getContractNo()
-					+ " has no due installment with recognized receivable to apply credit against");
-		}
-
-		OffsetDateTime appliedAt = clock.now();
-		List<ContractCreditApplication> created =
-				consumeCredits(availableCredits, balanceByCredit, allocation, appliedAt);
-		applications.flush();
-
-		receivables.applyPaymentResolution(contractId, resolvedByInstallment(allocation), appliedAt);
-
-		UUID refId = created.get(0).getId();
-		ledger.post(LedgerPosting.of(LedgerRefType.CREDIT_APPLICATION, refId, appliedAt,
-				"Credit application for contract " + contract.getContractNo(),
-				journalLines(contractId, allocation)));
-
-		BigDecimal balanceAfter = availableBalance.subtract(allocation.appliedTotal());
-		LOGGER.info("Applied credit {} to contract {} ({} application(s), balance {} -> {})",
-				allocation.appliedTotal(), contract.getContractNo(), created.size(), availableBalance, balanceAfter);
-		return new CreditApplicationResponse(allocation.appliedTotal(), balanceAfter, toHistory(created));
 	}
 
 	/**
