@@ -230,11 +230,8 @@ deferred active-user check.
 **Scope.** Introduce real users and issue tokens, and make `created_by` come from a real `app_user.id`
 instead of a raw `sub`.
 
-- **Schema (new Flyway migration).** `app_user (id, username UNIQUE, password_hash, full_name, role,
-  is_active, failed_login_attempts, locked_until, last_login_at, + audit cols)` and `refresh_token (id,
-  user_id, token_hash UNIQUE, expires_at, revoked_at, replaced_by_id NULL, + audit cols)` exactly per
-  Addendum §3.1. Seed the three demo users (Addendum §18.3) with **Argon2id** hashes generated in the
-  migration/seed — never plaintext, never committed secrets.
+- **Schema (Flyway migration).** Uses v1__baseline.sql
+
 - **`POST /api/v1/auth/login`** `{username, password}` → `{access_token, refresh_token}`. Access token is a
   15-minute HS256 JWT (ADR-005 decoder bean, unchanged) whose `sub` is the `app_user.id` UUID and whose
   `roles` is a **string array** (ADR-015). Refresh-token *issuance* here stores a hashed token (T21b owns

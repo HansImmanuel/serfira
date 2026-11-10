@@ -128,13 +128,7 @@ GET  /api/v1/contracts/{id}/credit          -- lihat saldo & histori kredit
 
 **Masalah:** PRD §2 menyebut JWT + RBAC 4 role, tapi tidak ada entity maupun endpoint.
 
-### 3.1 Tabel baru
-```
-app_user (id, username unique, password_hash, full_name, role, is_active, failed_login_attempts, locked_until, last_login_at)
-refresh_token (id, user_id, token_hash unique, expires_at, revoked_at, replaced_by_id nullable)
-```
-
-`role: ENUM(ADMIN_OPERASIONAL, FINANCE, MANAJEMEN, SYSTEM)`.
+### 3.1 Tidak ada tabel baru -> menggunakan v1__baseline.sql
 
 ### 3.2 Endpoint baru
 ```

@@ -13,32 +13,57 @@ import jakarta.servlet.http.HttpServletResponse;
 /**
  * Assigns a correlation id to every request and makes it observable (T20, Addendum §10).
  *
- * <p>Reads {@code X-Request-Id} from the incoming request, or generates a UUID when it is absent, blank, or
- * over-long ({@link CorrelationId#normalizeOrGenerate}). The id is placed in the SLF4J MDC under
- * {@link CorrelationId#REQUEST_ID} for the whole request, so every structured log line carries it, and is
- * echoed back on the response header so a client (or an upstream proxy) can report the id it was handled
- * under. The response header is set before the chain runs, so it survives even an error dispatch that
- * replaces the body.
+ * <p>Reads {@code X-Request-Id} from the incoming request, or generates a UUID when it is absent,
+ * blank, or invalid. The resolved id is stored as a request attribute so subsequent dispatches,
+ * including ERROR dispatches, reuse the same id.
  *
- * <p>The MDC is always cleared in a {@code finally} block: servlet threads are pooled, so a left-over id
- * would leak onto the next, unrelated request handled by the same thread.
+ * <p>The id is placed in the SLF4J MDC under {@link CorrelationId#REQUEST_ID} while the filter
+ * chain runs and is echoed back on the response header.
  *
- * <p>Registered via {@link ObservabilityConfiguration} with an order ahead of Spring Security's filter
- * chain, so authentication failures and access-denied responses are logged and tagged with a request id
- * too. The id is a correlation aid only and never influences an authorization or idempotency decision.
+ * <p>The MDC is always restored in a {@code finally} block because servlet threads are pooled.
+ *
+ * <p>Registered ahead of Spring Security's filter chain, so authentication failures and
+ * access-denied responses are correlated too.
  */
 public class CorrelationIdFilter extends OncePerRequestFilter {
 
-	@Override
-	protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-			throws ServletException, IOException {
-		String requestId = CorrelationId.normalizeOrGenerate(request.getHeader(CorrelationId.HEADER));
-		MDC.put(CorrelationId.REQUEST_ID, requestId);
-		response.setHeader(CorrelationId.HEADER, requestId);
-		try {
-			filterChain.doFilter(request, response);
-		} finally {
-			MDC.remove(CorrelationId.REQUEST_ID);
-		}
-	}
+    private static final String REQUEST_ID_ATTRIBUTE =
+            CorrelationIdFilter.class.getName() + ".REQUEST_ID";
+
+    @Override
+    protected boolean shouldNotFilterErrorDispatch() {
+        return false;
+    }
+
+    @Override
+    protected void doFilterInternal(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain filterChain
+    ) throws ServletException, IOException {
+
+        String requestId = (String) request.getAttribute(REQUEST_ID_ATTRIBUTE);
+
+        if (requestId == null) {
+            requestId = CorrelationId.normalizeOrGenerate(
+                    request.getHeader(CorrelationId.HEADER)
+            );
+            request.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
+        }
+
+        response.setHeader(CorrelationId.HEADER, requestId);
+
+        String previousRequestId = MDC.get(CorrelationId.REQUEST_ID);
+
+        try {
+            MDC.put(CorrelationId.REQUEST_ID, requestId);
+            filterChain.doFilter(request, response);
+        } finally {
+            if (previousRequestId == null) {
+                MDC.remove(CorrelationId.REQUEST_ID);
+            } else {
+                MDC.put(CorrelationId.REQUEST_ID, previousRequestId);
+            }
+        }
+    }
 }

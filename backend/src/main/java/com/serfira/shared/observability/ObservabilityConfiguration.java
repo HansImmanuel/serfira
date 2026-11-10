@@ -4,6 +4,7 @@ import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilte
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import jakarta.servlet.DispatcherType;
 
 /**
  * Wires the observability baseline (T20, Addendum §10): registers {@link CorrelationIdFilter} ahead of the
@@ -32,6 +33,7 @@ public class ObservabilityConfiguration {
 	FilterRegistrationBean<CorrelationIdFilter> correlationIdFilter() {
 		FilterRegistrationBean<CorrelationIdFilter> registration = new FilterRegistrationBean<>(new CorrelationIdFilter());
 		registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 10);
+		registration.setDispatcherTypes(DispatcherType.REQUEST,DispatcherType.ERROR);
 		return registration;
 	}
 }

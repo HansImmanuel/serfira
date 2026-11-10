@@ -35,6 +35,7 @@ import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
 import com.serfira.shared.money.DecimalBounds;
+import com.serfira.shared.observability.LogContext;
 import com.serfira.shared.security.PiiHasher;
 import com.serfira.shared.security.PiiValidator;
 
@@ -86,6 +87,7 @@ public class ContractCommandService {
 
 	private static final String LIVE_ASSET_CONSTRAINT = "uq_contract_live_asset";
 	private static final String IDEMPOTENCY_CONSTRAINT = "uq_contract_idempotency";
+	private static final String LOG_MODULE = "contract";
 
 	/**
 	 * The schedule engine is a stateless pure calculator (Sprint 1) — keeping it a constant makes that
@@ -161,49 +163,54 @@ public class ContractCommandService {
 	 */
 	@Transactional
 	public ContractResponse activate(UUID contractId, LocalDate requestedStartDate) {
-		Contract contract = contracts.findDetailById(contractId)
+		try (LogContext ignored = LogContext.forModule(LOG_MODULE).withContract(contractId)) {
+		
+			Contract contract = contracts.findDetailById(contractId)
 				.orElseThrow(() -> new ContractNotFoundException(contractId));
 
-		if (contract.isActive()) {
-			if (requestedStartDate != null && !requestedStartDate.equals(contract.getStartDate())) {
-				throw new ContractStateException("contract " + contract.getContractNo()
-						+ " is already active with start date " + contract.getStartDate());
+			if (contract.isActive()) {
+				if (requestedStartDate != null && !requestedStartDate.equals(contract.getStartDate())) {
+					throw new ContractStateException("contract " + contract.getContractNo()
+							+ " is already active with start date " + contract.getStartDate());
+				}
+					return ContractResponse.from(contract, outstandingOf(contractId));	
 			}
+
+			LocalDate effectiveStartDate = requestedStartDate != null ? requestedStartDate : contract.getPlannedStartDate();
+			requireActivatableStartDate(effectiveStartDate);
+			// Re-snapshot the configuration here: what matters is the configuration in force when the
+			// contract went live (DM §1.3), not when the draft was authored.
+			int gracePeriodDays = systemParameters.requireInt(SystemParameterKeys.DEFAULT_GRACE_PERIOD_DAYS);
+			BigDecimal penaltyRateDaily = systemParameters.requireDecimal(SystemParameterKeys.DEFAULT_PENALTY_RATE_DAILY);
+
+			contract.activate(effectiveStartDate, gracePeriodDays, penaltyRateDaily);
+			// Flush the transition (and its version bump) before inserting children, so a concurrent
+			// activation loses on the contract version rather than on the installment unique constraint.
+			contracts.saveAndFlush(contract);
+
+			List<Installment> schedule = SCHEDULE_ENGINE
+					.generate(contract.getPrincipal(), contract.getInterestRate(), effectiveStartDate,
+							contract.getTenorMonths(), contract.getInterestScheme())
+					.stream()
+					.map(line -> toInstallment(contract, line))
+					.toList();
+			installments.saveAll(schedule);
+			installments.flush();
+
+			// Disbursement journal (TS §3 "Aktivasi kontrak (disburse)"): activation creates the receivable and
+			// pays the cash out, so the money movement is recorded in this same transaction (ADR-008). The
+			// idempotent repeat above returns before this point, so an already ACTIVE contract never double-posts.
+			ledger.post(LedgerPosting.of(LedgerRefType.CONTRACT_ACTIVATION, contractId,
+					activationEntryDate(effectiveStartDate), "Disbursement of " + contract.getContractNo(), List.of(
+							LedgerPostingLine.debit(LedgerAccount.PIUTANG_POKOK, contract.getPrincipal(), contractId),
+							LedgerPostingLine.credit(LedgerAccount.KAS, contract.getPrincipal(), contractId))));
+
+			LOGGER.info("Activated contract {} (id={}, installments={})",
+					contract.getContractNo(), contractId, schedule.size());
+
+		
 			return ContractResponse.from(contract, outstandingOf(contractId));
 		}
-
-		LocalDate effectiveStartDate = requestedStartDate != null ? requestedStartDate : contract.getPlannedStartDate();
-		requireActivatableStartDate(effectiveStartDate);
-		// Re-snapshot the configuration here: what matters is the configuration in force when the
-		// contract went live (DM §1.3), not when the draft was authored.
-		int gracePeriodDays = systemParameters.requireInt(SystemParameterKeys.DEFAULT_GRACE_PERIOD_DAYS);
-		BigDecimal penaltyRateDaily = systemParameters.requireDecimal(SystemParameterKeys.DEFAULT_PENALTY_RATE_DAILY);
-
-		contract.activate(effectiveStartDate, gracePeriodDays, penaltyRateDaily);
-		// Flush the transition (and its version bump) before inserting children, so a concurrent
-		// activation loses on the contract version rather than on the installment unique constraint.
-		contracts.saveAndFlush(contract);
-
-		List<Installment> schedule = SCHEDULE_ENGINE
-				.generate(contract.getPrincipal(), contract.getInterestRate(), effectiveStartDate,
-						contract.getTenorMonths(), contract.getInterestScheme())
-				.stream()
-				.map(line -> toInstallment(contract, line))
-				.toList();
-		installments.saveAll(schedule);
-		installments.flush();
-
-		// Disbursement journal (TS §3 "Aktivasi kontrak (disburse)"): activation creates the receivable and
-		// pays the cash out, so the money movement is recorded in this same transaction (ADR-008). The
-		// idempotent repeat above returns before this point, so an already ACTIVE contract never double-posts.
-		ledger.post(LedgerPosting.of(LedgerRefType.CONTRACT_ACTIVATION, contractId,
-				activationEntryDate(effectiveStartDate), "Disbursement of " + contract.getContractNo(), List.of(
-						LedgerPostingLine.debit(LedgerAccount.PIUTANG_POKOK, contract.getPrincipal(), contractId),
-						LedgerPostingLine.credit(LedgerAccount.KAS, contract.getPrincipal(), contractId))));
-
-		LOGGER.info("Activated contract {} (id={}, installments={})",
-				contract.getContractNo(), contractId, schedule.size());
-		return ContractResponse.from(contract, outstandingOf(contractId));
 	}
 
 	/**

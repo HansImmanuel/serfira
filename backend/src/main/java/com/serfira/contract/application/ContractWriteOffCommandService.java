@@ -25,6 +25,7 @@ import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
+import com.serfira.shared.observability.LogContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -81,6 +82,7 @@ public class ContractWriteOffCommandService {
 
 	private static final int MONEY_SCALE = 2;
 	private static final BigDecimal ZERO_MONEY = BigDecimal.ZERO.setScale(MONEY_SCALE);
+	private static final String LOG_MODULE = "contract";
 
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
@@ -123,11 +125,16 @@ public class ContractWriteOffCommandService {
 		if (request == null || request.reason() == null || request.reason().isBlank()) {
 			throw new BadRequestException("a write-off reason is required");
 		}
-		String key = idempotencyKey == null ? null : idempotencyKey.trim();
-		IdempotentResult<WriteOffResponse> result = idempotency.execute(
-				WRITE_OFF_ENDPOINT, key, canonicalize(contractId, request), WriteOffResponse.class,
-				() -> terminate(contractId, request));
-		return result.response();
+
+		try (LogContext ignored = LogContext.forModule(LOG_MODULE).withContract(contractId)) {
+
+			String key = idempotencyKey == null ? null : idempotencyKey.trim();
+			IdempotentResult<WriteOffResponse> result = idempotency.execute(
+					WRITE_OFF_ENDPOINT, key, canonicalize(contractId, request), WriteOffResponse.class,
+					() -> terminate(contractId, request));
+			return result.response();
+
+		}
 	}
 
 	/**
