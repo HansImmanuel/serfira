@@ -40,7 +40,7 @@ layer cannot silently corrupt the books.
   → [ADR-003](docs/adr/ADR-003-injectable-clock.md)
 - **PII protected at rest.** National ID (NIK) and phone numbers are AES-256-GCM encrypted;
   uniqueness and search use HMAC lookup columns. → [ADR-004](docs/adr/ADR-004-at-rest-pii-protection.md)
-- **Decisions on record.** 15 [Architecture Decision Records](docs/adr/) with alternatives
+- **Decisions on record.** 22 [Architecture Decision Records](docs/adr/) with alternatives
   considered and rejected.
 
 ## Domain in 60 seconds
@@ -69,7 +69,9 @@ Full rules: [Tech Spec §3](docs/02_TECH_SPEC.md).
 
 A **modular monolith**: one Spring Boot deployable, one PostgreSQL database, with bounded
 contexts separated by package and communicating only through application-layer ports.
-No module reads another module's tables. → [ADR-001](docs/adr/ADR-001-modular-monolith.md)
+No module reads another module's tables, with one documented exception: the JWT decoder in
+`shared/security` performs an indexed `app_user` lookup to reject inactive users (ADR-022).
+→ [ADR-001](docs/adr/ADR-001-modular-monolith.md)
 
 ```mermaid
 flowchart LR
@@ -131,7 +133,7 @@ Compose starts with the `demo` Spring profile, which adds a demo-only Flyway loc
 three login users from Addendum §18.3 (`admin`, `finance`, `manager`; credentials are documented
 only there). Override `SPRING_PROFILES_ACTIVE=prod` (or an empty value) to start without the demo
 seed. A database first created with `demo` must be reset before switching to a non-demo profile
-because Flyway would no longer resolve the applied `V99` migration.
+because the repeatable `R__demo_seed.sql` would then no longer be resolved.
 
 ### Running tests
 
@@ -183,7 +185,8 @@ without a token besides health and OpenAPI.
   [ADR-015](docs/adr/ADR-015-jwt-roles-claim-and-endpoint-authorization.md)
 - **Real users and Argon2id login.** `POST /api/v1/auth/login` verifies an Argon2id hash and issues a
   15-minute HS256 access token plus a refresh token whose SHA-256 hash is stored (`refresh_token`).
-  Failure is always a generic 401. → [ADR-022](docs/adr/ADR-022-auth-foundation.md)
+  Credential failures are a generic 401; a saturated Argon2 verification semaphore returns a retryable
+  503 `AUTHENTICATION_CAPACITY_EXCEEDED`. → [ADR-022](docs/adr/ADR-022-auth-foundation.md)
 - **Attributable writes.** A UUID JWT subject is bound to the audit context and recorded as
   `created_by`/`updated_by`. A token whose subject is not a UUID, is unknown or belongs to an inactive
   user, or that carries no `exp`, is rejected with 401 (ADR-015, ADR-022). Scheduled jobs run as a

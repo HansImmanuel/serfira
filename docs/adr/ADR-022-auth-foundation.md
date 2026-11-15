@@ -27,7 +27,8 @@ T21a has to provide the identity source the existing role matrix authorizes agai
 
 The schema already has `app_user` and `refresh_token` (V1, Addendum §3.1), so no schema migration
 is needed. Only the demo login users are missing: V1 seeds the non-interactive `SYSTEM` principal,
-and the demo users were always planned as a profile-gated `V99__demo_seed.sql` (Addendum §18.4).
+and the demo users are seeded by the profile-gated repeatable migration `R__demo_seed.sql`
+(Addendum §18.4).
 
 ---
 
@@ -51,6 +52,11 @@ Passwords are verified with Spring Security's `Argon2PasswordEncoder` using the
 KDF to BouncyCastle's lightweight API. Only `bcprov` is needed; `bcpkix`/`bcutil` are certificate
 helpers and are not added. The version is pinned so the dependency is auditable (T27 will scan it).
 The seeded `SYSTEM` row keeps V8's non-Argon2 `{disabled}` value, so it can never authenticate.
+
+The stored value must start with the exact prefix **`$argon2id$`**; an encoding carrying a bare
+`$argon2$` prefix (or the Argon2i/Argon2d variants) is rejected before verification, so a legacy or
+weaker Argon2 encoding can never authenticate. This was tightened in the PR #19 review fixes
+(`070e7ad`).
 
 ### D3 — Login contract and failure semantics
 
@@ -109,19 +115,37 @@ it (Addendum §3.4). Refresh/logout rows arrive with T21b.
 `created_by`/`updated_by` on a post-login write are the real `app_user.id`. Identity is never taken
 from a request body.
 
-### D8 — Demo seed is profile-gated
+### D8 — Demo seed is profile-gated and repeatable
 
-`V99__demo_seed.sql` lives in `db/demo`, not `db/migration`. `application-demo.properties` adds
-`classpath:db/demo` to `spring.flyway.locations`, so only the `demo` profile applies it. It seeds
-`admin`/`finance`/`manager` (Addendum §18.3) with Argon2id hashes, fixed ids
-`…0010`/`…0011`/`…0012`, and `ON CONFLICT (username) DO NOTHING`. `docker-compose.yml` defaults
-`SPRING_PROFILES_ACTIVE` to `demo` so the documented `docker compose up` demo path has login users;
+`R__demo_seed.sql` is a **repeatable** Flyway migration (`R__` prefix, no version) that lives in
+`db/demo`, not `db/migration`. `application-demo.properties` adds `classpath:db/demo` to
+`spring.flyway.locations`, so only the `demo` profile applies it. It seeds `admin`/`finance`/`manager`
+(Addendum §18.3) with Argon2id hashes and fixed ids `…0010`/`…0011`/`…0012`. `docker-compose.yml`
+defaults `SPRING_PROFILES_ACTIVE` to `demo` (honouring an explicitly empty value via
+`${SPRING_PROFILES_ACTIVE-demo}`) so the documented `docker compose up` demo path has login users;
 the default and production profiles never see the file. Demo credentials remain demo-only and are
 documented in Addendum §18.3, not in the SQL file.
 
-### D9 (new) — Demo Seed now becomes repeatable
+Repeatable rather than versioned (it was drafted as `V99`): the seed is demo data, not schema, so it
+must re-apply when its checksum changes without consuming a schema version slot. Re-application is
+safe because `INSERT … ON CONFLICT (username) DO NOTHING` skips existing rows, but that same guard
+means **editing a seeded password does not update an existing demo row** — a database that already
+has the demo users needs a manual `UPDATE` or a reset to pick up a changed hash.
 
-`V99__demo_seed.sql` changed to `R__demo_seed.sql`
+### D9 — Argon2 verification capacity guard
+
+Password verification is CPU- and memory-expensive (each Argon2id check allocates 16 MiB), so an
+unauthenticated caller could otherwise exhaust the app by posting many parallel logins. `AuthService`
+now wraps `passwordEncoder.matches` in a `Semaphore` sized by
+`serfira.auth.argon2.max-concurrent-verifications` (default **2**, validated `>= 1`). A caller that
+cannot acquire a permit **fails fast** with `AuthenticationCapacityExceededException` →
+**503 `AUTHENTICATION_CAPACITY_EXCEEDED`** rather than queueing unbounded KDF work.
+
+This is deliberate load shedding, not a business failure: it bounds worst-case memory to
+`permits × 16 MiB` per instance. The trade-off is that legitimate logins beyond the permit count get
+a retryable 503 instead of waiting; sized for the portfolio's single-instance deployment, the
+property can be raised when the runtime has more headroom. It was added in the PR #19 review fixes
+(`070e7ad`) and is orthogonal to the T21b brute-force lockout, which counts failures per account.
 
 ---
 
@@ -139,15 +163,17 @@ documented in Addendum §18.3, not in the SQL file.
   `app_user`, so a small SQL check in `shared/security` is the cleaner seam.
 - **Use a `DelegatingPasswordEncoder` with a `{noop}` fallback.** Rejected: it would make V8's
   `{disabled}` sentinel and any legacy hash usable. Argon2-only is the documented rule.
-- **Put `V99` on the default migration path and guard with SQL.** Rejected: Flyway would apply it to
-  every environment, and the Addendum explicitly requires a separate, profile-gated location.
+- **Put the demo seed on the default migration path and guard with SQL.** Rejected: Flyway would
+  apply it to every environment, and the Addendum explicitly requires a separate, profile-gated
+  location.
 
 ---
 
 ## Consequences
 
 - Login and active-user binding are live; `created_by`/`updated_by` now come from a validated,
-  active `app_user`.
+  active `app_user`. Login failures are a generic 401, except when the Argon2 capacity guard is
+  saturated, which returns a retryable 503 `AUTHENTICATION_CAPACITY_EXCEEDED` (D9).
 - Every authenticated request adds one `app_user` primary-key lookup. The table is tiny and the
   lookup is indexed; this is acceptable for the sprint's scale and can be cached later if needed.
 - Deactivating a user takes effect on the next request. Changing a user's role takes effect only on
@@ -158,5 +184,5 @@ documented in Addendum §18.3, not in the SQL file.
   here, and add the CR-16 production dev-key guard. The lockout threshold/window remains the one open
   auth decision (task proposes 5 attempts / 15 minutes), to be fixed in the T21b ADR note.
 - The demo profile and the default profile have different Flyway locations. A database created with
-  `demo` must not be switched to `prod` without a reset, because V99 would then be an applied
-  migration that is no longer resolved locally.
+  `demo` must not be switched to `prod` without a reset: `R__demo_seed.sql` would then no longer be
+  resolved (it lives only in `db/demo`), and demo users would remain in the database.

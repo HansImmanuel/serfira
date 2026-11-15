@@ -63,7 +63,7 @@ and are enumerable.
   is free — deliberate business rule chosen by the domain owner.
 
 **Considerations for later sprints**
-- `V99__demo_seed.sql` must create customers **through the application** (product code generates
+- `R__demo_seed.sql` must create customers **through the application** (product code generates
   ciphertext/lookups), not via raw SQL with plaintext values.
 - Any future migration that touches existing `nik`/`phone` rows must use the application services (or run
   a backfill job); never encrypt in SQL.

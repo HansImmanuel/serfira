@@ -45,7 +45,8 @@ default-deny.
    otherwise installs its own entry point for bearer requests). `ErrorCode.UNAUTHORIZED`
    added for this purpose.
 5. **RBAC role matchers and login/refresh/logout remain Sprint 6b (F2/F3)**; until then
-   authorization equals "authenticated".
+   authorization equals "authenticated". **Superseded:** T7/ADR-015 shipped the RBAC matcher
+   table, T21a/ADR-022 shipped login, and T21b owns refresh/logout.
 
 ---
 

@@ -1,5 +1,5 @@
 -- =====================================================================================
--- Serfira Core — V99: demo login users (DEMO PROFILE ONLY)
+-- Serfira Core — R__demo_seed.sql: demo login users (DEMO PROFILE ONLY)
 -- -------------------------------------------------------------------------------------
 -- Source of truth: 04_GAPS_ADDENDUM.md §18.3 (demo users) and §18.4 (profile-gated seed).
 --
@@ -16,7 +16,8 @@
 --
 -- IDs are fixed so the demo script and documentation can refer to them reliably.
 -- created_by/updated_by stay NULL: this is a bootstrap seed (Addendum §3.3).
--- ON CONFLICT makes the seed harmless if the row already exists.
+-- Repeatable migration: re-runs when its checksum changes. ON CONFLICT keeps it harmless if a
+-- row already exists, which also means a changed password hash does not update an existing row.
 -- =====================================================================================
 
 INSERT INTO app_user (

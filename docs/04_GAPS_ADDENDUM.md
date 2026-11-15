@@ -132,9 +132,9 @@ GET  /api/v1/contracts/{id}/credit          -- lihat saldo & histori kredit
 
 ### 3.2 Endpoint baru
 ```
-POST /api/v1/auth/login     -- {username, password} → access + refresh token
-POST /api/v1/auth/refresh   -- rotate refresh token → access + refresh token baru
-POST /api/v1/auth/logout    -- revoke refresh token
+POST /api/v1/auth/login     -- {username, password} → access + refresh token   (T21a, live)
+POST /api/v1/auth/refresh   -- rotate refresh token → access + refresh token baru   (T21b, belum dibangun)
+POST /api/v1/auth/logout    -- revoke refresh token   (T21b, belum dibangun)
 ```
 
 ### 3.3 Keputusan
@@ -175,7 +175,7 @@ Legenda: ✅ = diizinkan | ❌ = dilarang | — = tidak relevan
 
 > **Catatan implementasi:** Gunakan Spring Security `@PreAuthorize` atau `SecurityFilterChain` dengan role-based matchers. Default-deny berarti setiap endpoint baru harus secara eksplisit mendaftarkan role yang diizinkan; endpoint tanpa deklarasi otomatis `403`. Response 403 menggunakan error envelope standar dengan `code: FORBIDDEN`.
 >
-> **Status (T7, ADR-015):** Matrix ini ditegakkan sejak T7 untuk keenam endpoint yang sudah ada, lewat **satu tabel matcher** di `ResourceServerSecurityConfiguration` yang diakhiri `denyAll()`. Role dibaca dari claim `roles` (array string); `SYSTEM` pada token menolak seluruh token (403). Token tanpa `exp` atau dengan `sub` non-UUID → 401 (ADR-015 D5). Setiap endpoint baru menambah barisnya di tabel ini beserta tes 403-nya.
+> **Status (T7/T21a, ADR-015/ADR-022):** Matrix ini ditegakkan lewat **satu tabel matcher** di `ResourceServerSecurityConfiguration` yang diakhiri `denyAll()`. Role dibaca dari claim `roles` (array string); `SYSTEM` pada token menolak seluruh token (403). Token tanpa `exp`, dengan `sub` non-UUID, atau dengan `sub` yang bukan `app_user` aktif → 401 (ADR-015 D5, ADR-022 D6). `POST /auth/login` adalah pengecualian by-design: `permitAll` karena ia menerbitkan token pertama (ADR-022 D7); baris `/auth/refresh` dan `/auth/logout` baru berlaku saat T21b. Setiap endpoint baru menambah barisnya di tabel ini beserta tes 403-nya.
 
 ---
 
@@ -585,7 +585,7 @@ Seed data ini harus tersedia setelah `docker-compose up` agar demo script (G5) b
 
 ### 18.4 Implementasi seed
 
-Buat Flyway migration terpisah `V99__demo_seed.sql` (bukan V1) agar seed tidak bercampur dengan schema baseline dan dapat di-skip untuk production profile. Spring profile `demo` mengaktifkan migration ini; profile `prod` melewatinya.
+Gunakan Flyway **repeatable migration** terpisah, `R__demo_seed.sql` (bukan V1 dan bukan versi bernomor), agar seed tidak bercampur dengan schema baseline dan dapat di-skip untuk production profile. File berada di `db/demo`, dan Spring profile `demo` menambahkan lokasi itu ke `spring.flyway.locations`; profile `prod` tidak pernah melihatnya. `INSERT … ON CONFLICT (username) DO NOTHING` membuat re-apply aman, dengan konsekuensi perubahan hash pada baris demo yang sudah ada tidak otomatis ter-update (ADR-022 D8).
 
 Script demo (`docs/demo-script.sh` atau `docs/demo-script.curl`) wajib dimulai dengan:
 ```bash

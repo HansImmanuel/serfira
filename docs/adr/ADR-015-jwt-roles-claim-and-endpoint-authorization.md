@@ -4,6 +4,7 @@
 - **Date:** 2026-10-01
 - **Deciders:** Hans (solo developer)
 - **Amends:** ADR-005 decisions 3 and 5
+- **Amended by:** ADR-022 D6 (per-request `app_user` active-user lookup supersedes D2)
 
 ---
 
@@ -36,7 +37,9 @@ role-dependent PII unmasking.
    `SCOPE_`/`scp` converter is not used.
 2. **D2 — Trust the signed claim.** No `app_user` lookup per request. A deactivated user or a changed role
    takes effect when the short-lived token expires (T21: 15 min, TS §2.6). The FK `created_by → app_user(id)`
-   still rejects a write whose `sub` is not a real user.
+   still rejects a write whose `sub` is not a real user. **Superseded by ADR-022 D6 (T21a):** the decoder now
+   performs one indexed `app_user` lookup per request and rejects an unknown or inactive `sub`; role changes
+   still wait for the next token.
 3. **D3 — One matcher table.** The Addendum §3.4 matrix is a single URL-matcher table in the
    `SecurityFilterChain`, ending in `anyRequest().denyAll()`. It is the only place to audit against §3.4, and
    any endpoint nobody registered is denied by default. (`@PreAuthorize` per method was rejected: an

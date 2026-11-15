@@ -320,7 +320,7 @@ Semantik posting (implementasi C1, ADR-008):
 
 `idempotency_keys`: `key, endpoint, request_hash, response_json, status, created_at, expires_at, request_id`.
 
-Implementasi B5 (ADR-007): key bersifat endpoint-scoped (`(endpoint, key)` unique), claim dilakukan dengan `INSERT … ON CONFLICT DO NOTHING` di dalam transaksi bisnis, `request_hash` adalah digest keyed (HMAC-SHA-256) atas JSON canonical request, dan `response_json` menyimpan payload proyeksi ter-mask untuk direplay. `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS`. Cleanup baris kedaluwarsa belum diimplementasikan (menyusul story F4/T18).
+Implementasi B5 (ADR-007): key bersifat endpoint-scoped (`(endpoint, key)` unique), claim dilakukan dengan `INSERT … ON CONFLICT DO NOTHING` di dalam transaksi bisnis, `request_hash` adalah digest keyed (HMAC-SHA-256) atas JSON canonical request, dan `response_json` menyimpan payload proyeksi ter-mask untuk direplay. `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS`. Cleanup baris kedaluwarsa diimplementasikan di T18 (langkah job harian, V21; ADR-017).
 
 Lifecycle (T24, ADR-017, mengubah ADR-007 keputusan 9): key **sekali pakai selamanya** per endpoint; `expires_at` hanya membatasi berapa lama respons tersimpan di-replay, bukan membuat key dapat dipakai ulang. Setelah window lewat, reuse key → 409 `IDEMPOTENCY_KEY_EXPIRED` sebelum operasi dijalankan (tidak ada takeover, tidak ada eksekusi ulang). `status` tetap `IN_PROGRESS`/`COMPLETED` (tanpa status `EXPIRED`); backstop permanen `uq_contract_idempotency`/`uq_payment_idempotency` memberi kode yang sama setelah baris dihapus oleh F4/T18.
 
@@ -338,9 +338,9 @@ nol, selain itu `FAILED`. Start/finish dicatat dalam transaksi terpisah dari wri
 
 | Method | Path                                                   | Keterangan                                                                                                                               |
 | ------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | /api/v1/auth/login                                     | login                                                                                                                                    |
-| POST   | /api/v1/auth/refresh                                   | rotate refresh token                                                                                                                     |
-| POST   | /api/v1/auth/logout                                    | revoke refresh token                                                                                                                     |
+| POST   | /api/v1/auth/login                                     | login; access token (15 menit) + refresh token opaque (T21a, ADR-022)                                                                    |
+| POST   | /api/v1/auth/refresh                                   | rotate refresh token — **belum diimplementasikan** (T21b)                                                                                |
+| POST   | /api/v1/auth/logout                                    | revoke refresh token — **belum diimplementasikan** (T21b)                                                                                |
 | POST   | /api/v1/contracts                                      | buat kontrak (DRAFT). Wajib header `Idempotency-Key` (TS §2.2/§2.5, ADR-007)                                                             |
 | PUT    | /api/v1/contracts/{id}                                 | update contract hanya DRAFT — **deferred** (PRD C-5), belum diimplementasikan                                                            |
 | POST   | /api/v1/contracts/{id}/activate                        | generate jadwal → ACTIVE. Body opsional; `start_date` default ke `planned_start_date`                                                    |

@@ -479,3 +479,282 @@ forward-only to **V20** at merge because T17's PR #12 claimed V19 first;
 `V20\_\_write_off_recorded_by_required.sql`strengthens`ck_contract_terminated_coherence`to require both`write_off_reason`and`write_off_recorded_by`on a TERMINATED contract. RBAC row added. Verification (Docker
 unavailable): compile pass;`*Test`= 60 suites / 448 tests / 0 failures incl.`WriteOffEngineTest`(5),`InstallmentWriteOffTest`(8),`ContractTerminateByWriteOffTest`(6);`\*IT` (`ContractWriteOffIT`, extended
 `EndpointRoleMatrixIT`) compile, run under Docker in CI.
+
+---
+
+## Completed task detail — Sprint 6 (continued) & Sprint 6b (DONE)
+
+Moved out of `tasks.md` on 2026-11-15. These are the implementation records for T18, T20, T21a, T27a and
+T31; the live backlog no longer reproduces their task scopes, and the one-line index stays in
+`tasks.md` -> Completed Work.
+
+---
+
+### T21a — Auth foundation (3 pts)
+
+**Status: DONE** (merged to `main` via PR #19, `278c57e`; review fixes in `070e7ad`). **Dependencies:** T20
+(DONE), T7/ADR-015 (DONE). Owner:
+new `auth` module + `shared/security` (decoder only). Source: Addendum §3.1–§3.4, §18.3–§18.4; ADR-005;
+ADR-015; ADR-022.
+
+**Implementation note (2026-11-15).** New `com.serfira.auth` module (`api`/`application`/`domain`/
+`infrastructure`). It reuses the V1 `app_user`/`refresh_token` tables — no schema migration. `AppUser` and
+`AppUserRepository` read users; `RefreshToken` and `RefreshTokenRepository` issue the stateful half T21b
+will rotate. `AuthConfiguration` provides an `Argon2PasswordEncoder` (`defaultsForSpringSecurity_v5_8()`:
+`m=16384,t=2,p=1`, 16-byte salt, 32-byte hash) backed by new dependency
+`org.bouncycastle:bcprov-jdk18on:1.80` (Argon2 KDF only; no `bcpkix`). `AuthService.login` rejects every
+failure with the same 401 `UNAUTHORIZED` (`AuthenticationFailedException`), pays one Argon2 verification
+against a startup dummy hash for unknown usernames, resets `failed_login_attempts`, sets `last_login_at`,
+and issues: a 15-minute HS256 access token (`sub` = `app_user.id`, `roles` = one-element string array,
+`iat`/`exp`) and an opaque UUID refresh token stored only as its SHA-256 hex in `refresh_token.token_hash`
+(7-day expiry, `created_by`/`updated_by` = user). `SYSTEM` cannot log in (inactive + non-Argon2 hash).
+`POST /api/v1/auth/login` is the new `AuthController` endpoint; it is `permitAll` in
+`ResourceServerSecurityConfiguration` with its own explicit matrix row (all three business roles).
+`ResourceServerSecurityConfiguration.tokenValidator` now also requires `sub` to resolve to an **active**
+`app_user` (`SELECT EXISTS …`), rejecting unknown/inactive subjects with 401 — closing T7-D2 and amending
+ADR-015 D2. `R__demo_seed.sql` (repeatable; originally `V99`) lives in `db/demo`;
+`application-demo.properties` adds that location, and `docker-compose.yml` defaults
+`SPRING_PROFILES_ACTIVE=demo`, so only the demo path seeds `admin`/`finance`/`manager` with Argon2id
+hashes. Tests: `AuthLoginIT` (7: claims/lifetime/hashed refresh
+token + reset/last-login; wrong password; unknown user; inactive user; unknown `sub`; inactive `sub`;
+post-login write stamps `created_by`/`updated_by`); `EndpointRoleMatrixIT` gains the `/auth/login` row (3
+cells); `ErrorDispatchSecurityIT` now seeds an active actor for its bearer tokens. **Verification:**
+`compileJava`/`compileTestJava` → BUILD SUCCESSFUL; full `check` with Docker/Testcontainers active →
+BUILD SUCCESSFUL, 112 suites / 866 tests / 0 failed (includes `AuthLoginIT`,
+`EndpointRoleMatrixIT` and `ErrorDispatchSecurityIT`). `AuthClockTestConfiguration` anchors its fixed
+instant to suite start: a hard-coded past instant made freshly minted tokens already expired against
+the decoder's real clock, which the local IT run caught. CI remains the merge gate.
+
+**PR #19 review fixes (2026-11-15, commit `070e7ad`).** Login now passes its Argon2 verification through
+a `Semaphore` of `serfira.auth.argon2.max-concurrent-verifications` permits (default 2, validated >= 1):
+a caller that cannot acquire a permit fails fast with **503 `AUTHENTICATION_CAPACITY_EXCEEDED`** instead
+of queueing unbounded 16 MiB KDFs (ADR-022 D9). The accepted-hash prefix was narrowed from `$argon2` to
+`$argon2id$`, so a legacy Argon2i/Argon2d encoding can never authenticate (ADR-022 D2). The demo seed was
+renamed `V99__demo_seed.sql` → **`R__demo_seed.sql`** (repeatable migration; `ON CONFLICT (username) DO
+NOTHING` keeps re-application harmless, at the cost of not updating an existing demo row's hash) and
+ADR-022 D8 documents it. `docker-compose.yml` now honours an explicitly empty `SPRING_PROFILES_ACTIVE`
+(`${SPRING_PROFILES_ACTIVE-demo}` instead of `:-`) and publishes the API on `127.0.0.1` only.
+
+### T20 — Observability baseline (3 pts)
+
+**Status: DONE** (merged to `main`, PR #18). **Dependencies:** none. Owner: `shared/observability` (new) +
+`shared/idempotency`. Source: Addendum §10; resolves X-3.
+
+**Implementation note (2026-11-07).** New `shared/observability` package. `CorrelationIdFilter`
+(`OncePerRequestFilter`) reads `X-Request-Id` or generates a UUID when absent/blank/longer than 64 chars,
+binds it in the MDC, echoes it on the response header, and clears the MDC in `finally`; registered via
+`FilterRegistrationBean` at `SecurityFilterProperties.DEFAULT_FILTER_ORDER - 10`, ahead of Spring Security
+in both the embedded container and Boot 4 MockMvc (a bare `Filter` bean would run after the security chain
+in MockMvc and lose the id on authentication failures; `SecurityFilterProperties` lives in
+`spring-boot-security` in Boot 4). `LogContext` adds scoped `module`/`contract_id` MDC (`AutoCloseable`,
+ownership-tracked). Structured logging is Boot 4 native ECS (`logging.structured.format.console=ecs`,
+`service.name=serfira-core`), no logback XML and no new dependency; the test profile keeps plain-text
+console output. X-3: `IdempotencyService` captures `CorrelationId.current()` at claim time into
+`idempotency_keys.request_id` (nullable column already in V1, so no migration). Tests:
+`StructuredLoggingFormatTest` (2) and `CorrelationIdFilterIT` (6). Verification (Docker available):
+`.\gradlew test` = 111 suites / 856 tests / 0 failed; `.\gradlew check` green.
+
+**PR #18 review fixes (2026-11-10, commit `0c05dfe`).** Removing a nested `LogContext` scope no longer
+removes the outer scope's keys; `LogContext` is wired into the production write paths (contract create,
+credit, write-off, payment, daily servicing); `CorrelationIdFilter` also handles the `ERROR` dispatch type;
+Addendum §3.1 corrected to say auth uses the existing V1 `app_user`/`refresh_token` tables (no new table).
+No new test-count record for this commit.
+
+### T18 — F4 Idempotency key cleanup job (2 pts)
+
+**Status: DONE** (merged to `main`, PR #14). **Dependencies:** T3/T26 daily-job infrastructure;
+ADR-017 (lifecycle, including the 2026-10-11 probe resolution); ADR-020 D3 (the all-status
+`uq_payment_idempotency` that keeps a voided key spent after cleanup).
+
+**Scope.** Add a job that deletes `idempotency_keys` rows past their retention window (`expires_at` passed),
+reusing the T3/T26 job infrastructure (ShedLock, `job_run`, keyset batching, backoff). Owner: the daily-job
+host (or `shared/job`). Purely hygiene — it bounds table growth; the permanent DB backstops, not the claim
+rows, are the correctness authority once a row is gone.
+
+**Business rules (ADR-017 D1–D3 + the 2026-10-11 resolution; TS §2.5).**
+
+- Delete only rows whose `expires_at` has passed. The delete must **not** re-open a key: a later reuse of a
+  deleted-and-expired key is still rejected, because the permanent business-row backstops
+  (`uq_contract_idempotency`, and the ADR-020-D3-widened all-status `uq_payment_idempotency`) hold
+  independently of the claim row.
+- **No pre-business-logic permanent-key probe (resolved 2026-10-11, ADR-017 addendum).** The 409 a reused
+  spent key returns after cleanup is whichever truthful guard the re-run reaches first (`DUPLICATE_CONTRACT`,
+  `CONTRACT_STATE_INVALID`, or `IDEMPOTENCY_KEY_EXPIRED` from a backstop translator). These varied codes are
+  accepted; the probe is explicitly declined. The invariant that matters — a cleaned-up claim can never
+  permit a duplicate business row — is held by the backstops.
+- Writes one `job_run` row (`job_name = "idempotency-cleanup"`, `records_processed` = rows deleted, A-9
+  granularity and status rules). Keyset batching + backoff from T26.
+
+**Acceptance criteria.** The job deletes only expired rows and leaves live ones; records a correct `job_run`
+row. After the job deletes an expired claim, re-issuing that key cannot create a second contract or payment —
+rejected with one of the truthful 409s. A voided payment's key stays spent after cleanup (ties to ADR-020
+D3). Crash leaves a `RUNNING` row the next run marks `ABANDONED` (T26, unchanged).
+
+**Tests.** IT `IdempotencyCleanupIT` (Testcontainers): expired rows deleted, live rows kept; `job_run`
+granularity; after cleanup, a reused spent key cannot mint a second contract/payment; a voided payment's key
+still spent (ADR-020 D3). `FixedClock`.
+
+**Implementation note (2026-10-21).** Additive, owned by `shared/idempotency` (cohesion with the table owner;
+no cross-module reach). New `IdempotencyCleanupJob` (non-transactional orchestration: run-as-SYSTEM,
+`abandonStaleRuns`, one `job_run` named `idempotency-cleanup`, keyset-paged delete, T26 backoff
+`{50,150,400,1000}`/5 attempts, `complete`/`failHard`), `IdempotencyKeyBatchDeleter` (`REQUIRES_NEW`
+per-page delete, separate `@Service` to dodge the self-invocation proxy pitfall), `LockedIdempotencyCleanupJob`
+(`@SchedulerLock(name="idempotency-cleanup")`) and `IdempotencyCleanupScheduler` (`@Scheduled` cron 01:30
+Asia/Jakarta, after the 01:00 daily servicing, distinct lock). `IdempotencyKeyRepository.deleteExpiredBatch`
+is a native keyset `DELETE … WHERE id IN (SELECT … WHERE expires_at < :now ORDER BY expires_at, id LIMIT
+:limit)`. Migration **V21** adds `idx_idempotency_keys_expires_at` only — no table/constraint/backstop
+change, and **no permanent-key probe** (ADR-017 2026-10-11 resolution). Three `serfira.jobs.idempotency-cleanup.*`
+keys in both `application.properties` (test cron `-`). Verification: `IdempotencyCleanupIT` (5 cases) +
+`IdempotencyRetentionIT` (3) green; `compileJava`/`compileTestJava` clean. The full `./gradlew test` run
+showed 7 failures in unrelated suites (`BaselineSchemaIT`, `PaymentVoidIT`, `ConsistencyCheckIT`,
+`DailyServicingJobIT`) that reproduce identically on the clean branch tip with the T18 changes stashed —
+pre-existing shared-DB IT ordering pollution, not introduced by T18; `./gradlew check` therefore not green
+on this base. T18's own suite passes within the full run. PR #14 review round: the cleanup
+`DELETE` is now scoped to the three permanently-backed create endpoints (`POST /api/v1/contracts`,
+`POST /api/v1/payments`, `POST /api/v1/settlements`) via an `endpoint IN (...)` allow-list, so write-off and
+payment-void claims are retained even once expired (they have no durable backstop — deleting them would
+re-open the key for reuse against a different target, ADR-017 single-use-forever / ADR-020 D3); and
+`jobRuns.complete` moved inside the job's failure boundary so a completion failure finalizes via `failHard`
+(with the original cause preserved via `addSuppressed`) instead of leaving a `RUNNING` row. New tests:
+`IdempotencyCleanupPagingIT` (multi-page keyset drain at batch-size 2) and an
+`IdempotencyCleanupIT` scoping regression asserting write-off/void claims survive while backed-create claims
+are deleted.
+
+### T27a — Minimal CI gate: `./gradlew check` (1 pt)
+
+**Status: DONE** (merged to `main`, PR #15). **Dependencies:** none. Sprint 6 prerequisite, because
+`ci.yml` previously ran only `./gradlew test`.
+
+**Scope.** Change the CI `test` job in `.github/workflows/ci.yml` to run `./gradlew check` instead of
+`./gradlew test`, so the quality gate runs on every PR and push to `main`. **Not** in scope (→ T27): a
+dependency-vulnerability scan, a secret scan, and the `docker compose up` → `/actuator/health` →
+`/v3/api-docs` smoke → `down` runtime gate.
+
+**Acceptance criteria.** CI runs `./gradlew check` and the build is green on the current `main` (verify
+`check` does not pull in an unconfigured plugin that fails the build; if it does, configure it minimally or
+scope it to T27). No change to application code.
+
+**Tests.** CI config change; verified by a green CI run on the PR.
+
+**Implementation note (2026-11-04).** Single-line change in `.github/workflows/ci.yml`: the `test` job's run
+step is now `./gradlew check --no-daemon` (step renamed to "Run quality gate (check = tests + verification)").
+The unconfigured-plugin risk is nil for this build: `build.gradle.kts` applies only `java`,
+`org.springframework.boot`, `io.spring.dependency-management` and `org.sonarqube`. For the `java` plugin
+`check` depends on `test`; the `sonarqube` plugin contributes a standalone `sonar` task that is **not** wired
+into `check`, so `check` never contacts the `localhost:9000` Sonar host; no Checkstyle/PMD/SpotBugs plugin is
+applied. So `check` on this build resolves to `test` plus the no-op `java` verification lifecycle — no new
+failing task. Verified locally that `./gradlew check --dry-run` configures the build and resolves the task
+graph without error (the full `check` with `*IT` tests runs in CI, which has Docker). No application code
+changed. Final green `./gradlew check` is confirmed by the PR's CI run.
+
+### T31 — Durable single-use-forever void idempotency key (2 pts)
+
+**Status: DONE** (merged to `main`, PR #16 + review fixes PR #17). **Dependencies:** T16 (DONE, void
+path + V18), ADR-017, ADR-020 D3, T18 (the cleanup job that makes the hole reachable). Raised by the PR #11
+review (Qodo finding #5).
+
+**Problem.** A payment-_creation_ key is kept spent forever by V18's all-status `uq_payment_idempotency`. A
+_void_ key has no such durable backstop — it lives only in the `IdempotencyService` claim row. Once T18
+deletes an expired claim, the same key could be reused to void a **different** payment. No ledger invariant
+is breached (each such void still passes every guard and posts a legitimate reversal), but it weakens the
+ADR-017 single-use-forever contract for void keys.
+
+**Scope.** Persist a durable, uniquely-constrained, endpoint-scoped void-key association with the voided
+payment (new Flyway migration: a column or side table + unique index keyed on the void endpoint scope + key),
+written inside the void transaction. Reject reuse of a spent void key for a different payment as
+`IDEMPOTENCY_KEY_EXPIRED` / `CONFLICT` even after the claim row is gone. Owner module: `payment`.
+
+**Acceptance criteria.** After a void and a simulated claim-row deletion (as T18 would do), reusing that key
+for a different payment is rejected and writes nothing; an identical retry of the original void still
+replays.
+
+**Tests.** IT (Testcontainers): void a payment, delete the claim row directly, then a reused-key void of a
+different payment is rejected; identical-key replay of the original void still returns the stored response.
+
+**Implementation note (2026-11-04).** Additive, owned entirely by `payment` (no cross-module reach). The
+void key is a **different**, endpoint-scoped key from the create key (which owns `payment.idempotency_key` /
+`uq_payment_idempotency`), so a durable column on the payment row is the wrong home — chose instead a small
+side table `payment_void_idempotency` keyed on `(endpoint, idempotency_key)`, mirroring the V18 precedent
+(a permanent business-row backstop that holds once the `idempotency_keys` claim row is gone). New
+**V22** (`V22__void_idempotency_durable_backstop.sql`): the table with `uq_payment_void_idempotency UNIQUE
+(endpoint, idempotency_key)`, an FK to `payment(id)`, immutable audit columns, a `payment_id` index, the
+same **data-preserving, fail-safe preflight** shape as V18 (fails the migration on a pre-existing collision,
+never deletes history), and a backfill that reconstructs rows for already-VOIDED payments from surviving
+claim rows. New `PaymentVoidIdempotency` entity (extends `ImmutableAuditable`; constructor guards mirror the
+V22 NOT NULL/length columns) and `PaymentVoidIdempotencyRepository`. `PaymentVoidApplicationService.reverse`
+now writes one durable row (step 0, inside the void transaction, ADR-020 D6) and flushes **before** any
+ledger work, so a reused key that already voided a different payment trips `uq_payment_void_idempotency` and
+is translated (`translateVoidKeyViolation`, matching `PaymentConflictClassifier`'s approach) to
+`IdempotencyKeyExpiredException` (409 `IDEMPOTENCY_KEY_EXPIRED`) with the whole void rolled back — writing
+nothing. An identical replay of the **original** void is unaffected: the payment is already VOIDED, so
+`reverse` returns the current representation before the durable insert and posts no second reversal. Other
+suites' `TRUNCATE … CASCADE` now lists `payment_void_idempotency`. New IT `VoidIdempotencyKeyDurabilityIT`
+(2 cases: reuse-for-a-different-payment rejected + writes nothing after a simulated T18 claim-row delete;
+identical replay still returns the stored response). **Verification (no Docker in this environment):**
+`.\gradlew compileJava compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` (pure unit
+suites) → BUILD SUCCESSFUL. The `*IT` suite — including `VoidIdempotencyKeyDurabilityIT` and the existing
+`PaymentVoidIT` — was **NOT run locally** because Docker/Testcontainers is unavailable here; CI is the gate
+for it (per the tech-steering no-Docker fallback). No change to the void's business behaviour beyond the new
+durable backstop; closes ADR-020 "Deferred finding #5".
+
+**PR #16 review fixes (2026-11-05).** Five review findings addressed on branch `t31-pr16-review-fixes`.
+(1, HIGH) The durable void-key check now runs **before** the already-VOIDED early return in
+`reverse(...)`, so a spent key reused against a _different_ payment that is already VOIDED is correctly
+409 `IDEMPOTENCY_KEY_EXPIRED` instead of a false 200 no-op. `recordDurableVoidKey` now reads
+`PaymentVoidIdempotencyRepository.findByEndpointAndIdempotencyKey` to distinguish "this key already maps
+to **this** payment" (replay: allow, no second row/reversal) from "maps to a **different** payment"
+(reject); a fresh key on an already-VOIDED payment still records its durable row, and the DB UNIQUE
+constraint remains the concurrency-safe authority for the race. (2, MED) Now that every successful void
+has durable protection, `POST /api/v1/payments/{id}/void` was added to the `deleteExpiredBatch`
+allow-list so expired void claims are cleaned up (write-off still excluded — no backstop yet); Javadoc
+updated. (3, MED) The V22 backfill joins on the **top-level** payment id extracted from the stored
+response (`response_json::jsonb ->> 'id'`, the bare `PaymentResponse` serialized before the envelope
+wrap) instead of a `LIKE '%id%'` substring that could match an embedded id and map one claim to several
+payments; the preflight now also fails on a void claim whose response has no extractable top-level id.
+(4, LOW) The backfill carries `k.created_by` into `payment_void_idempotency.created_by`, keeping the
+original actor. (5, MED) A `trg_payment_void_idempotency_immutable` `BEFORE UPDATE OR DELETE` trigger on
+`block_modification()` makes the append-only table reject native UPDATE/DELETE, matching the other
+immutable tables (INSERT and statement-level TRUNCATE still work). New IT cases: a reused key against a
+different **already-VOIDED** payment → 409 writing nothing; a fresh no-op key on a VOIDED payment stays
+protected after cleanup (`VoidIdempotencyKeyDurabilityIT`); and the real cleanup job deletes an expired
+void claim while the durable row keeps the key spent (`IdempotencyCleanupIT`, retention test updated to
+assert void **is** now deleted and write-off retained). **Verification (no Docker in this environment):**
+`.\gradlew compileJava compileTestJava` → BUILD SUCCESSFUL; `.\gradlew test --tests "*Test"` → BUILD
+SUCCESSFUL (468 unit tests, 0 failures). The `*IT` suites (`VoidIdempotencyKeyDurabilityIT`,
+`IdempotencyCleanupIT`, `PaymentVoidIT`) were **NOT run locally** — Docker/Testcontainers unavailable;
+CI is the gate.
+
+**Void-vs-caps DB-invariant correction (2026-11-05, branch `t31-pr16-review-fixes`).** Running the T31
+`*IT` suites with Docker for the first time surfaced a latent bug predating T31: the V3
+`assert_payment_allocation_component_caps()` and V16 `assert_penalty_adjustment_cap()` cap triggers
+summed `payment_allocation` rows with **no** owning-payment status filter. V16's comment even claimed
+parity with the POSTED-only application port "because void is T16" — false now that void (ADR-020) is
+live. A VOIDED payment's immutable allocation rows still counted against the per-installment caps, so a
+legitimate re-pay of an installment whose earlier payment was voided tripped the deferred trigger at
+COMMIT → HTTP 500 (`VoidIdempotencyKeyDurabilityIT.aFreshVoidKeyOnAnAlreadyVoidedPaymentStaysProtectedAfterCleanup`).
+Fixed by new forward-only migration **V23** (`V23__void_excludes_allocations_from_caps.sql`): both
+functions `CREATE OR REPLACE`d to join `payment_allocation → payment` and count only `status = 'POSTED'`
+rows, numerically identical to `sumActiveByInstallmentIds(PaymentStatus.POSTED, ...)`; the existing
+DEFERRABLE triggers stay wired, V3/V16 untouched. `assert_payment_allocation_totals()` (per-payment Σ =
+amount) is correct for voided payments and left alone. New `PaymentVoidIT` regression
+`repayingAnInstallmentAfterVoidingItsPaymentSucceeds` (pay → void → re-pay the same installment in full);
+ADR-021 records the decision and the ADR-020 cross-reference. **Verification (Docker available):**
+`.\gradlew test --tests "*VoidIdempotencyKeyDurabilityIT" --tests "*PaymentVoidIT" --tests "*PenaltyAdjustment*" --tests "*PaymentApiIT"` → BUILD SUCCESSFUL (46 tests, 0 failed;
+the void ITs including the former 500 repro now pass). A full-suite run then surfaced 6 **pre-existing**
+IT failures unrelated to V23 (confirmed identical red on the clean branch tip with this change stashed):
+`BaselineSchemaIT.postedPaymentCannotReuseAPaymentIdempotencyKey` (stale premise vs V18/ADR-020 D3
+single-use-forever key) and `ConsistencyCheckIT` (4) + `DailyServicingJobIT` (1) whose bare fixtures trip
+the V12 parent-side backstops / `ck_contract_terminated_coherence`. These "merged before tested" ITs were
+realigned to current invariants in a **separate commit** (test-only; see below), after which full
+`.\gradlew test` → 848 tests, 0 failed and `.\gradlew check` → BUILD SUCCESSFUL.
+
+**Stale-IT realignment (2026-11-05, separate commit, test-only).** The 6 pre-existing failures were stale
+TEST expectations, not production bugs; only test code/fixtures changed (V12, the consistency-check engine
+and all production code untouched). `BaselineSchemaIT` now asserts the voided idempotency key stays
+rejected; `ConsistencyCheckIT`'s stray-receivable fixture inserts entry + 2 lines in one CTE;
+`DailyServicingJobIT.terminateForFixture` sets `write_off_recorded_by`. The three `ConsistencyCheckIT`
+drift cases that used a zero-allocation payment were narrowed to **check-A-only** drift (a payment WITH a
+valid EXCESS allocation but WITHOUT its KAS journal). **Finding:** consistency check B's drift condition
+(Σ allocations ≠ `payment.amount`) is **unstageable end-to-end** because V12's DEFERRABLE
+`assert_payment_has_allocations()` rejects any such payment at COMMIT; check B is defense-in-depth,
+validated at the engine level (`ConsistencyCheckEngineTest`), not end-to-end. Logged as a follow-up below.

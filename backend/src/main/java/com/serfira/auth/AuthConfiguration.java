@@ -15,7 +15,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  * <p>Uses Spring Security's {@link Argon2PasswordEncoder} with the v5.8 defaults
  * ({@code m=16384 KiB, t=2, p=1}, 16-byte salt, 32-byte hash). BouncyCastle
  * ({@code bcprov-jdk18on}) is on the classpath for the Argon2 KDF (ADR-022). The seeded demo
- * hashes in {@code V99__demo_seed.sql} are produced with the same parameters.
+ * hashes in {@code R__demo_seed.sql} are produced with the same parameters.
  *
  * <p>The {@code Clock} bean is provided by {@code ClockConfiguration} in
  * {@code shared.clock} and is not redeclared here.

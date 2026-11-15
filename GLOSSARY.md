@@ -73,8 +73,17 @@ Seeded from the domain model. Extend it lazily via `/domain-modeling` as new ter
 ## Operational
 
 - **Business clock** — All business timestamps come from the injected `Clock` in zone Asia/Jakarta. Business code never calls `LocalDate.now()`/`Instant.now()`; clients cannot backdate or future-date. (tech conventions)
-- **Idempotency-Key** — Endpoint-scoped header required on retryable mutations (create Contract, create Payment, settlement). Claimed with `INSERT … ON CONFLICT DO NOTHING`; replays return the stored masked response. (ADR-007, DM §1.15)
-- **Daily servicing job** — The nightly job running billing → penalty accrual → aging. Each step records a `job_run` row per invocation; the `SYSTEM` user is the actor. (ADR-013, DM §1.15)
+- **Idempotency-Key** — Endpoint-scoped header required on retryable mutations (create Contract, create Payment, void Payment, apply credit, execute settlement, write off Contract, penalty adjustment). Claimed with `INSERT … ON CONFLICT DO NOTHING`; replays return the stored masked response. A key is single-use forever per endpoint: after its retention window a reuse is 409 `IDEMPOTENCY_KEY_EXPIRED`. (ADR-007, ADR-017, DM §1.15)
+- **Daily servicing job** — The nightly job running billing → penalty accrual → aging → consistency check. Each step records a `job_run` row per invocation; the `SYSTEM` user is the actor. (ADR-013, DM §1.15)
 - **Void** — Reversing a POSTED Payment: the Payment flips POSTED → VOIDED, one reversal JournalEntry mirrors the original with debit/credit swapped (`reversal_of_id` set), affected Installments' `paid_amount`/status are recomputed from the remaining POSTED payments, and the Payment's own EXCESS ContractCredit is reversed if still entirely AVAILABLE. Blocked (409) when that credit was partially/fully consumed (`PAYMENT_CREDIT_CONSUMED`) or any affected Installment is SETTLED/WRITTEN_OFF or its Contract is not ACTIVE (`PAYMENT_NOT_VOIDABLE`). Allocations and the original entry are never mutated or deleted; already-accrued penalty dates are never re-priced (A-3). (DM §1.7, ADR-020)
 - **Write-off** — Recording an external decision to stop collecting: `ACTIVE → TERMINATED`, caps the receivable, posts `BIAYA_PENGHAPUSAN_PIUTANG`. Never hides history. (DM §1.3/§1.12)
-- **app_user / SYSTEM** — The actor behind audit columns is the JWT `sub` (an `app_user` UUID) or the seeded `SYSTEM` user for jobs. `SYSTEM` never acts over HTTP. (ADR-015, DM §1.15)
+
+- **Audit actor** — The actor behind audit columns is the JWT `sub` (an `AppUser` UUID) or the seeded `SYSTEM` user for jobs. `SYSTEM` never acts over HTTP. (ADR-015, DM §1.15)
+
+## Authentication
+
+- **AppUser** — A row in `app_user` (`id`, `username`, `password_hash`, `role`, `is_active`, lockout counters). The seeded `SYSTEM` user is inactive and has an unusable `{disabled}` hash, so it can never log in. (DM §1.15, ADR-022)
+- **Login** — `POST /api/v1/auth/login` exchanges `{username, password}` for an access token and a refresh token. Every credential failure is the same generic 401 (no account enumeration); a saturated Argon2 verification semaphore is 503 `AUTHENTICATION_CAPACITY_EXCEEDED`. (ADR-022 D3/D9)
+- **Access token** — Short-lived (15-minute) HS256 JWT. `sub` is the UUID of an **active** `AppUser` (checked every request), `roles` is a string array from `app_user.role`; a token whose subject is unknown/inactive is rejected with 401. (ADR-015, ADR-022 D4/D6)
+- **Refresh token** — Opaque 128-bit random token, valid 7 days, stored only as a SHA-256 hash in `refresh_token`. Rotation, replay detection, and logout are T21b; its transport (response body vs httpOnly cookie) is the open item X-14. (ADR-022 D5)
+- **Authentication capacity guard** — Per-instance `Semaphore` (`serfira.auth.argon2.max-concurrent-verifications`, default 2) bounding parallel Argon2 verifications; beyond it, login fails fast with 503 rather than queueing unbounded 16 MiB KDFs. (ADR-022 D9)

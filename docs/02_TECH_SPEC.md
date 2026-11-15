@@ -15,16 +15,22 @@ satu module query tabel domain module lain secara langsung.
 com.serfira
 ├── contract/     → Contract, Customer, Asset, activation, jadwal
 ├── payment/      → Payment, alokasi, idempotency, channel
-├── penalty/      → Denda, aging job
+├── penalty/      → Denda, aging job, consistency-check step
 ├── settlement/   → Quote & eksekusi pelunasan
 ├── ledger/       → Journal, JournalLine, chart of accounts, posting
 ├── reporting/    → Read model / query service
-└── shared/       → Money, AuditFields, exception, config
+├── auth/         → AppUser, RefreshToken, login, penerbitan token
+└── shared/       → Money, AuditFields, exception, config, security, observability, idempotency
 ```
 
 Aturan dependency:
 
 - `payment`, `penalty`, `settlement` boleh bergantung ke `ledger` (posting jurnal).
+- `ledger` tidak boleh bergantung ke module lain (paling dasar).
+- `auth` bergantung ke `shared` (envelope, security, audit) dan memiliki tabel `app_user`/`refresh_token`.
+  `auth` **tidak** dipanggil modul bisnis mana pun: modul lain tidak perlu tahu siapa yang login, karena
+  identitas mengalir lewat `shared/security` (`AuditContext`, claim JWT). Satu-satunya pembacaan `app_user`
+  di luar `auth` adalah pemeriksaan user aktif di decoder (lihat butir `shared` di bawah).
 - `payment` juga boleh bergantung ke `contract` melalui **application interface**-nya (ADR-010, ADR-011):
   `InstallmentReceivablePort` (`contract.application`) adalah satu-satunya jalur bagi write path pembayaran
   untuk membaca receivable angsuran dan menerapkan hasil resolusinya, dan `InstallmentBillingPort` adalah
@@ -74,7 +80,6 @@ Aturan dependency:
   - `penalty → contract` lewat `contract.application.InstallmentStatusRecomputePort`: setelah waiver,
     `penalty` meminta `contract` me-recompute status resolusi installment dan menutup kontrak `MATURITY`
     bila sudah lunas; `contract` tetap pemilik `installment` dan melakukan penulisan baris ter-version itu.
-- `ledger` tidak boleh bergantung ke module lain (paling dasar).
 - `reporting` boleh baca semua (read-only). Sejak T8, laporan aging membaca receivable angsuran kontrak
   ACTIVE hanya lewat `contract.application.AgingReportSourcePort` (satu arah, `reporting` → port `contract`),
   bukan menyentuh tabel/entity `contract`/`installment` langsung. Alasannya: definisi DPD
@@ -149,6 +154,12 @@ PIUTANG_DENDA` (check C `RECEIVABLE_INSTALLMENT`). `ledger` tidak bergantung ke 
     Perbandingan expected-vs-actual ada di engine murni `ConsistencyCheckEngine`; tidak ada migrasi (tabel +
     CHECK `ck_recon_exception_type` sudah di V1) dan tidak ada endpoint HTTP (job in-process `SYSTEM`;
     `GET /reports/reconciliation-exceptions` ditunda ke modul `reporting`).
+- `shared/security` (bukan modul domain) membaca tabel `app_user` lewat satu query PK terindeks per request
+  terautentikasi, untuk menolak token yang `sub`-nya bukan user aktif (ADR-022 D1/D6). Ini **satu-satunya
+  pengecualian** yang disahkan terhadap aturan "tidak ada modul yang query tabel modul lain": modul `auth`
+  akan membuat `shared` bergantung ke `auth` (arah terbalik), sedangkan `auth` sendiri bergantung ke
+  `shared`. `shared/observability` menyediakan `X-Request-Id`/log ECS, `shared/idempotency` menyediakan
+  klaim idempotensi; keduanya tidak memiliki tabel domain.
 
 Jika suatu saat di-split microservice, seam sudah siap di interface antar-module.
 
@@ -250,8 +261,9 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
 - **Implementasi B5 (ADR-007):** claim dilakukan dengan `INSERT … ON CONFLICT (endpoint, key)
 DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernilai `COMPLETED` setelah respons
   tersimpan, `expires_at` = waktu claim + `IDEMPOTENCY_KEY_RETENTION_DAYS` (config), dan mekanisme hidup di
-  `com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup baris
-  kedaluwarsa belum diimplementasikan — **dijadwalkan di F4**, bukan C3 (ADR-010).
+  `com.serfira.shared.idempotency` supaya C3 (payment/settlement/credit application) memakainya ulang. Cleanup
+  baris kedaluwarsa diimplementasikan sebagai langkah job harian di T18 (V21); dibahas di butir lifecycle
+  di bawah.
 - **Lifecycle key (T24, ADR-017, mengubah ADR-007 keputusan 9).** Key bersifat **sekali pakai selamanya**
   per endpoint; retention hanya membatasi berapa lama respons tersimpan di-replay. Di dalam window: retry
   identik → replay respons tersimpan; body berbeda dengan key sama → 409 `CONFLICT`. Setelah window lewat:
@@ -265,20 +277,33 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   application service, jadi kegagalan operasi me-rollback claim dan retry dengan key yang sama tetap sah
   memperbaiki body; retry identik mengembalikan `response_json` tersimpan tanpa eksekusi ulang (tanpa baris
   `payment`/jurnal kedua).
+
+### 2.6 Keamanan & Autentikasi
+
+- **Login (T21a, ADR-022).** `POST /api/v1/auth/login` `{username, password}` → `{access_token, refresh_token}`
+  dalam envelope standar. Password diverifikasi dengan Argon2id; `SYSTEM` (nilai `{disabled}` V8) tidak pernah
+  bisa login. Semua kegagalan kredensial adalah **401** generik yang sama (anti-enumerasi), dan hash tidak
+  pernah di-log atau dikembalikan.
+- **Kapasitas verifikasi Argon2 (ADR-022 D9).** Verifikasi password dibatasi `Semaphore` berukuran
+  `serfira.auth.argon2.max-concurrent-verifications` (default 2, `>= 1`). Bila permit habis, login gagal cepat
+  dengan **503 `AUTHENTICATION_CAPACITY_EXCEEDED`**, bukan mengantre KDF 16 MiB tanpa batas.
 - **Roles & authorization (T7, ADR-015).** Authority berasal dari claim `roles` berupa array string
   (case-sensitive, sesuai `ck_app_user_role`); claim non-array dianggap tanpa role. Token yang memuat
   `SYSTEM` ditolak seluruhnya (403) — `SYSTEM` hanya untuk job in-process. Matrix Addendum §3.4 ditegakkan di
   satu tabel matcher pada `SecurityFilterChain` yang diakhiri `denyAll()`; endpoint yang tidak terdaftar
   otomatis 403. Presedens status: token tidak ada / tidak valid (signature salah, `alg: none`, kedaluwarsa,
-  tanpa `exp`, `sub` hilang atau bukan UUID) → 401 `UNAUTHORIZED`; token valid tanpa role yang diizinkan →
-  403 `FORBIDDEN`; request anonim ke path tak terdaftar → 401. Request yang ditolak tidak menulis apa pun.
-- Password hash: Argon2id. Jangan simpan password plaintext.
-- Access token JWT short-lived (15 menit).
+  tanpa `exp`, `sub` hilang atau bukan UUID, atau `sub` bukan `app_user` aktif — ADR-022 D6) → 401
+  `UNAUTHORIZED`; permintaan login yang melewati batas kapasitas Argon2 → 503
+  `AUTHENTICATION_CAPACITY_EXCEEDED`; token valid tanpa role yang diizinkan → 403 `FORBIDDEN`; request anonim
+  ke path tak terdaftar → 401. Request yang ditolak tidak menulis apa pun.
+- Password hash: Argon2id, prefix wajib `$argon2id$`. Jangan simpan password plaintext.
+- Access token JWT short-lived (15 menit), HS256, `sub` = `app_user.id` (ADR-022 D4).
 - Refresh token random, disimpan hashed di DB, **rotated on use**; token lama langsung `revoked_at` diisi.
-- Brute-force lockout: counter pada `app_user`, threshold dan lock window dikonfigurasi di application layer.
-- Browser refresh token: `HttpOnly`, `Secure`, `SameSite=Lax` (atau `Strict` bila deployment memungkinkan).
+  Rotasi/logout adalah T21b.
+- Brute-force lockout (T21b): counter pada `app_user`, threshold dan lock window dikonfigurasi di application layer.
+- Transport refresh token **belum final (X-14):** T21a mengembalikannya di body respons; Tech Spec ini dan
+  `06_FRONTEND_SPEC.md` mengasumsikan cookie `HttpOnly`. T21b memilih salah satu dan menyelaraskan dokumen.
 - Access token disimpan di memory oleh frontend, bukan localStorage.
-- Refresh cookie menggunakan `HttpOnly`, `Secure`, dan `SameSite=Lax` (atau `Strict` bila deployment memungkinkan); state-changing API tetap membutuhkan Authorization header sehingga CSRF exposure diminimalkan.
 - `created_by`/`updated_by` untuk user request berasal dari JWT principal; job memakai seeded non-interactive user `SYSTEM`. Semua audit actor menggunakan UUID `app_user.id`.
 
 ### 2.7 Outbox Pattern

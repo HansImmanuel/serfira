@@ -18,7 +18,7 @@
 | Data fetching (client) | TanStack Query v5 | Caching, refetch, loading state otomatis |
 | Forms | React Hook Form + Zod | Validasi client-side, type-safe |
 | HTTP client | Custom `apiFetch` wrapper | Satu tempat unwrap `{data, error}` envelope |
-| Auth state | Memory (access token) + httpOnly cookie (refresh token) | Sesuai Tech Spec §2.6 |
+| Auth state | Memory (access token) + httpOnly cookie (refresh token) | Sesuai Tech Spec §2.6. **Pending X-14:** T21a mengembalikan refresh token di body; T21b memutuskan transport final. |
 
 ### 1.2 Struktur Folder
 ```
@@ -100,6 +100,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 **Aturan:** unwrap envelope **hanya di `apiFetch`**. Komponen dan hooks tidak boleh handle raw `{data, error}` secara manual.
 
 ### 1.4 Auth Flow
+
+> **Pending X-14:** flow di bawah mengasumsikan refresh token di `httpOnly` cookie. Implementasi T21a
+> mengembalikan refresh token di body respons; T21b memutuskan transport final dan memperbarui blok ini.
+
 ```
 1. Login → POST /auth/login → access token (memory) + refresh cookie (httpOnly, auto-set by BE)
 2. Setiap request → Authorization: Bearer <access_token>

@@ -19,8 +19,8 @@ It is a portfolio project built on one principle: **money must always balance**.
 - PII (NIK, phone) is encrypted at rest and masked in API responses. Never put plaintext PII in logs, SQL, or URLs.
 
 ## Status
-- Built: `contract`, `payment`, `penalty`, `ledger`, `shared`.
-- Planned: `settlement`, `reporting`, login/RBAC, Next.js frontend (`frontend/` does not exist yet).
+- Built: `contract`, `payment`, `penalty`, `ledger`, `settlement`, `reporting`, `auth`, `shared`.
+- Planned: T21b (refresh rotation, logout, brute-force lockout, dev-key guard), T27 (CI/runtime gates), then the Next.js frontend (`frontend/` does not exist yet).
 - Out of scope: loan origination, credit scoring, treasury, field collection, real payment gateways, multi-currency.
 
 ## Source of truth
