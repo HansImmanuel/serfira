@@ -55,7 +55,7 @@ Health: `/actuator/health`. The app fails fast without `SERFIRA_SECURITY_PII_ENC
 
 - Base path `/api/v1/...`. Every response uses the `ApiResponse<T>` envelope `{ "data": ..., "error": null }`.
 - JSON wire names are snake_case (global Jackson `SNAKE_CASE`). Java fields stay camelCase.
-- Retryable mutations (`POST /contracts`, `POST /payments`, future settlement/credit) require an `Idempotency-Key` header, handled by `shared.idempotency.IdempotencyService`.
+- Retryable mutations require an `Idempotency-Key` header, handled by `shared.idempotency.IdempotencyService`. Exactly five endpoints do: `POST /contracts`, `POST /payments`, `POST /payments/{id}/void`, `POST /settlements`, `POST /contracts/{id}/write-off`. `POST /contracts/{id}/activate` is idempotent by state instead, and `POST /settlements/quote`, `POST /penalty-adjustments`, `POST /contracts/{id}/credit/apply` take no header.
 - Pagination: `page`, `size`, `sort` (snake_case sort tokens). Page envelope is `PageResponse`.
 - Error codes live in `shared.error.ErrorCode`. Throw `SerfiraException` subclasses (`BadRequestException`, `NotFoundException`, `ConflictException`); `GlobalExceptionHandler` maps them.
 - Document controllers with springdoc `@Operation` / `@ApiResponses`, listing every error code.
@@ -75,7 +75,7 @@ Health: `/actuator/health`. The app fails fast without `SERFIRA_SECURITY_PII_ENC
 **Security**
 
 - PII fields use `AesGcmStringAttributeConverter`; lookups and uniqueness use HMAC columns (`PiiHasher`). Mask PII in responses (`PiiMasker`).
-- Only health, info, OpenAPI, and `POST /api/v1/auth/login` are public. Authorization is one matcher table in `ResourceServerSecurityConfiguration` ending in `denyAll()`: a new endpoint is denied until it gets a row there, plus allowed-role and 403 tests in `EndpointRoleMatrixIT` (ADR-015 D3, ADR-022 D7).
+- Only health, info, OpenAPI, and the token endpoints (`POST /api/v1/auth/login`) are public. Authorization is one matcher table in `ResourceServerSecurityConfiguration` ending in `denyAll()`: a new endpoint is denied until it gets a row there. Every protected row needs its allowed-role and 403 cells in `EndpointRoleMatrixIT`. A `permitAll` token endpoint cannot have a 403 cell by construction, so its cells assert instead that all three business roles are **not** denied (ADR-015 D3, ADR-022 D7).
 - A valid token has an `exp`, a `sub` that is the canonical UUID of an **active** `app_user` (never `SYSTEM`), and a `roles` string array. A bad `sub` (unknown/inactive), missing `exp`, or an `app_user` that is not active → 401; no allowed role → 403. A saturated Argon2 verification semaphore on login → 503 `AUTHENTICATION_CAPACITY_EXCEEDED` (ADR-022 D9). `SYSTEM` never acts over HTTP (ADR-015 D4/D5, ADR-022 D6).
 
 ## Testing conventions

@@ -160,15 +160,21 @@ authentication (login/refresh/logout, Argon2id, brute-force lockout), `created_b
 
 **Dependency order:** T21a (DONE) → T21b. T27 is independent within the sprint.
 
-**Estimated load:** T21b (2) + T27 (2) = **4 pts**.
+**Estimated load:** T21b (3) + T27 (2) = **5 pts**.
 
 Business rules live in `04_GAPS_ADDENDUM.md` §3, §10 and the cited ADRs; these tasks point to them and do
 not restate them.
 
-### T21b — Refresh rotation, logout, brute-force lockout, dev-key guard (2 pts)
+### T21b — Refresh rotation, logout, brute-force lockout, dev-key guard (3 pts)
 
 **Status:** TODO
-**Estimate:** 2 pts
+**Estimate:** 3 pts
+Decision (2026-11-15, pre-implementation): the three open choices are settled. (a) X-14 transport =
+**response body**; no cookie/CSRF/CORS work this phase because there is no browser client — revisit at
+G2. (b) A locked account answers **423 `LOCKED` `ACCOUNT_LOCKED`** with the minutes remaining; the
+username-existence tell is accepted, bounded by the D9 Argon2 semaphore. (c) A replayed refresh token is
+**rejected only** (401); no token-family cascade revocation in T21b. All three go into the ADR-022
+addendum at implementation.
 
 **Goal:** Complete story **F2** with the stateful half of auth — rotating refresh tokens, logout,
 brute-force lockout — plus a production guard against the dev-only key fallbacks.
@@ -178,17 +184,28 @@ brute-force lockout — plus a production guard against the dev-only key fallbac
 - **`POST /api/v1/auth/refresh`** — rotate: validate the presented refresh token against its stored hash and
   expiry, issue a new access + new refresh token, revoke the old row (`revoked_at`) and point it at the new
   one via `replaced_by_id`. A reused/revoked refresh token is rejected (detect replay). Never stateless-only
-  for refresh (Addendum §3.3).
+  for refresh (Addendum §3.3). Rotation is **race-safe**: the old row is revoked by a conditional update
+  (`… WHERE revoked_at IS NULL`) that exactly one concurrent caller can win, so two parallel refreshes cannot
+  both mint. Refresh also **rejects an `app_user` that is inactive or carries a non-HTTP role**, so a
+  deactivated account cannot keep minting access tokens. The new refresh token's 7-day expiry is **sliding**
+  (re-issued from each rotation); there is no absolute session cap — record that in the ADR.
 - **`POST /api/v1/auth/logout`** — revoke the presented refresh token (`revoked_at`); idempotent.
 - **Brute-force lockout (Addendum §3.1/§3.3).** On failed login increment `failed_login_attempts`; past a
   threshold set `locked_until`; a locked account is rejected until the window passes; a success resets the
-  counter.
+  counter. Threshold and window are **configuration** (`serfira.auth.lockout.max-attempts`, default 5;
+  `serfira.auth.lockout.window`, default `PT15M`), not constants, and are mirrored into the test properties so
+  the ITs need not burn real Argon2 verifications.
 - **Dev-key production guard (CR-16).** Fail fast at startup in a production profile if the JWT/PII keys are
   still the documented `docker-compose` dev defaults, so a deployment cannot silently run on demo keys.
+- **Docs fallout.** Update `.kiro/steering/tech.md`: the public-path list (§Security) must say login **and**
+  refresh/logout are public, and its §Tech Stack auth line still calls rotation/logout/lockout "T21b". Update
+  `.kiro/steering/structure.md` and `tech.md` where they cite ambiguity **A-14**, which this task closes.
 - **Refresh-token transport (X-14).** Settle whether the refresh token is returned in the response body
   (current T21a behaviour, ADR-022 D3/D5) or set as an `HttpOnly` cookie (Tech Spec §2.6,
   `06_FRONTEND_SPEC.md` §2.1). Whichever wins, update the document that loses and the login response shape.
-- **Role matrix.** Add `/auth/refresh` and `/auth/logout` rows (§3.4) with allowed-role and 403 tests.
+- **Role matrix.** Add `/auth/refresh` and `/auth/logout` rows (§3.4). Both are `permitAll` — they are
+  called when the access token is dead, so they cannot require one (the same by-design exception as login,
+  ADR-022 D7) — so their matrix cells assert "not 401/403" for all three roles rather than a 403 cell.
 
 **Business Rules.** Refresh tokens are stored hashed and single-use via rotation; a revoked or
 already-rotated token never mints a new access token (replay detection). Logout must not error on an
@@ -196,21 +213,39 @@ already-revoked token. Lockout state lives on `app_user` (`failed_login_attempts
 dev-key guard must not weaken dev ergonomics — it only trips under the production profile.
 
 **Implementation Notes.** Owner: same `auth` module as T21a. Source: Addendum §3.2–3.3, §18, ADR-005,
-CR-10/CR-16. The lockout threshold/window is the one open decision — propose 5 attempts / 15 min; fix it in
-an ADR-022 addendum at implementation (tracked as the open ambiguity in Planning Notes, non-blocking). The
+CR-10/CR-16. The lockout threshold/window is settled at 5 attempts / 15 min, configurable via
+`serfira.auth.lockout.*`, and recorded in the ADR-022 addendum at implementation (Decision 2026-11-15). The
 Argon2 capacity guard (ADR-022 D9) already exists; lockout operates on top of it.
 
-**Dependencies:** T21a (app_user, refresh_token, login all exist).
+**Failure bookkeeping must survive the throw.** `AuthService.login` is `@Transactional` and throws on
+failure, so incrementing `failed_login_attempts` inside it would be rolled back and lockout would never
+fire — with a green test suite unless the IT asserts the persisted counter. Record the failure in a
+`@Transactional(propagation = REQUIRES_NEW)` component, or as one atomic statement
+(`… SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN … THEN … END … WHERE id = ?`)
+that also avoids a lost update under concurrent attempts. Same class of defect in rotation: guard it with the
+conditional revoke above and treat "0 rows affected" as replay.
+
+**Dependencies:** T21a (app_user, refresh_token, login all exist). **Closes A-14** in passing: `AppUser` is
+already edited for lockout behaviour, so it moves to project entity style at the same time (protected no-arg
+constructor, validating constructor, intention-revealing methods, no Lombok) instead of leaving steering and
+code in contradiction. No migration is needed — `app_user.locked_until`/`failed_login_attempts` and
+`refresh_token.revoked_at`/`replaced_by_id` are all in V1.
 
 **Acceptance Criteria.** A refresh rotates both tokens, revokes the old, and links `replaced_by_id`; a
 reused old refresh token is rejected. Logout revokes and is idempotent. N failed logins lock the account for
-the window; a correct login afterward is still blocked until it expires; a success resets the counter. Under
-the production profile, startup fails if the keys are the dev defaults. `/auth/refresh` and `/auth/logout`
-have matrix rows and role tests.
+the window; a correct login afterward is still blocked until it expires; a success resets the counter. A
+failed login leaves its increment **persisted** despite the thrown 401 (asserted in the DB, not only the
+status code). Under the production profile, startup fails if the keys are the dev defaults.
+`/auth/refresh` and `/auth/logout` have matrix rows whose cells assert all three roles are not denied. The
+ADR-022 addendum records D10 (transport), D11 (rotation/replay), D12 (lockout), D13 (dev-key guard), and
+`tasks.md` marks X-14 resolved.
 
-**Tests.** IT (Testcontainers): rotation happy path + old-token-rejected replay; logout idempotency; lockout
-after N failures and reset on success (`FixedClock` drives `locked_until`); a slice/context test that the
-production profile with dev keys fails to start. Extend `EndpointRoleMatrixIT` for the two endpoints.
+**Tests.** IT (Testcontainers): rotation happy path + old-token-rejected replay + expired refresh +
+refresh-for-inactive-user + two concurrent refreshes yield exactly one winner; logout idempotency (repeat and
+unknown token both 200) + refresh-after-logout rejected; lockout after N failures, correct password still
+blocked, reset on success, and the **persisted counter** asserted (`FixedClock` drives `locked_until`); an
+`ApplicationContextRunner` test that the production profile with dev keys fails to start while demo/default
+does not. Extend `EndpointRoleMatrixIT` for the two endpoints.
 
 **Risks.** The production-profile startup guard can break CI or local `prod`-profile runs if the test
 harness supplies dev keys; scope the guard to a real production profile and keep the test/dev profiles out
@@ -296,6 +331,7 @@ merged. This table carries only the later, not-yet-active sprints.
 | Reconcile the V12 `assert_payment_has_allocations` backstop vs consistency check B's end-to-end IT | V12 (DEFERRABLE, rejects Σallocations≠amount at COMMIT, "zero included") makes check B's drift unstageable in the DB, so `ConsistencyCheckIT` only exercises check A; check B is covered at the engine level (`ConsistencyCheckEngineTest`). Decide whether check B needs an end-to-end guard given V12 already forecloses its drift, or document it as engine-only by design. Test-only follow-up; no production change implied. |
 | Fix TS §7 repo structure (X-9)                                                              | Documentation only.                                                              |
 | Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | Deployment concern. No deployment exists yet.                                    |
+| `refresh_token` retention / cleanup job                                                     | Rotation inserts a row per refresh and revoked rows are never deleted (~96 rows per user per day at a 15-minute access token). Same shape as T18's keyset delete on `expires_at`, own ShedLock lock, one `job_run` row. Not needed for T21b; schedule it with the reporting work. |
 
 ### T10 — Component-exact penalty base (conditional, DEFERRED)
 
@@ -334,19 +370,19 @@ CR-11 → T28, CR-15 → T27. CR-14 was closed by T15. All others are DONE.
 
 Resolved items (A-11, A-12, A-13) and the fully-resolved Phase-1 decisions (A-1…A-10) are recorded in
 ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). Sprint 6 is DONE, so the open
-tail is Sprint 6b (T21b, plus T27) and later (T22, T28). Two decisions are deferred to implementation inside
-their tasks, neither blocking: the brute-force lockout threshold/window (T21b proposes 5 attempts / 15 min,
-to be fixed in an ADR-022 addendum) and the OWASP Dependency-Check severity threshold + suppression policy
-(T27). The F2 auth decisions recorded so far are in **ADR-022** (T21a: Argon2id, 15-min HS256, active-user
-decoder check, hashed refresh tokens, and the **D9** Argon2 concurrency cap → 503
+tail is Sprint 6b (T21b, plus T27) and later (T22, T28). One decision is deferred to implementation inside its
+task, non-blocking: the OWASP Dependency-Check severity threshold + suppression policy (T27). The T21b
+lockout threshold/window is settled at 5 attempts / 15 minutes, configurable via `serfira.auth.lockout.*`
+(Decision 2026-11-15). The F2 auth decisions recorded so far are in **ADR-022** (T21a: Argon2id, 15-min HS256,
+active-user decoder check, hashed refresh tokens, and the **D9** Argon2 concurrency cap → 503
 `AUTHENTICATION_CAPACITY_EXCEEDED`); rotation/lockout/transport remain T21b.
 
-**A-14 (open, non-blocking) — Lombok and entity conventions in `auth.domain`.** `AppUser` uses Lombok
-`@Getter`/`@Setter`, has an implicit public no-arg constructor and no validating constructor, while
+**A-14 (resolved by T21b, 2026-11-15) — Lombok and entity conventions in `auth.domain`.** `AppUser` used
+Lombok `@Getter`/`@Setter`, an implicit public no-arg constructor and no validating constructor, while
 `.kiro/steering/tech.md` ("Lombok … not used") and `.kiro/steering/structure.md` ("no Lombok"; entities need a
 `protected` no-arg constructor plus a validating public constructor and intention-revealing methods) say
-otherwise. `RefreshToken` follows the structure rule. Decide whether to refactor `AppUser` to project style or
-to amend the steering rules for auth entities; until then the steering text and the code disagree.
+otherwise. T21b edits `AppUser` for lockout behaviour anyway, so it moves to project style rather than
+amending the steering rules for one entity.
 
 ### Dependency order (open tail)
 
