@@ -21,6 +21,10 @@ services:
     build:
       context: ./backend
     environment:
+      # Local compose is the demo environment by default: the `demo` profile adds the
+      # demo-only Flyway location that seeds the three demo login users (Addendum §18.3/§18.4).
+      # Override with SPRING_PROFILES_ACTIVE=prod (or empty) for a non-demo database.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-demo}
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-serfira}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-serfira}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-serfira_dev}

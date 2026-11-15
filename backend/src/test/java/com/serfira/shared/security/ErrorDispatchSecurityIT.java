@@ -7,10 +7,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.serfira.TestcontainersConfiguration;
 import com.serfira.support.TestJwts;
@@ -40,6 +44,29 @@ class ErrorDispatchSecurityIT {
 	@Value("${local.server.port}")
 	int port;
 
+	@Autowired
+	JdbcTemplate jdbc;
+
+	private UUID actorId;
+
+	/**
+	 * The active-user validator (T21a) rejects a token whose {@code sub} is not a real, active
+	 * {@code app_user}; these tests need a token that authenticates so the matcher table runs.
+	 */
+	@BeforeEach
+	void seedActiveActor() {
+		actorId = jdbc.queryForObject("""
+				insert into app_user (username, password_hash, full_name, role, is_active, created_at, updated_at)
+					values (?, 'test-hash', 'Error Dispatch IT Actor', 'ADMIN_OPERASIONAL', TRUE,
+						clock_timestamp(), clock_timestamp())
+					returning id""", UUID.class, "error-dispatch-actor-" + UUID.randomUUID());
+	}
+
+	@AfterEach
+	void removeActor() {
+		jdbc.update("delete from app_user where id = ?", actorId);
+	}
+
 	@Test
 	void firewallRejectionKeepsItsStatusWithoutAToken() throws Exception {
 		HttpResponse<String> response = send(FIREWALL_REJECTED_PATH, null);
@@ -50,7 +77,7 @@ class ErrorDispatchSecurityIT {
 
 	@Test
 	void firewallRejectionKeepsItsStatusWithAValidToken() throws Exception {
-		String token = TestJwts.forRoles(UUID.randomUUID(), AppRole.ADMIN_OPERASIONAL.name());
+		String token = TestJwts.forRoles(actorId, AppRole.ADMIN_OPERASIONAL.name());
 
 		HttpResponse<String> response = send(FIREWALL_REJECTED_PATH, token);
 
@@ -68,7 +95,7 @@ class ErrorDispatchSecurityIT {
 
 	@Test
 	void directRequestForTheErrorPathWithATokenIsForbidden() throws Exception {
-		String token = TestJwts.forRoles(UUID.randomUUID(), AppRole.ADMIN_OPERASIONAL.name());
+		String token = TestJwts.forRoles(actorId, AppRole.ADMIN_OPERASIONAL.name());
 
 		HttpResponse<String> response = send("/error", token);
 

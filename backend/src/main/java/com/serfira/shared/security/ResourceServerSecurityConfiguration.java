@@ -15,11 +15,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtClaimNames;
 import org.springframework.security.oauth2.jwt.JwtClaimValidator;
@@ -61,8 +64,9 @@ import tools.jackson.databind.ObjectMapper;
  *
  * <p>Configuration (base64): {@code serfira.security.jwt.secret-base64} must decode to at least 32 bytes
  * (HS256). Missing/short secrets fail fast at startup. Set {@code SERFIRA_SECURITY_JWT_SECRET_BASE64} in the
- * environment; production must use its own key. Login/refresh/logout and {@code iss}/{@code aud}
- * validation remain T21 (F2).
+ * environment; production must use its own key. {@code POST /api/v1/auth/login} (T21a, ADR-022) mints
+ * tokens from a real {@code app_user}; refresh/logout and {@code iss}/{@code aud} validation remain T21b
+ * and deferred (ADR-005).
  */
 @Configuration
 @EnableWebSecurity
@@ -85,6 +89,13 @@ public class ResourceServerSecurityConfiguration {
 	private static final String MISSING_SECRET_MESSAGE =
 			"JWT signing key not configured; set serfira.security.jwt.secret-base64 (base64, >= 32 bytes)";
 
+	/** Used by the active-user validator (T21a, closes T7-D2, Addendum §3.3). */
+	private final JdbcTemplate jdbcTemplate;
+
+	public ResourceServerSecurityConfiguration(JdbcTemplate jdbcTemplate) {
+		this.jdbcTemplate = jdbcTemplate;
+	}
+
 	@Bean
 	JwtDecoder jwtDecoder(@Value("${serfira.security.jwt.secret-base64:}") String secretBase64) {
 		if (secretBase64 == null || secretBase64.isBlank()) {
@@ -100,21 +111,51 @@ public class ResourceServerSecurityConfiguration {
 			throw new IllegalStateException("serfira.security.jwt.secret-base64 must decode to at least 32 bytes");
 		}
 		NimbusJwtDecoder decoder = NimbusJwtDecoder.withSecretKey(new SecretKeySpec(keyBytes, "HmacSHA256")).build();
-		decoder.setJwtValidator(tokenValidator());
+		decoder.setJwtValidator(tokenValidator(jdbcTemplate));
 		return decoder;
 	}
 
 	/**
-	 * Default validators plus the two identity rules of ADR-015 D5. {@code setJwtValidator} replaces the
-	 * decoder's defaults, so they are delegated to explicitly. Spring Security 7 still accepts a token without
-	 * {@code exp} by default, so the expiry requirement must be switched on here.
+	 * Default validators plus the two identity rules of ADR-015 D5 and the active-user check that
+	 * closes T7-D2 (Addendum §3.3). {@code setJwtValidator} replaces the decoder's defaults, so they
+	 * are delegated to explicitly. Spring Security 7 still accepts a token without {@code exp} by
+	 * default, so the expiry requirement must be switched on here.
+	 *
+	 * <p>The active-user check amends ADR-015 D2 ("no app_user lookup per request"): a token whose
+	 * {@code sub} is unknown or belongs to an inactive user is rejected at the decoder, so it never
+	 * becomes an authentication (401). The cost is one indexed primary-key lookup per authenticated
+	 * request; in exchange, deactivating a user takes effect immediately instead of after the
+	 * access token expires (ADR-022 D6).
 	 */
-	static OAuth2TokenValidator<Jwt> tokenValidator() {
+	static OAuth2TokenValidator<Jwt> tokenValidator(JdbcTemplate jdbcTemplate) {
 		JwtTimestampValidator expiryRequired = new JwtTimestampValidator();
 		expiryRequired.setAllowEmptyExpiryClaim(false);
 		JwtClaimValidator<Object> subjectIsActorId =
 				new JwtClaimValidator<>(JwtClaimNames.SUB, ResourceServerSecurityConfiguration::isUuid);
-		return new DelegatingOAuth2TokenValidator<>(JwtValidators.createDefault(), expiryRequired, subjectIsActorId);
+		OAuth2TokenValidator<Jwt> activeUserValidator = jwt -> {
+			String sub = jwt.getSubject();
+			if (sub == null) {
+				return OAuth2TokenValidatorResult.failure(
+						new OAuth2Error("invalid_token", "Missing sub claim", null));
+			}
+			UUID userId;
+			try {
+				userId = UUID.fromString(sub);
+			} catch (IllegalArgumentException ex) {
+				return OAuth2TokenValidatorResult.failure(
+						new OAuth2Error("invalid_token", "sub is not a valid UUID", null));
+			}
+			Boolean active = jdbcTemplate.queryForObject(
+					"SELECT EXISTS (SELECT 1 FROM app_user WHERE id = ? AND is_active = TRUE)",
+					Boolean.class, userId);
+			if (!Boolean.TRUE.equals(active)) {
+				return OAuth2TokenValidatorResult.failure(
+						new OAuth2Error("invalid_token", "Unknown or inactive user", null));
+			}
+			return OAuth2TokenValidatorResult.success();
+		};
+		return new DelegatingOAuth2TokenValidator<>(
+				JwtValidators.createDefault(), expiryRequired, subjectIsActorId, activeUserValidator);
 	}
 
 	@Bean
@@ -147,6 +188,10 @@ public class ResourceServerSecurityConfiguration {
 						// by 401/403. Clients cannot choose the dispatch type, so a direct GET /error is a
 						// REQUEST dispatch and still falls through to denyAll.
 						.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+						// Login is the token issuer, so it is reachable without a token; every business
+						// role may call it (Addendum §3.4, T21a, ADR-022). It still has an explicit row
+						// in this table rather than being outside it, so default-deny stays the rule.
+						.requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/contracts").hasRole(ADMIN)
 						.requestMatchers(HttpMethod.POST, "/api/v1/contracts/*/activate").hasRole(ADMIN)
 						.requestMatchers(HttpMethod.POST, "/api/v1/payments").hasRole(ADMIN)

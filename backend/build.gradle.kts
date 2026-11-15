@@ -35,6 +35,10 @@ dependencies {
 	// --- Security & JWT ---
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
+	// BouncyCastle for Argon2id: Spring Security's Argon2PasswordEncoder uses the lightweight
+	// Argon2 KDF from bcprov. Only bcprov is needed (bcpkix/bcutil are certificate helpers). The
+	// explicit coordinate pins the version so the dependency is auditable (ADR-022, T21a).
+	implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
 	// --- Database ---
 	runtimeOnly("org.postgresql:postgresql")
