@@ -100,6 +100,9 @@ class EndpointRoleMatrixIT {
 	static Stream<Arguments> matrix() {
 		List<Arguments> cells = new ArrayList<>();
 		Map<String, List<String>> allowedRoles = new LinkedHashMap<>();
+		// Login (T21a, Addendum §3.4): reachable without a token (it mints the first one) and
+		// allowed for every business role. A malformed body still answers 400, never 401/403.
+		allowedRoles.put("POST /api/v1/auth/login", List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("POST /api/v1/contracts", List.of(ADMIN));
 		allowedRoles.put("POST /api/v1/contracts/" + RANDOM_ID + "/activate", List.of(ADMIN));
 		allowedRoles.put("POST /api/v1/payments", List.of(ADMIN));

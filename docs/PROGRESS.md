@@ -513,3 +513,17 @@ Sprint 6b (Phase-2 security boundary + CI hardening) — **berjalan**:
       id asal, replay tertelusur — id tersimpan tak berubah sementara respons replay meng-echo id retry).
       Verifikasi (Docker aktif): `.\gradlew test` = 111 suites / 856 tests / 0 gagal; `.\gradlew check`
       hijau. Branch `t20-observability-baseline`, PR #18.
+- [x] T21a — Auth foundation (Addendum §3.1–3.4/§18.3–18.4; ADR-022; menutup T7-D2). Modul `auth` baru
+      memakai tabel V1 `app_user`/`refresh_token` tanpa migrasi skema: `AppUser`/`RefreshToken` + repositori,
+      `AuthService` (Argon2id `defaultsForSpringSecurity_v5_8()`, BouncyCastle `bcprov-jdk18on:1.80`), dan
+      `POST /api/v1/auth/login` → access token HS256 15 menit (`sub` = `app_user.id`, `roles` array string) +
+      refresh token opaque yang hanya disimpan sebagai hash SHA-256. Semua kegagalan login = 401 generik
+      (verifikasi dummy untuk username tak dikenal). Validator decoder kini menolak `sub` yang tidak dikenal
+      atau tidak aktif (satu query PK per request; mengamendemen ADR-015 D2). Baris matriks `/auth/login`
+      `permitAll` untuk ketiga role. Seed demo `V99__demo_seed.sql` dipisah ke `db/demo` dan hanya aktif lewat
+      profil `demo` (`application-demo.properties`, default compose). Tes: `AuthLoginIT` (7),
+      `EndpointRoleMatrixIT` +3 sel, `ErrorDispatchSecurityIT` menyemai aktor aktif. Verifikasi (Docker
+      aktif): `.\gradlew check` = 112 suite / 866 tes / 0 gagal (termasuk `AuthLoginIT`; ditemukan dan
+      diperbaiki satu cacat clock: `FIXED_NOW` hard-coded di masa lalu membuat token baru langsung
+      kedaluwarsa, kini dijangkar ke waktu mulai suite). CI tetap menjadi gate merge. Branch
+      `t21a-auth-foundation`.

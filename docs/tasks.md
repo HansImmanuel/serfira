@@ -17,24 +17,27 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `92a10aa`. **Sprint 6 is COMPLETE** — T16 (PR #11), T17 (PR #12), T19 (PR #13), T18
-(PR #14), T27a (PR #15) and T31 (PR #16 + review fixes PR #17) are all **merged to `main`**. **Sprint 6b
-has started:** T20 (observability baseline) is **DONE and merged to `main`** (PR #18, including the
-post-review `LogContext`/`CorrelationIdFilter` fixes in `0c05dfe`).
+**Snapshot:** `main` @ `c47350c`; **T21a is DONE on branch `t21a-auth-foundation`** (not yet merged). **Sprint 6
+is COMPLETE** — T16 (PR #11), T17 (PR #12), T19 (PR #13), T18 (PR #14), T27a (PR #15) and T31 (PR #16 +
+review fixes PR #17) are all **merged to `main`**. **Sprint 6b has started:** T20 (observability baseline) is
+**DONE and merged to `main`** (PR #18, including the post-review `LogContext`/`CorrelationIdFilter` fixes in
+`0c05dfe`), and **T21a** (auth foundation) is **DONE** on its branch.
 
-The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **T20** (observability) DONE
-→ **T21a** (auth foundation) is the frontier → **T21b** (refresh rotation + lockout), with **T27** (CI &
-runtime gates) independent within the sprint. T22 and T28 remain later-sprint work.
+The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **T20** DONE → **T21a** DONE
+→ **T21b** (refresh rotation + lockout) is the frontier, with **T27** (CI & runtime gates) independent
+within the sprint. T22 and T28 remain later-sprint work.
 
-**Verified test counts:** last full local run (2026-11-07, T20 branch) = 111 suites / 856 tests / 0 failed.
-CI on `main` currently reports red for a GitHub billing reason, not a test failure; treat the local run as
-the verification record until CI is restored.
+**Verified test counts:** full local `./gradlew check` run (2026-11-15, T21a branch) = 112 suites / 866
+tests / 0 failed (the previous T20 baseline was 111 / 856). T21a adds 7 `AuthLoginIT` cases and 3
+`/auth/login` matrix cells, so the counts, not just compilation, confirm the new suites ran. CI on `main`
+currently reports red for a GitHub billing reason, not a test failure.
 
 **Implemented (verified in source):**
 
-- Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `shared`. `frontend/` is
-  empty.
-- Migrations **V1–V23**. V1 baseline + seeds/COA; V2 PII at rest; V3 deferred accounting invariants; V4
+- Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `auth`, `shared`.
+  `frontend/` is empty.
+- Migrations **V1–V23 plus the profile-gated demo seed V99** (V99 lives in `db/demo` and is applied only by
+  the `demo` profile). V1 baseline + seeds/COA; V2 PII at rest; V3 deferred accounting invariants; V4
   record-state coherence; V5 settlement immutability; V6/V7 contract-create safety; V8 SYSTEM hardening;
   V9 ShedLock + penalty-accrual integrity; V10 `job_run.business_date`; V11 statement index;
   V12 accounting backstops; V13 `ABANDONED` status; V14 credit-application cap; V15 penalty-waiver
@@ -67,15 +70,21 @@ the verification record until CI is restored.
   waive/reduce (T15); effective penalty owned by `penalty` behind `EffectivePenaltyPort` (T15/T30, ADR-019).
 - Write-off (T19, F5): accrue-before-resolve, pure `WriteOffEngine` caps recognized receivable, open
   installments → `WRITTEN_OFF`, contract `ACTIVE → TERMINATED`, one balanced `WRITE_OFF` journal.
-- Endpoints (15): `POST /api/v1/contracts`, `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
+- Endpoints (16): `POST /api/v1/auth/login`, `POST /api/v1/contracts`,
+  `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
   `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, `POST /api/v1/payments/{id}/void`,
   `GET /api/v1/reports/aging`, `POST /api/v1/contracts/{id}/credit/apply`,
   `GET /api/v1/contracts/{id}/credit`, `POST /api/v1/contracts/{id}/write-off`,
   `POST /api/v1/penalty-adjustments`, `POST /api/v1/settlements/quote`, `POST /api/v1/settlements`.
-- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all fifteen
-  endpoints (T7, ADR-015; every mutation above is ADMIN_OPERASIONAL only). `sub` must be a UUID with `exp`.
-  No login/refresh/logout, no `iss`/`aud` validation yet (ADR-005; T21).
+- Auth foundation (T21a, ADR-022): new `auth` module with `AppUser`/`RefreshToken` and Argon2id login.
+  `POST /api/v1/auth/login` returns a 15-minute HS256 access token (`sub` = active `app_user.id`, `roles`
+  string array) plus an opaque refresh token stored only as a SHA-256 hash. The decoder now rejects a
+  `sub` that is unknown or inactive (closes T7-D2). Demo users (`admin`/`finance`/`manager`) are seeded by
+  `V99__demo_seed.sql` only under the `demo` profile.
+- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all sixteen
+  endpoints (T7, ADR-015; every mutation above is ADMIN_OPERASIONAL only). `sub` must be the UUID of an
+  active `app_user` with `exp`. No refresh/logout/lockout, no `iss`/`aud` validation yet (ADR-005; T21b).
 
 Full per-task implementation notes for all DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
@@ -121,6 +130,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T27a  | Minimal CI gate: `ci.yml` runs `./gradlew check` instead of `test`                                                 | `t27a-ci-check-gate`, PR #15                            |
 | T31   | Durable void idempotency key: `payment_void_idempotency` side table, V22, closes ADR-020 finding #5                | ADR-017, ADR-020 D3, `t31-durable-void-idempotency-key` |
 | T20   | Observability baseline: `X-Request-Id` filter, ECS JSON logs, `request_id` on idempotency claims (X-3)             | Addendum §10, `t20-observability-baseline`, PR #18      |
+| T21a  | Auth foundation: `app_user` login, Argon2id, 15-min HS256 token, active-user decoder check, demo seed              | ADR-022, `t21a-auth-foundation`                         |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ---
@@ -170,7 +180,8 @@ note is under "Recently completed" below; the one-line summary is in Completed W
 
 ### T21a — Auth foundation: app_user, login, JWT identity binding (3 pts)
 
-**Status:** TODO
+**Status: DONE** (branch `t21a-auth-foundation`, ADR-022). Full implementation note is under "Recently
+completed" below; the one-line summary is in Completed Work. Closes the T7-D2 deferred active-user check.
 **Estimate:** 3 pts
 
 **Goal:** Issue real tokens from real users so `created_by`/`updated_by` carry a genuine `app_user.id`
@@ -323,6 +334,39 @@ plus NVD caching are the mitigations.
 
 These Sprint 6 / 6b tasks are **DONE**; the notes are retained here for traceability and will migrate to
 `tasks-archive.md` at the next archive pass. They must not be re-implemented.
+
+### T21a — Auth foundation (3 pts)
+
+**Status: DONE** (branch `t21a-auth-foundation`). **Dependencies:** T20 (DONE), T7/ADR-015 (DONE). Owner:
+new `auth` module + `shared/security` (decoder only). Source: Addendum §3.1–§3.4, §18.3–§18.4; ADR-005;
+ADR-015; ADR-022.
+
+**Implementation note (2026-11-15).** New `com.serfira.auth` module (`api`/`application`/`domain`/
+`infrastructure`). It reuses the V1 `app_user`/`refresh_token` tables — no schema migration. `AppUser` and
+`AppUserRepository` read users; `RefreshToken` and `RefreshTokenRepository` issue the stateful half T21b
+will rotate. `AuthConfiguration` provides an `Argon2PasswordEncoder` (`defaultsForSpringSecurity_v5_8()`:
+`m=16384,t=2,p=1`, 16-byte salt, 32-byte hash) backed by new dependency
+`org.bouncycastle:bcprov-jdk18on:1.80` (Argon2 KDF only; no `bcpkix`). `AuthService.login` rejects every
+failure with the same 401 `UNAUTHORIZED` (`AuthenticationFailedException`), pays one Argon2 verification
+against a startup dummy hash for unknown usernames, resets `failed_login_attempts`, sets `last_login_at`,
+and issues: a 15-minute HS256 access token (`sub` = `app_user.id`, `roles` = one-element string array,
+`iat`/`exp`) and an opaque UUID refresh token stored only as its SHA-256 hex in `refresh_token.token_hash`
+(7-day expiry, `created_by`/`updated_by` = user). `SYSTEM` cannot log in (inactive + non-Argon2 hash).
+`POST /api/v1/auth/login` is the new `AuthController` endpoint; it is `permitAll` in
+`ResourceServerSecurityConfiguration` with its own explicit matrix row (all three business roles).
+`ResourceServerSecurityConfiguration.tokenValidator` now also requires `sub` to resolve to an **active**
+`app_user` (`SELECT EXISTS …`), rejecting unknown/inactive subjects with 401 — closing T7-D2 and amending
+ADR-015 D2. `V99__demo_seed.sql` lives in `db/demo`; `application-demo.properties` adds that location, and
+`docker-compose.yml` defaults `SPRING_PROFILES_ACTIVE=demo`, so only the demo path seeds
+`admin`/`finance`/`manager` with Argon2id hashes. Tests: `AuthLoginIT` (7: claims/lifetime/hashed refresh
+token + reset/last-login; wrong password; unknown user; inactive user; unknown `sub`; inactive `sub`;
+post-login write stamps `created_by`/`updated_by`); `EndpointRoleMatrixIT` gains the `/auth/login` row (3
+cells); `ErrorDispatchSecurityIT` now seeds an active actor for its bearer tokens. **Verification:**
+`compileJava`/`compileTestJava` → BUILD SUCCESSFUL; full `check` with Docker/Testcontainers active →
+BUILD SUCCESSFUL, 112 suites / 866 tests / 0 failed (includes `AuthLoginIT`,
+`EndpointRoleMatrixIT` and `ErrorDispatchSecurityIT`). `AuthClockTestConfiguration` anchors its fixed
+instant to suite start: a hard-coded past instant made freshly minted tokens already expired against
+the decoder's real clock, which the local IT run caught. CI remains the merge gate.
 
 ### T20 — Observability baseline (3 pts)
 
@@ -612,8 +656,8 @@ ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). Spr
 tail is Sprint 6b (T20 → T21a → T21b, plus T27) and later (T22, T28). Two decisions are deferred to
 implementation inside their tasks, neither blocking: the brute-force lockout threshold/window (T21b proposes
 5 attempts / 15 min, to be fixed in an ADR note) and the OWASP Dependency-Check severity threshold +
-suppression policy (T27). A new ADR should record the F2 auth decisions (Argon2id, 15-min HS256, hashed
-rotating refresh tokens) when T21a lands.
+suppression policy (T27). The F2 auth decisions are recorded in **ADR-022** (T21a: Argon2id, 15-min HS256,
+active-user decoder check, hashed refresh tokens; rotation/lockout remain T21b).
 
 ### Dependency order (open tail)
 
@@ -624,8 +668,8 @@ T16 (void) + T18 ─► T31 (durable void key) — DONE, closes Sprint 6
 T27a (CI check gate) — DONE and merged (PR #15)
 
 Sprint 6b (active):
-  T20 (observability) ─► T21a (auth foundation: app_user, login, identity binding) ─► T21b (refresh rotation,
-                         logout, lockout, dev-key guard)
+  T20 (observability) ─► T21a (auth foundation) — DONE ─► T21b (refresh rotation, logout, lockout,
+                                                         dev-key guard)
   T27a ─► T27 (OWASP Dependency-Check + gitleaks + Compose smoke)   [independent within 6b]
 
   T21b ─► T22 (frontend login), T28 (key rotation)
