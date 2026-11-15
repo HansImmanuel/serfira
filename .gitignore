@@ -35,3 +35,5 @@ review-pr-*
 # Frontend (placeholder for future phases)
 node_modules/
 .next/
+
+opencode.json
