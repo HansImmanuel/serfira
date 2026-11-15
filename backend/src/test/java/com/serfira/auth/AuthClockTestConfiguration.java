@@ -24,13 +24,13 @@ import com.serfira.shared.clock.FixedClock;
 @TestConfiguration(proxyBeanMethods = false)
 public class AuthClockTestConfiguration {
 
-	/** Business instant for the login suite, captured when the test class loads. */
-	public static final OffsetDateTime FIXED_NOW =
-			OffsetDateTime.now(ZoneOffset.ofHours(7)).truncatedTo(ChronoUnit.SECONDS);
-
 	@Bean
-	@Primary
-	Clock authFixedClock() {
-		return new FixedClock(FIXED_NOW);
-	}
+    @Primary
+    FixedClock authFixedClock() {
+        return new FixedClock(
+            OffsetDateTime.now(ZoneOffset.ofHours(7))
+                .truncatedTo(ChronoUnit.SECONDS)
+        );
+    }
+
 }

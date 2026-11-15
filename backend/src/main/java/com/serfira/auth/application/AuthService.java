@@ -11,6 +11,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
 
 import javax.crypto.spec.SecretKeySpec;
 
@@ -65,17 +66,27 @@ public class AuthService {
 	private final Clock clock;
 	private final String dummyPasswordHash;
 
+	private final Semaphore argon2Permits;
+
 	public AuthService(
 			AppUserRepository userRepository,
 			RefreshTokenRepository refreshTokenRepository,
 			PasswordEncoder passwordEncoder,
 			@Value("${serfira.security.jwt.secret-base64}") String secretBase64,
-			Clock clock) {
+			Clock clock,
+			@Value("${serfira.auth.argon2.max-concurrent-verifications:2}") int maxConcurrentVerifications) {
+		
+		if (maxConcurrentVerifications < 1) {
+			throw new IllegalArgumentException(
+					"maxConcurrentVerifications must be at least 1");
+    	}
+
 		this.userRepository = userRepository;
 		this.refreshTokenRepository = refreshTokenRepository;
 		this.passwordEncoder = passwordEncoder;
 		this.jwtSecret = decodeSecret(secretBase64);
 		this.clock = clock;
+		this.argon2Permits = new Semaphore(maxConcurrentVerifications);
 		// A valid Argon2 hash of an unguessable value: lets an unknown username still pay one
 		// Argon2 verification, so login timing does not reveal whether the username exists.
 		this.dummyPasswordHash = passwordEncoder.encode(UUID.randomUUID().toString());
@@ -120,10 +131,19 @@ public class AuthService {
 		String hash = user == null ? dummyPasswordHash : user.getPasswordHash();
 		// Only Argon2 encodings are accepted. The seeded SYSTEM row carries '{disabled}' (V8), so
 		// it fails here without invoking the Argon2 parser (and without logging its warning).
-		if (hash == null || !hash.startsWith("$argon2")) {
+		if (hash == null || !hash.startsWith("$argon2id$")) {
 			return false;
 		}
-		return passwordEncoder.matches(rawPassword, hash);
+
+		if (!argon2Permits.tryAcquire()) {
+			throw new AuthenticationCapacityExceededException();
+		}
+
+		try {
+			return passwordEncoder.matches(rawPassword, hash);
+		} finally {
+			argon2Permits.release();
+		}
 	}
 
 	private String mintAccessToken(UUID userId, String role, OffsetDateTime now) {

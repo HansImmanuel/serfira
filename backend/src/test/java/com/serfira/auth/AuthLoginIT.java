@@ -6,6 +6,8 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.UUID;
 
@@ -32,6 +34,7 @@ import com.serfira.contract.api.CreateContractRequest;
 import com.serfira.contract.api.CreateCustomerRequest;
 import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
+import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.security.AppRole;
 import com.serfira.support.TestJwts;
 import tools.jackson.databind.JsonNode;
@@ -79,11 +82,22 @@ class AuthLoginIT {
 	@Autowired
 	JwtDecoder jwtDecoder;
 
+	@Autowired 
+	FixedClock authFixedClock;
+	
+	private OffsetDateTime testNow;
+
 	@BeforeEach
 	void resetDatabase() {
 		truncateDomainTables();
 		// Keep the seeded SYSTEM principal; clear only IT-created users.
 		jdbc.update("delete from app_user where id <> ?", SYSTEM_USER_ID);
+	}
+
+	@BeforeEach
+	void updateClock() {
+		testNow	= OffsetDateTime.now(ZoneOffset.ofHours(7)).truncatedTo(ChronoUnit.SECONDS);
+		authFixedClock.set(testNow);
 	}
 
 	@AfterEach
@@ -108,8 +122,8 @@ class AuthLoginIT {
 		Jwt jwt = jwtDecoder.decode(accessToken);
 		assertThat(jwt.getSubject()).isEqualTo(userId.toString());
 		assertThat(jwt.getClaimAsStringList("roles")).containsExactly(ADMIN);
-		assertThat(jwt.getIssuedAt()).isEqualTo(AuthClockTestConfiguration.FIXED_NOW.toInstant());
-		assertThat(jwt.getExpiresAt()).isEqualTo(AuthClockTestConfiguration.FIXED_NOW.plusMinutes(15).toInstant());
+		assertThat(jwt.getIssuedAt()).isEqualTo(testNow.toInstant());
+		assertThat(jwt.getExpiresAt()).isEqualTo(testNow.plusMinutes(15).toInstant());
 		assertThat(Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt())).isEqualTo(Duration.ofMinutes(15));
 
 		String storedHash = jdbc.queryForObject(
@@ -119,7 +133,7 @@ class AuthLoginIT {
 		OffsetDateTime refreshExpiry = jdbc.queryForObject(
 				"select expires_at from refresh_token where user_id = ?", OffsetDateTime.class, userId);
 		assertThat(refreshExpiry.toInstant())
-				.isEqualTo(AuthClockTestConfiguration.FIXED_NOW.plusDays(7).toInstant());
+				.isEqualTo(testNow.plusDays(7).toInstant());
 		assertThat(jdbc.queryForObject(
 				"select revoked_at from refresh_token where user_id = ?", OffsetDateTime.class, userId))
 				.isNull();
@@ -128,7 +142,7 @@ class AuthLoginIT {
 				"select failed_login_attempts from app_user where id = ?", Integer.class, userId)).isZero();
 		OffsetDateTime lastLogin = jdbc.queryForObject(
 				"select last_login_at from app_user where id = ?", OffsetDateTime.class, userId);
-		assertThat(lastLogin.toInstant()).isEqualTo(AuthClockTestConfiguration.FIXED_NOW.toInstant());
+		assertThat(lastLogin.toInstant()).isEqualTo(testNow.toInstant());
 	}
 
 	@Test
@@ -222,8 +236,8 @@ class AuthLoginIT {
 				role,
 				active,
 				failedAttempts,
-				AuthClockTestConfiguration.FIXED_NOW,
-				AuthClockTestConfiguration.FIXED_NOW);
+				testNow,
+				testNow);
 	}
 
 	private MvcResult login(String username, String password) throws Exception {

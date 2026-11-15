@@ -119,6 +119,10 @@ from a request body.
 the default and production profiles never see the file. Demo credentials remain demo-only and are
 documented in Addendum §18.3, not in the SQL file.
 
+### D9 (new) — Demo Seed now becomes repeatable
+
+`V99__demo_seed.sql` changed to `R__demo_seed.sql`
+
 ---
 
 ## Alternatives Considered
