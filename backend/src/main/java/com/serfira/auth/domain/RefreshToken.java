@@ -15,8 +15,13 @@ import jakarta.persistence.Table;
  * JPA entity for {@code refresh_token} (Addendum §3.1/§3.3, V1__baseline.sql).
  *
  * <p>Only the SHA-256 hash of the opaque refresh token is stored ({@code token_hash}); the raw
- * value is returned once to the client and never persisted or logged. T21a issues the row;
- * T21b owns rotation/revocation ({@code revoked_at}, {@code replaced_by_id}).
+ * value is returned once to the client and never persisted or logged.
+ *
+ * <p>Rotation (T21b) revokes the presented row and links it to its replacement through
+ * {@code revoked_at}/{@code replaced_by_id}. That transition is deliberately **not** an entity
+ * method: it runs as a conditional bulk update in {@code RefreshTokenRepository} so that exactly
+ * one of two concurrent refreshes can win the row. Mutable setters would invite a
+ * read-modify-write implementation that lets both callers mint a token.
  *
  * <p>Audit columns are explicit rather than inherited from {@code Auditable}: the actor of a login
  * is the authenticating user, not the request's {@code AuditContext} (SYSTEM while unauthenticated).
@@ -101,16 +106,8 @@ public class RefreshToken {
 		return revokedAt;
 	}
 
-	public void setRevokedAt(OffsetDateTime revokedAt) {
-		this.revokedAt = revokedAt;
-	}
-
 	public UUID getReplacedById() {
 		return replacedById;
-	}
-
-	public void setReplacedById(UUID replacedById) {
-		this.replacedById = replacedById;
 	}
 
 	public OffsetDateTime getCreatedAt() {
@@ -125,16 +122,23 @@ public class RefreshToken {
 		return updatedAt;
 	}
 
-	public void setUpdatedAt(OffsetDateTime updatedAt) {
-		this.updatedAt = Objects.requireNonNull(updatedAt, "updatedAt");
-	}
-
 	public UUID getUpdatedBy() {
 		return updatedBy;
 	}
 
-	public void setUpdatedBy(UUID updatedBy) {
-		this.updatedBy = updatedBy;
+	/** Whether this token was rotated away or logged out. */
+	public boolean isRevoked() {
+		return revokedAt != null;
+	}
+
+	/**
+	 * Whether the token may still be exchanged for a new pair: not revoked and not past its
+	 * expiry. Expiry is checked here as well as in the query so the rule holds regardless of how
+	 * the caller loaded the row.
+	 */
+	public boolean isUsableAt(OffsetDateTime now) {
+		Objects.requireNonNull(now, "now");
+		return !isRevoked() && now.isBefore(expiresAt);
 	}
 
 	private static String requireHash(String tokenHash) {

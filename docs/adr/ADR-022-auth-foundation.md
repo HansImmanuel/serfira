@@ -1,12 +1,13 @@
-# ADR-022: Auth Foundation — App Users, Login, and JWT Identity Binding (T21a)
+# ADR-022: Auth Foundation — App Users, Login, and JWT Identity Binding (T21a, addendum T21b)
 
 - **Status:** Accepted
-- **Date:** 2026-11-15
+- **Date:** 2026-11-15 (addendum 2026-11-16)
 - **Deciders:** Hans (solo developer)
 - **Amends:** ADR-015 decision D2 (the "no per-request `app_user` lookup" rule)
 - **Relates to:** ADR-005 (HS256 resource server), ADR-004 (key posture), ADR-016
   (input-bounds posture), ADR-015 (roles claim and endpoint matrix), `04_GAPS_ADDENDUM.md`
-  §3.1–§3.4 and §18.3–§18.4. T21b owns refresh rotation, logout, lockout and the dev-key guard.
+  §3.1–§3.4 and §18.3–§18.4. D1–D9 are T21a; the addendum adds D10–D13 for T21b (rotation,
+  logout, lockout, dev-key guard).
 
 ---
 
@@ -186,3 +187,125 @@ property can be raised when the runtime has more headroom. It was added in the P
 - The demo profile and the default profile have different Flyway locations. A database created with
   `demo` must not be switched to `prod` without a reset: `R__demo_seed.sql` would then no longer be
   resolved (it lives only in `db/demo`), and demo users would remain in the database.
+
+---
+
+## Addendum — T21b: Rotation, Logout, Lockout, Dev-Key Guard (2026-11-16)
+
+T21b implements the stateful half of F2. It adds no schema (every column it needs —
+`refresh_token.revoked_at`/`replaced_by_id`, `app_user.failed_login_attempts`/`locked_until` — is in
+V1) and no module dependency: rotation and logout live in the existing `auth` application service,
+and the guard lives in `shared/security` because it reads only configuration.
+
+### D10 — Refresh-token transport is the response body (settles X-14)
+
+`POST /auth/login` and `POST /auth/refresh` both return `{access_token, refresh_token}` in the
+standard envelope; `POST /auth/refresh` and `POST /auth/logout` take `{refresh_token}` in the body.
+No cookie is set, so there is no CSRF token, no `SameSite` policy and no credentialed CORS on the
+filter chain this phase.
+
+The alternative — an `HttpOnly` refresh cookie — is better against XSS (JavaScript cannot read the
+token) but only pays off with a browser client, which does not exist yet (`frontend/` is still
+empty). Adopting it now would add CSRF handling and credentialed CORS to the filter chain for a
+client that cannot use them, and it would still not protect against XSS in a future frontend that
+holds the access token in memory anyway. The frontend spec is updated to store both tokens in memory
+and to keep a single in-flight refresh promise, because single-use rotation makes a second parallel
+refresh fail; revisit the cookie at G2 with a real browser client, when CSRF can be designed once.
+
+`02_TECH_SPEC.md` §2.6 and `06_FRONTEND_SPEC.md` §1.1/§1.4 are aligned to the body transport, so
+the documents no longer contradict the implementation.
+
+### D11 — Single-use rotation, race-safe, reject-only on replay
+
+A refresh exchanges the presented token for a new pair and retires the old row: `revoked_at` is set
+and `replaced_by_id` points at the replacement. The replacement row is inserted first (its id is
+needed for the link) and the presented row is then retired with a **conditional** update
+(`UPDATE … WHERE id = ? AND revoked_at IS NULL`). Exactly one of two concurrent refreshes can affect
+that row; the loser sees 0 rows and treats the token as replay, and its transaction — including the
+replacement it had already inserted — rolls back. A read-modify-write on the entity would let both
+callers mint a pair, so the transition is deliberately not an entity setter.
+
+Every unusable token — unknown, expired, already rotated, logged out, or owned by an `app_user` that
+is now inactive or non-interactive — answers the same **401 `UNAUTHORIZED`** and mints nothing. The
+user is re-read on refresh rather than trusted from the token row, so deactivating an account also
+stops its refresh loop, not just its next access token.
+
+A replayed token is **rejected only**; the token family is not revoked. Cascade revocation would
+punish the legitimate client whenever a token is replayed once (a double-clicked refresh, a
+restored tab), and it does not help the actual attack it is meant for — a stolen token — because
+the attacker's and the victim's tokens are indistinguishable at that point. The cost is accepted:
+a stolen refresh token stays usable until it is rotated or logs out, bounded by the 7-day sliding
+expiry. Revisit with the frontend, where a single in-flight refresh promise removes the benign
+double-submit case.
+
+The 7-day expiry is **sliding**: each rotation issues a fresh 7-day window and there is no absolute
+session cap. That suits an operational back-office app that is used daily; a cap can be added later
+without a schema change if the deployment needs one.
+
+Logout revokes the presented token and is **idempotent**: unknown, expired and already-revoked
+tokens are all 200 with `data: null`. An error would (a) let a caller probe whether a token exists
+and (b) break the client that retries after a dropped response. Logout retires only the presented
+token, so closing one device does not log out another.
+
+### D12 — Brute-force lockout: 5 failures / 15 minutes, 423 `ACCOUNT_LOCKED`
+
+A failed password increments `app_user.failed_login_attempts`; reaching
+`serfira.auth.lockout.max-attempts` (default **5**) sets `locked_until = failure time +
+serfira.auth.lockout.window` (default **`PT15M`**). A successful login clears both the counter and
+the lock. The window is measured from the failure that crosses the threshold, so a slow trickle of
+attempts cannot keep an account locked indefinitely; a lock that has elapsed needs no cleanup
+because it is inert. Both numbers are configuration so a deployment can tune them; the defaults are
+the task's proposal.
+
+A locked account answers **423 `LOCKED` `ACCOUNT_LOCKED`** with the whole minutes remaining, before
+any password comparison — so it costs no Argon2 verification and the answer is identical whether or
+not the supplied password was correct. This is a deliberate exception to D3's uniform 401: the
+frontend needs to tell the user "try again in X minutes" rather than "bad credentials". It does
+disclose that a username exists, which D3 otherwise avoids; that is accepted because usernames are
+assigned by an administrator rather than held secret, the probing rate is bounded by the D9 Argon2
+semaphore, and the alternative (a generic 401) generates support tickets from users who think their
+password is wrong.
+
+**Failure bookkeeping crosses a transaction boundary.** `AuthService.login` is `@Transactional` and
+throws on failure, so an increment inside it would be rolled back and lockout would never fire — with
+a green test suite unless the test asserts the *persisted* counter. `LoginAttemptRecorder` is a
+separate `@Service` with `@Transactional(propagation = REQUIRES_NEW)`; the separate bean guarantees
+the call passes through a proxy, so the propagation actually applies. `AuthLockoutIT` asserts the
+counter in the database after each 401, which is the regression test for this trap.
+
+### D13 — Refuse to start production on the docker-compose dev keys (CR-16)
+
+`docker-compose.yml` ships fixed, public key material so local development needs no setup. Those
+values are in the repository, so anyone who has read the file can mint a valid JWT or decrypt PII at
+rest; a deployment that kept them would be silently and totally compromised.
+`DevKeyProductionGuardConfiguration` fails startup when a `prod` or `production` profile is active
+and any of `serfira.security.jwt.secret-base64`, `serfira.security.pii.encryption-key` or
+`serfira.security.pii.hmac-key` still equals its compose default.
+
+Details that matter:
+
+- The message names the offending **property and environment variable**, never the key value — a
+  startup log is exactly where a leaked secret survives.
+- It only trips for production profiles. Dev, test and demo keep working out of the box, and the
+  test properties may keep the public PII keys.
+- Missing or blank keys are not this guard's business; `JwtDecoder`, `PiiSecurityConfiguration` and
+  `AuthService` already fail fast with a clearer message.
+- It does not attempt entropy or strength validation: length is enforced where the keys are bound,
+  and comparing against the known-public values is the one check that catches the real mistake.
+- `production` is accepted alongside `prod` so a deployment cannot slip through on a spelling
+  difference.
+
+---
+
+## Addendum Consequences
+
+- Refresh rotation, logout, lockout and the dev-key guard are live; `EndpointRoleMatrixIT` gains the
+  `/auth/refresh` and `/auth/logout` rows (as `permitAll` cells, "not 401/403" for all three roles),
+  and `AuthRefreshIT`, `AuthLogoutIT`, `AuthLockoutIT` and `DevKeyProductionGuardTest` cover the
+  scenarios above.
+- Rotation inserts a row per refresh and revoked rows are never deleted (~96 rows per user per day
+  at a 15-minute access token). Retention is a deferred task in `docs/tasks.md`, not a leak fix.
+- A locked account needs a manual reset if the lock was caused by mistake (or in a demo database
+  with the seeded users): clear `locked_until` / `failed_login_attempts`.
+- The lockout threshold and the transport decision are recorded here, closing the last open T21b
+  items and ambiguity X-14. `AppUser` moved to project entity style in the same task, closing A-14.

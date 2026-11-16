@@ -65,8 +65,9 @@ import tools.jackson.databind.ObjectMapper;
  * <p>Configuration (base64): {@code serfira.security.jwt.secret-base64} must decode to at least 32 bytes
  * (HS256). Missing/short secrets fail fast at startup. Set {@code SERFIRA_SECURITY_JWT_SECRET_BASE64} in the
  * environment; production must use its own key. {@code POST /api/v1/auth/login} (T21a, ADR-022) mints
- * tokens from a real {@code app_user}; refresh/logout and {@code iss}/{@code aud} validation remain T21b
- * and deferred (ADR-005).
+ * tokens from a real {@code app_user}; {@code /auth/refresh} and {@code /auth/logout} (T21b) are the other
+ * two public token endpoints, authenticated by the refresh token in the body. {@code iss}/{@code aud}
+ * validation remains deferred (ADR-005, CR-10).
  */
 @Configuration
 @EnableWebSecurity
@@ -192,6 +193,12 @@ public class ResourceServerSecurityConfiguration {
 						// role may call it (Addendum §3.4, T21a, ADR-022). It still has an explicit row
 						// in this table rather than being outside it, so default-deny stays the rule.
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
+						// Refresh and logout are the same by-design exception (T21b): they are called
+						// precisely when the access token is dead or absent, and the refresh token in the
+						// body is their credential. Requiring a bearer token would make rotation pointless
+						// (ADR-022 D7). An invalid refresh token is still 401 from the service, never 403.
+						.requestMatchers(HttpMethod.POST, "/api/v1/auth/refresh", "/api/v1/auth/logout")
+								.permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/contracts").hasRole(ADMIN)
 						.requestMatchers(HttpMethod.POST, "/api/v1/contracts/*/activate").hasRole(ADMIN)
 						.requestMatchers(HttpMethod.POST, "/api/v1/payments").hasRole(ADMIN)

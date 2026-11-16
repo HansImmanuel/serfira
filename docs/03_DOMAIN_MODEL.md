@@ -339,8 +339,8 @@ nol, selain itu `FAILED`. Start/finish dicatat dalam transaksi terpisah dari wri
 | Method | Path                                                   | Keterangan                                                                                                                               |
 | ------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | /api/v1/auth/login                                     | login; access token (15 menit) + refresh token opaque (T21a, ADR-022)                                                                    |
-| POST   | /api/v1/auth/refresh                                   | rotate refresh token — **belum diimplementasikan** (T21b)                                                                                |
-| POST   | /api/v1/auth/logout                                    | revoke refresh token — **belum diimplementasikan** (T21b)                                                                                |
+| POST   | /api/v1/auth/refresh                                   | rotate refresh token → access + refresh token baru; token lama di-revoke (T21b, ADR-022 D11)                                             |
+| POST   | /api/v1/auth/logout                                    | revoke refresh token; idempoten (T21b, ADR-022 D11)                                                                                      |
 | POST   | /api/v1/contracts                                      | buat kontrak (DRAFT). Wajib header `Idempotency-Key` (TS §2.2/§2.5, ADR-007)                                                             |
 | PUT    | /api/v1/contracts/{id}                                 | update contract hanya DRAFT — **deferred** (PRD C-5), belum diimplementasikan                                                            |
 | POST   | /api/v1/contracts/{id}/activate                        | generate jadwal → ACTIVE. Body opsional; `start_date` default ke `planned_start_date`                                                    |

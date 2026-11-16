@@ -20,7 +20,7 @@ It is a portfolio project built on one principle: **money must always balance**.
 
 ## Status
 - Built: `contract`, `payment`, `penalty`, `ledger`, `settlement`, `reporting`, `auth`, `shared`.
-- Planned: T21b (refresh rotation, logout, brute-force lockout, dev-key guard), T27 (CI/runtime gates), then the Next.js frontend (`frontend/` does not exist yet).
+- Planned: T27 (CI/runtime gates), then the Next.js frontend (`frontend/` does not exist yet).
 - Out of scope: loan origination, credit scoring, treasury, field collection, real payment gateways, multi-currency.
 
 ## Source of truth

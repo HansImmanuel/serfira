@@ -9,6 +9,9 @@ import com.serfira.auth.domain.AppUser;
 
 /**
  * JPA repository for {@link AppUser} (T21a).
+ *
+ * <p>Lockout bookkeeping is done on the loaded entity and flushed by the caller's transaction
+ * (T21b): a login runs inside one transaction that either persists the failure or mints tokens.
  */
 public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
 

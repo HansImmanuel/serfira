@@ -103,6 +103,11 @@ class EndpointRoleMatrixIT {
 		// Login (T21a, Addendum §3.4): reachable without a token (it mints the first one) and
 		// allowed for every business role. A malformed body still answers 400, never 401/403.
 		allowedRoles.put("POST /api/v1/auth/login", List.of(ADMIN, FINANCE, MANAJEMEN));
+		// Refresh/logout (T21b): the same by-design public exception. They are called when the access
+		// token is dead, so they cannot require one; the refresh token in the body is the credential
+		// (ADR-022 D7). An empty body is therefore 400, never 401/403.
+		allowedRoles.put("POST /api/v1/auth/refresh", List.of(ADMIN, FINANCE, MANAJEMEN));
+		allowedRoles.put("POST /api/v1/auth/logout", List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("POST /api/v1/contracts", List.of(ADMIN));
 		allowedRoles.put("POST /api/v1/contracts/" + RANDOM_ID + "/activate", List.of(ADMIN));
 		allowedRoles.put("POST /api/v1/payments", List.of(ADMIN));

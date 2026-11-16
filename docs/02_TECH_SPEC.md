@@ -294,15 +294,33 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   otomatis 403. Presedens status: token tidak ada / tidak valid (signature salah, `alg: none`, kedaluwarsa,
   tanpa `exp`, `sub` hilang atau bukan UUID, atau `sub` bukan `app_user` aktif — ADR-022 D6) → 401
   `UNAUTHORIZED`; permintaan login yang melewati batas kapasitas Argon2 → 503
-  `AUTHENTICATION_CAPACITY_EXCEEDED`; token valid tanpa role yang diizinkan → 403 `FORBIDDEN`; request anonim
-  ke path tak terdaftar → 401. Request yang ditolak tidak menulis apa pun.
+  `AUTHENTICATION_CAPACITY_EXCEEDED`; login ke akun yang sedang terkunci → 423 `ACCOUNT_LOCKED` (ADR-022 D12);
+  token valid tanpa role yang diizinkan → 403 `FORBIDDEN`; request anonim ke path tak terdaftar → 401. Request
+  yang ditolak tidak menulis apa pun.
 - Password hash: Argon2id, prefix wajib `$argon2id$`. Jangan simpan password plaintext.
 - Access token JWT short-lived (15 menit), HS256, `sub` = `app_user.id` (ADR-022 D4).
-- Refresh token random, disimpan hashed di DB, **rotated on use**; token lama langsung `revoked_at` diisi.
-  Rotasi/logout adalah T21b.
-- Brute-force lockout (T21b): counter pada `app_user`, threshold dan lock window dikonfigurasi di application layer.
-- Transport refresh token **belum final (X-14):** T21a mengembalikannya di body respons; Tech Spec ini dan
-  `06_FRONTEND_SPEC.md` mengasumsikan cookie `HttpOnly`. T21b memilih salah satu dan menyelaraskan dokumen.
+- **Refresh token (T21b, ADR-022 D11).** Random 128-bit, disimpan hashed (`token_hash`) dan **rotated on use**:
+  `POST /api/v1/auth/refresh` menerbitkan access + refresh baru, mengisi `revoked_at` baris lama dan
+  menautkannya ke pengganti lewat `replaced_by_id`. Rotasi diamankan dengan update bersyarat
+  (`… WHERE revoked_at IS NULL`) sehingga dari dua refresh paralel tepat satu yang menang; token yang
+  diputar ulang (replay), kedaluwarsa, sudah di-logout, atau milik `app_user` non-aktif ditolak dengan 401
+  yang sama dan tidak menerbitkan apa pun. Masa berlaku 7 hari dan **sliding** (di-reset setiap rotasi); tidak
+  ada session cap absolut. `POST /api/v1/auth/logout` me-revoke token yang dikirim dan **idempoten** (token
+  tak dikenal / sudah di-revoke tetap 200 dengan `data: null`).
+- **Brute-force lockout (T21b, ADR-022 D12).** Login gagal menambah `failed_login_attempts`; mencapai
+  threshold mengisi `locked_until` = waktu kegagalan yang melewati ambang + window. Threshold dan window
+  adalah konfigurasi (`serfira.auth.lockout.max-attempts`, default 5; `serfira.auth.lockout.window`, default
+  `PT15M`). Akun terkunci menjawab **423 `ACCOUNT_LOCKED`** dengan sisa menit, bahkan bila password benar, dan
+  tidak membayar verifikasi Argon2; login sukses mereset counter dan lock. Pencatatan kegagalan berjalan di
+  transaksi `REQUIRES_NEW` supaya tidak ikut ter-rollback oleh 401.
+- **Transport refresh token (X-14, ADR-022 D10).** Token dikembalikan di **body respons**
+  (`{access_token, refresh_token}`) untuk login maupun refresh; tidak ada cookie, sehingga tidak ada CSRF
+  handling maupun CORS ber-kredensial. Frontend menyimpan keduanya di memory. Cookie `HttpOnly` ditunda
+  sampai ada browser client nyata (G2).
+- **Dev-key production guard (T21b, ADR-022 D13).** Saat profil `prod`/`production` aktif, aplikasi gagal
+  start bila `serfira.security.jwt.secret-base64`, `serfira.security.pii.encryption-key`, atau
+  `serfira.security.pii.hmac-key` masih bernilai default publik `docker-compose.yml`. Pesan menyebut nama
+  properti (tidak pernah nilainya). Profil dev/test/demo tetap berjalan dengan nilai default tersebut.
 - Access token disimpan di memory oleh frontend, bukan localStorage.
 - `created_by`/`updated_by` untuk user request berasal dari JWT principal; job memakai seeded non-interactive user `SYSTEM`. Semua audit actor menggunakan UUID `app_user.id`.
 

@@ -18,7 +18,7 @@
 | Data fetching (client) | TanStack Query v5 | Caching, refetch, loading state otomatis |
 | Forms | React Hook Form + Zod | Validasi client-side, type-safe |
 | HTTP client | Custom `apiFetch` wrapper | Satu tempat unwrap `{data, error}` envelope |
-| Auth state | Memory (access token) + httpOnly cookie (refresh token) | Sesuai Tech Spec §2.6. **Pending X-14:** T21a mengembalikan refresh token di body; T21b memutuskan transport final. |
+| Auth state | Memory (access token + refresh token) | Sesuai Tech Spec §2.6. X-14 sudah diputuskan (ADR-022 D10): refresh token dikirim di body, bukan cookie, jadi tidak ada CSRF/CORS ber-kredensial. |
 
 ### 1.2 Struktur Folder
 ```
@@ -101,16 +101,23 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
 ### 1.4 Auth Flow
 
-> **Pending X-14:** flow di bawah mengasumsikan refresh token di `httpOnly` cookie. Implementasi T21a
-> mengembalikan refresh token di body respons; T21b memutuskan transport final dan memperbarui blok ini.
+> **X-14 resolved (ADR-022 D10):** refresh token di **body respons**, disimpan di memory bersama access
+> token. Tidak ada cookie `HttpOnly`, sehingga tidak ada CSRF handling maupun CORS ber-kredensial pada
+> fase ini; keputusan cookie ditinjau ulang saat browser client nyata ada (G2).
 
 ```
-1. Login → POST /auth/login → access token (memory) + refresh cookie (httpOnly, auto-set by BE)
+1. Login → POST /auth/login → simpan access token + refresh token di memory
 2. Setiap request → Authorization: Bearer <access_token>
-3. 401 response → POST /auth/refresh (cookie dikirim otomatis) → access token baru di memory
-4. Refresh gagal → redirect ke /login
-5. Logout → POST /auth/logout + clear memory token
+3. 401 response → POST /auth/refresh {"refresh_token": <memory>} → ganti keduanya dengan pasangan baru
+   (token lama langsung tidak berlaku: rotasi single-use)
+4. Refresh gagal (401) → buang kedua token, redirect ke /login
+5. Logout → POST /auth/logout {"refresh_token": <memory>} → buang kedua token (endpoint idempoten, 200)
 ```
+
+**Aturan token:** token hanya di memory (bukan `localStorage`/`sessionStorage`), sehingga reload halaman
+memaksa login ulang. Refresh tidak boleh dipanggil paralel dari beberapa request; `lib/auth.ts` memegang
+satu promise refresh in-flight dan request lain menunggu hasilnya, karena rotasi single-use membuat
+refresh kedua dengan token lama ditolak 401.
 
 **Idempotency-Key generation:**
 - Di-generate saat form pembuka pertama kali mount (UUID v4), bukan saat submit.
@@ -124,9 +131,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 ### 2.1 `/login`
 **Komponen:** form username + password, tombol Login.
 **Behavior:**
-- Submit → `POST /auth/login` → simpan access token di memory → redirect ke `/contracts`.
+- Submit → `POST /auth/login` → simpan access token dan refresh token di memory → redirect ke `/contracts`.
 - Error display: tunjukkan `error.message` dari envelope jika 401/403.
-- Brute-force lockout: tampilkan "Account locked, try again in X minutes" dari error message BE.
+- Brute-force lockout: **423 `ACCOUNT_LOCKED`** menampilkan "Account locked, try again in X minutes" dari
+  `error.message` BE (pesan sudah memuat sisa menit). Form tidak perlu membedakan 401 vs 423 selain teks.
 
 **Form fields:** `username` (required), `password` (required, min 8 char client-side).
 

@@ -83,7 +83,11 @@ Sprint 6b (Phase-2 security boundary + CI hardening) — **berjalan** (detail: a
       hash SHA-256, decoder menolak `sub` tidak dikenal/tidak aktif (menutup T7-D2), seed demo repeatable
       `R__demo_seed.sql` hanya di profil `demo`; guard kapasitas Argon2 → 503 `AUTHENTICATION_CAPACITY_EXCEEDED`
       (ADR-022; PR #19 + fixes `070e7ad`)
-- [ ] T21b — Refresh rotation, logout, brute-force lockout, dev-key guard, refresh-token transport (X-14)
+- [x] T21b — Refresh rotation (`POST /api/v1/auth/refresh`, single-use, race-safe via conditional revoke),
+      logout idempoten (`POST /api/v1/auth/logout`), brute-force lockout 5 × `PT15M` → 423 `ACCOUNT_LOCKED`
+      (counter dicatat di transaksi `REQUIRES_NEW`), dev-key guard untuk profil `prod`/`production`,
+      transport refresh token di body (menutup X-14, `AppUser` pindah ke gaya entity proyek → menutup A-14)
+      (ADR-022 D10–D13)
 - [ ] T27 — CI & runtime gates: OWASP Dependency-Check, gitleaks, Compose smoke
 
 Sprint berikutnya: T22 (G1–G6 reporting/frontend/demo/outbox) dan T28 (rotasi kunci PII/HMAC) — lihat
