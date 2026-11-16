@@ -238,9 +238,13 @@ a stolen refresh token stays usable until it is rotated or logs out, bounded by 
 expiry. Revisit with the frontend, where a single in-flight refresh promise removes the benign
 double-submit case.
 
-The 7-day expiry is **sliding**: each rotation issues a fresh 7-day window and there is no absolute
-session cap. That suits an operational back-office app that is used daily; a cap can be added later
-without a schema change if the deployment needs one.
+The 7-day window is **sliding at the token level, not bounded at the session level**: each
+individual refresh token expires seven days after it was issued, and every successful rotation
+creates another token with a fresh seven-day window. There is currently **no absolute session
+lifetime cap**, so a client that keeps rotating can remain logged in indefinitely. A continuously
+renewed compromised session can therefore stay usable beyond seven days as long as the attacker
+keeps winning the rotation. That suits an operational back-office app that is used daily; an
+absolute cap can be added later without a schema change if the deployment needs one.
 
 Logout revokes the presented token and is **idempotent**: unknown, expired and already-revoked
 tokens are all 200 with `data: null`. An error would (a) let a caller probe whether a token exists
@@ -266,30 +270,52 @@ assigned by an administrator rather than held secret, the probing rate is bounde
 semaphore, and the alternative (a generic 401) generates support tickets from users who think their
 password is wrong.
 
-**Failure bookkeeping crosses a transaction boundary.** `AuthService.login` is `@Transactional` and
-throws on failure, so an increment inside it would be rolled back and lockout would never fire — with
-a green test suite unless the test asserts the *persisted* counter. `LoginAttemptRecorder` is a
-separate `@Service` with `@Transactional(propagation = REQUIRES_NEW)`; the separate bean guarantees
-the call passes through a proxy, so the propagation actually applies. `AuthLockoutIT` asserts the
-counter in the database after each 401, which is the regression test for this trap.
+**Lockout bookkeeping is serialized per account and crosses transaction boundaries.**
+`AuthService.login` is deliberately **not** transactional: the account lookup is a short read,
+Argon2 runs with no database connection held, and the writes then run in their own transactions.
+`LoginAttemptRecorder` is a separate `@Service` with
+`@Transactional(propagation = REQUIRES_NEW)`; it re-reads the account with a pessimistic write lock
+(`findLockedById`, `SELECT ... FOR UPDATE`), so concurrent failures on one account serialize and
+every committed failure increments the persisted counter exactly once. `REQUIRES_NEW` keeps the
+failure independent of the caller's 401 result, and the separate bean guarantees the call crosses a
+proxy. `SuccessfulLoginRecorder` commits the success path in another transaction, re-reads the same
+row under the same lock and re-checks `locked_until` and account status. The early check in
+`AuthService.login` is only an optimization: a login whose password verified while concurrent
+failures established a lock answers 423 and mints nothing instead of clearing the new lock.
+
+An elapsed lock is cleared when the next failure is counted, so the counter restarts at 1 rather
+than resuming at the threshold. A failure that reaches the recorder while the lock is still in
+force does not extend the window: that can happen to a request that passed the early check before
+another request committed the lock. `AuthLockoutIT` asserts the persisted counter, the serialized
+concurrent burst, and both concurrency orders.
 
 ### D13 — Refuse to start production on the docker-compose dev keys (CR-16)
 
 `docker-compose.yml` ships fixed, public key material so local development needs no setup. Those
 values are in the repository, so anyone who has read the file can mint a valid JWT or decrypt PII at
 rest; a deployment that kept them would be silently and totally compromised.
-`DevKeyProductionGuardConfiguration` fails startup when a `prod` or `production` profile is active
-and any of `serfira.security.jwt.secret-base64`, `serfira.security.pii.encryption-key` or
-`serfira.security.pii.hmac-key` still equals its compose default.
+`DevKeyProductionGuardConfiguration` fails startup when
+`Environment.matchesProfiles("prod", "production")` is true and any of
+`serfira.security.jwt.secret-base64`, `serfira.security.pii.encryption-key` or
+`serfira.security.pii.hmac-key` decodes to the same key bytes as its compose default.
 
 Details that matter:
 
 - The message names the offending **property and environment variable**, never the key value — a
   startup log is exactly where a leaked secret survives.
+- The comparison is on **decoded bytes**, not the Base64 text. Java's decoder accepts valid
+  unpadded input, so removing the trailing `=` would otherwise preserve the exact public key while
+  bypassing a string comparison.
+- `matchesProfiles` also evaluates `spring.profiles.default` when no profile is explicitly active;
+  a deployment configured only with `spring.profiles.default=prod` is therefore guarded too.
+  `getActiveProfiles()` alone would have seen an empty array.
+- Only `prod` and `production` are classified as production-like. The repository has no
+  `staging` deployment convention; adding one would be a separate, documented policy decision.
 - It only trips for production profiles. Dev, test and demo keep working out of the box, and the
   test properties may keep the public PII keys.
 - Missing or blank keys are not this guard's business; `JwtDecoder`, `PiiSecurityConfiguration` and
-  `AuthService` already fail fast with a clearer message.
+  `AuthService` already fail fast with a clearer message. Malformed Base64 is likewise left to the
+  key owner and is never treated as a dev-key match or as a successful validation.
 - It does not attempt entropy or strength validation: length is enforced where the keys are bound,
   and comparing against the known-public values is the one check that catches the real mistake.
 - `production` is accepted alongside `prod` so a deployment cannot slip through on a spelling

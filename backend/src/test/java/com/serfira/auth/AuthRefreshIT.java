@@ -1,5 +1,9 @@
 package com.serfira.auth;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -10,18 +14,25 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,6 +46,7 @@ import com.serfira.auth.application.InvalidRefreshTokenException;
 import com.serfira.auth.application.LoginRequest;
 import com.serfira.auth.application.RefreshTokenRequest;
 import com.serfira.auth.application.TokenPairResponse;
+import com.serfira.auth.infrastructure.RefreshTokenRepository;
 import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.security.AppRole;
 import tools.jackson.databind.JsonNode;
@@ -57,7 +69,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * (both threads are released by one barrier). Everyone else goes over HTTP so the wiring is covered
  * too.
  */
-@Import({TestcontainersConfiguration.class, AuthClockTestConfiguration.class})
+@Import({TestcontainersConfiguration.class, AuthClockTestConfiguration.class,
+		AuthRefreshIT.LookupBarrierConfiguration.class})
 @SpringBootTest
 @AutoConfigureMockMvc
 class AuthRefreshIT {
@@ -82,6 +95,9 @@ class AuthRefreshIT {
 
 	@Autowired
 	AuthService authService;
+
+	@Autowired
+	RefreshTokenLookupBarrier lookupBarrier;
 
 	@Autowired
 	FixedClock authFixedClock;
@@ -194,9 +210,12 @@ class AuthRefreshIT {
 		TokenPairResponse issued = login();
 		RefreshTokenRequest request = new RefreshTokenRequest(issued.refreshToken());
 
-		CyclicBarrier bothReady = new CyclicBarrier(2);
+		// Release both attempts only after both have read the original unrevoked row. A barrier
+		// before refresh() would let one request finish its whole transaction first, leaving the
+		// conditional update untested.
+		lookupBarrier.arm(2);
+
 		Callable<TokenPairResponse> attempt = () -> {
-			bothReady.await();
 			try {
 				return authService.refresh(request);
 			} catch (InvalidRefreshTokenException ex) {
@@ -212,7 +231,10 @@ class AuthRefreshIT {
 					.filter(Objects::nonNull)
 					.toList();
 			assertThat(succeeded).hasSize(1);
+			// Proves both attempts passed through the read barrier instead of running sequentially.
+			assertThat(lookupBarrier.arrivedLookups()).isEqualTo(2);
 		} finally {
+			lookupBarrier.disarm();
 			pool.shutdownNow();
 		}
 
@@ -290,5 +312,92 @@ class AuthRefreshIT {
 					settlement_quote, settlement, installment, journal_line, journal_entry,
 					contract, asset, customer
 				CASCADE""");
+	}
+
+	/**
+	 * Test-only synchronization for the rotation race: wrap the Spring Data repository so both
+	 * refreshes can be released only after both have read the original token row. No production
+	 * lock or synchronization is added; the conditional update remains the concurrency authority.
+	 */
+	@TestConfiguration(proxyBeanMethods = false)
+	static class LookupBarrierConfiguration {
+
+		@Bean
+		RefreshTokenLookupBarrier refreshTokenLookupBarrier() {
+			return new RefreshTokenLookupBarrier();
+		}
+
+		@Bean
+		static BeanPostProcessor refreshTokenLookupBarrierPostProcessor(RefreshTokenLookupBarrier barrier) {
+			return new BeanPostProcessor() {
+				@Override
+				public Object postProcessAfterInitialization(Object bean, String beanName) {
+					if (!(bean instanceof RefreshTokenRepository repository)) {
+						return bean;
+					}
+					if (Proxy.isProxyClass(bean.getClass())
+							&& Proxy.getInvocationHandler(bean) instanceof LookupBarrierHandler) {
+						return bean;
+					}
+					return Proxy.newProxyInstance(
+							RefreshTokenRepository.class.getClassLoader(),
+							new Class<?>[] { RefreshTokenRepository.class },
+							new LookupBarrierHandler(repository, barrier));
+				}
+			};
+		}
+	}
+
+	/** A one-shot barrier after {@code findByTokenHash}; disarmed for every other test. */
+	static final class RefreshTokenLookupBarrier {
+
+		private final AtomicInteger arrived = new AtomicInteger();
+		private volatile CyclicBarrier barrier;
+
+		void arm(int parties) {
+			arrived.set(0);
+			barrier = new CyclicBarrier(parties);
+		}
+
+		void disarm() {
+			barrier = null;
+		}
+
+		int arrivedLookups() {
+			return arrived.get();
+		}
+
+		void awaitAfterLookup() {
+			CyclicBarrier current = barrier;
+			if (current == null) {
+				return;
+			}
+			arrived.incrementAndGet();
+			try {
+				current.await(10, TimeUnit.SECONDS);
+			} catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+				throw new IllegalStateException("Interrupted while waiting for concurrent token lookups", ex);
+			} catch (BrokenBarrierException | TimeoutException ex) {
+				throw new IllegalStateException("Timed out waiting for concurrent token lookups", ex);
+			}
+		}
+	}
+
+	private record LookupBarrierHandler(
+			RefreshTokenRepository delegate, RefreshTokenLookupBarrier barrier) implements InvocationHandler {
+
+		@Override
+		public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+			try {
+				Object result = method.invoke(delegate, args);
+				if (method.getName().equals("findByTokenHash")) {
+					barrier.awaitAfterLookup();
+				}
+				return result;
+			} catch (InvocationTargetException ex) {
+				throw ex.getCause();
+			}
+		}
 	}
 }

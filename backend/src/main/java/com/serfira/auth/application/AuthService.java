@@ -1,13 +1,9 @@
 package com.serfira.auth.application;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.Date;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -61,12 +57,12 @@ public class AuthService {
 	private static final Logger LOGGER = LoggerFactory.getLogger(AuthService.class);
 
 	static final Duration ACCESS_TOKEN_LIFETIME = Duration.ofMinutes(15);
-	static final Duration REFRESH_TOKEN_LIFETIME = Duration.ofDays(7);
 
 	private final AppUserRepository userRepository;
 	private final RefreshTokenRepository refreshTokenRepository;
 	private final PasswordEncoder passwordEncoder;
 	private final LoginAttemptRecorder loginAttemptRecorder;
+	private final SuccessfulLoginRecorder successfulLoginRecorder;
 	private final byte[] jwtSecret;
 	private final Clock clock;
 	private final String dummyPasswordHash;
@@ -78,6 +74,7 @@ public class AuthService {
 			RefreshTokenRepository refreshTokenRepository,
 			PasswordEncoder passwordEncoder,
 			LoginAttemptRecorder loginAttemptRecorder,
+			SuccessfulLoginRecorder successfulLoginRecorder,
 			@Value("${serfira.security.jwt.secret-base64}") String secretBase64,
 			Clock clock,
 			@Value("${serfira.auth.argon2.max-concurrent-verifications:2}") int maxConcurrentVerifications) {
@@ -90,6 +87,7 @@ public class AuthService {
 		this.refreshTokenRepository = refreshTokenRepository;
 		this.passwordEncoder = passwordEncoder;
 		this.loginAttemptRecorder = loginAttemptRecorder;
+		this.successfulLoginRecorder = successfulLoginRecorder;
 		this.jwtSecret = decodeSecret(secretBase64);
 		this.clock = clock;
 		this.argon2Permits = new Semaphore(maxConcurrentVerifications);
@@ -101,11 +99,22 @@ public class AuthService {
 	/**
 	 * Authenticates the given credentials and returns an access + refresh token pair.
 	 *
+	 * <p>Deliberately <b>not</b> transactional. The account lookup runs in its own short
+	 * repository transaction and ends before the Argon2 verification, so the expensive KDF holds
+	 * no database connection; the failure counter is then written by
+	 * {@link LoginAttemptRecorder}'s independent transaction, and only a successful verification
+	 * opens {@link SuccessfulLoginRecorder}'s transaction. An outer transaction here would keep a
+	 * connection suspended while the inner {@code REQUIRES_NEW} transaction asked for a second
+	 * one, letting concurrent failed logins exhaust the pool.
+	 *
+	 * <p>The early lockout check below is an optimization so a locked account never pays an Argon2
+	 * verification. The authoritative re-check happens under the account row lock in
+	 * {@link SuccessfulLoginRecorder#recordSuccess}, after verification.
+	 *
 	 * @throws AccountLockedException         when the account is inside its lockout window (423)
 	 * @throws AuthenticationFailedException  for every other authentication failure (unknown user,
 	 *                                        wrong password, inactive account, non-interactive principal)
 	 */
-	@Transactional
 	public TokenPairResponse login(LoginRequest request) {
 		AppUser user = userRepository.findByUsername(request.username().trim()).orElse(null);
 		OffsetDateTime now = clock.now();
@@ -114,13 +123,13 @@ public class AuthService {
 		// the answer is the same whether or not the supplied password happened to be correct.
 		if (user != null && user.isLockedAt(now)) {
 			LOGGER.warn("Rejected login for locked account {}", user.getId());
-			throw new AccountLockedException(minutesRemaining(user.getLockedUntil(), now));
+			throw AccountLockedException.forLockout(user.getLockedUntil(), now);
 		}
 
 		boolean passwordMatches = verifyPassword(request.password(), user);
 		if (user == null || !passwordMatches || !user.isActive() || !user.isInteractive()) {
 			if (user != null) {
-				// Separate REQUIRES_NEW transaction: the throw below rolls this one back otherwise.
+				// Independent REQUIRES_NEW transaction: the 401 below must not undo the counter.
 				loginAttemptRecorder.recordFailure(user.getId());
 			}
 			// No username, role or disabled-state detail: the same answer for every cause.
@@ -128,12 +137,12 @@ public class AuthService {
 			throw new AuthenticationFailedException();
 		}
 
-		user.recordSuccessfulLogin(now);
-		userRepository.save(user);
-
 		String rawRefreshToken = UUID.randomUUID().toString();
-		refreshTokenRepository.save(newRefreshToken(user.getId(), rawRefreshToken, now));
-		return new TokenPairResponse(mintAccessToken(user.getId(), user.getRole().name(), now), rawRefreshToken);
+		SuccessfulLoginRecorder.CompletedLogin completed =
+				successfulLoginRecorder.recordSuccess(user.getId(), rawRefreshToken);
+		return new TokenPairResponse(
+				mintAccessToken(completed.userId(), completed.role(), completed.issuedAt()),
+				rawRefreshToken);
 	}
 
 	/**
@@ -155,7 +164,7 @@ public class AuthService {
 	@Transactional
 	public TokenPairResponse refresh(RefreshTokenRequest request) {
 		OffsetDateTime now = clock.now();
-		RefreshToken presented = refreshTokenRepository.findByTokenHash(sha256Hex(request.refreshToken()))
+		RefreshToken presented = refreshTokenRepository.findByTokenHash(RefreshToken.hash(request.refreshToken()))
 				.orElseThrow(InvalidRefreshTokenException::new);
 		if (!presented.isUsableAt(now)) {
 			LOGGER.warn("Rejected refresh: token already revoked or expired");
@@ -171,7 +180,7 @@ public class AuthService {
 
 		String rawRefreshToken = UUID.randomUUID().toString();
 		RefreshToken replacement = refreshTokenRepository
-				.saveAndFlush(newRefreshToken(user.getId(), rawRefreshToken, now));
+				.saveAndFlush(RefreshToken.issue(user.getId(), rawRefreshToken, now));
 
 		int revoked = refreshTokenRepository.revokeIfActive(
 				presented.getId(), replacement.getId(), now, user.getId());
@@ -191,7 +200,7 @@ public class AuthService {
 	@Transactional
 	public void logout(RefreshTokenRequest request) {
 		OffsetDateTime now = clock.now();
-		refreshTokenRepository.findByTokenHash(sha256Hex(request.refreshToken()))
+		refreshTokenRepository.findByTokenHash(RefreshToken.hash(request.refreshToken()))
 				.ifPresent(token -> {
 					int revoked = refreshTokenRepository.revokeIfActive(
 							token.getId(), null, now, token.getUserId());
@@ -199,10 +208,6 @@ public class AuthService {
 						LOGGER.info("Revoked refresh token for account {}", token.getUserId());
 					}
 				});
-	}
-
-	private RefreshToken newRefreshToken(UUID userId, String rawToken, OffsetDateTime now) {
-		return new RefreshToken(userId, sha256Hex(rawToken), now.plus(REFRESH_TOKEN_LIFETIME), now);
 	}
 
 	private boolean verifyPassword(String rawPassword, AppUser user) {
@@ -240,15 +245,6 @@ public class AuthService {
 		}
 	}
 
-	/**
-	 * Whole minutes left in the lockout window, rounded up so a sub-minute remainder still reads as
-	 * "1 minute" instead of "0".
-	 */
-	private static long minutesRemaining(OffsetDateTime lockedUntil, OffsetDateTime now) {
-		long seconds = Duration.between(now, lockedUntil).getSeconds();
-		return Math.max(1, (seconds + 59) / 60);
-	}
-
 	private static byte[] decodeSecret(String secretBase64) {
 		Objects.requireNonNull(secretBase64, "secretBase64");
 		byte[] keyBytes = Base64.getDecoder().decode(secretBase64);
@@ -256,14 +252,5 @@ public class AuthService {
 			throw new IllegalStateException("serfira.security.jwt.secret-base64 must decode to at least 32 bytes");
 		}
 		return keyBytes;
-	}
-
-	private static String sha256Hex(String input) {
-		try {
-			MessageDigest digest = MessageDigest.getInstance("SHA-256");
-			return HexFormat.of().formatHex(digest.digest(input.getBytes(StandardCharsets.UTF_8)));
-		} catch (NoSuchAlgorithmException ex) {
-			throw new IllegalStateException("SHA-256 not available", ex);
-		}
 	}
 }

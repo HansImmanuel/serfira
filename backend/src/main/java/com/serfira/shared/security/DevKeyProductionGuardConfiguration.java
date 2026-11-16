@@ -1,7 +1,8 @@
 package com.serfira.shared.security;
 
+import java.security.MessageDigest;
+import java.util.Base64;
 import java.util.List;
-import java.util.Locale;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,9 +19,17 @@ import org.springframework.core.env.Environment;
  * set, never the key itself.
  *
  * <p>It only trips when a production profile is active; dev, test and demo must keep working out of
- * the box. Blank values are left alone too: the key-owning configurations ({@code JwtDecoder},
+ * the box. {@link Environment#matchesProfiles(String...)} is used rather than
+ * {@code getActiveProfiles()} so a deployment whose {@code spring.profiles.default} is
+ * {@code prod}/{@code production}, with no explicitly active profile, is still guarded. Blank
+ * values are left alone too: the key-owning configurations ({@code JwtDecoder},
  * {@code PiiSecurityConfiguration}) already fail fast on a missing key with a clearer message, and
  * so does {@code AuthService}.
+ *
+ * <p>The comparison decodes both values and compares the key bytes. Java's Base64 decoder accepts
+ * valid unpadded representations, so comparing the textual strings would let a deployment keep the
+ * exact public key by removing its trailing {@code =} padding. Malformed configured base64 is not
+ * treated as a dev key: the key owner reports that failure with its own message.
  *
  * <p>This deliberately does not do key-strength validation. Length is checked where the keys are
  * bound, and entropy cannot be measured from a string; comparing against known-public values is
@@ -38,13 +47,6 @@ public class DevKeyProductionGuardConfiguration {
 			"YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=";
 
 	/**
-	 * Profiles that mean "this is a real deployment". The documented override for compose is
-	 * {@code SPRING_PROFILES_ACTIVE=prod}; {@code production} is accepted as the same thing rather
-	 * than letting a deployment slip through on a spelling difference.
-	 */
-	static final List<String> PRODUCTION_PROFILES = List.of("prod", "production");
-
-	/**
 	 * Reads the raw configured value with {@link Environment#getProperty(String)} rather than
 	 * {@code @Value}: the guard must see exactly what the key-owning bean will bind, including a
 	 * value that arrived as an environment variable, and it needs no placeholder infrastructure of
@@ -52,7 +54,7 @@ public class DevKeyProductionGuardConfiguration {
 	 */
 	@Bean
 	DevKeysValidated devKeysValidated(Environment environment) {
-		if (!isProduction(environment.getActiveProfiles())) {
+		if (!environment.matchesProfiles("prod", "production")) {
 			return new DevKeysValidated();
 		}
 
@@ -77,22 +79,29 @@ public class DevKeyProductionGuardConfiguration {
 		return new DevKeysValidated();
 	}
 
-	private static boolean isProduction(String[] activeProfiles) {
-		for (String profile : activeProfiles) {
-			if (PRODUCTION_PROFILES.contains(profile.toLowerCase(Locale.ROOT))) {
-				return true;
-			}
-		}
-		return false;
-	}
-
 	/** A guarded property, the environment variable that overrides it, and its public dev value. */
 	private record GuardedKey(
 			String property, String environmentVariable, String configuredValue, String devValue) {
 
 		boolean isDevDefault() {
 			// Blank is a missing key, not a dev key: the owning configuration reports that better.
-			return configuredValue != null && !configuredValue.isBlank() && configuredValue.equals(devValue);
+			if (configuredValue == null || configuredValue.isBlank()) {
+				return false;
+			}
+			byte[] configured = decodeOrNull(configuredValue);
+			if (configured == null) {
+				// Malformed base64 belongs to the key owner; it must not look like a valid key here.
+				return false;
+			}
+			return MessageDigest.isEqual(configured, Base64.getDecoder().decode(devValue));
+		}
+
+		private static byte[] decodeOrNull(String value) {
+			try {
+				return Base64.getDecoder().decode(value);
+			} catch (IllegalArgumentException ex) {
+				return null;
+			}
 		}
 	}
 

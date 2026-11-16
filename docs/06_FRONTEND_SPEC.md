@@ -80,13 +80,22 @@ interface ApiResponse<T> {
   error: { code: string; message: string } | null;
 }
 
+// Endpoint auth publik tidak boleh membawa access token: permitAll hanya mengatur
+// otorisasi, sedangkan bearer token yang kedaluwarsa ditolak resource server sebelum
+// request mencapai controller.
+const PUBLIC_AUTH_PATHS = ['/auth/login', '/auth/refresh', '/auth/logout'];
+
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const accessToken = getAccessToken();  // dari memory store
+  const isPublicAuth = PUBLIC_AUTH_PATHS.includes(path);
   const res = await fetch(`/api/v1${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${getAccessToken()}`,  // dari memory store
-      ...options?.headers,
+      ...(accessToken && !isPublicAuth
+        ? { 'Authorization': `Bearer ${accessToken}` }
+        : {}),
+      ...options?.headers,  // header pemanggil tetap menang
     },
   });
   const body: ApiResponse<T> = await res.json();
@@ -106,13 +115,30 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 > fase ini; keputusan cookie ditinjau ulang saat browser client nyata ada (G2).
 
 ```
-1. Login → POST /auth/login → simpan access token + refresh token di memory
-2. Setiap request → Authorization: Bearer <access_token>
-3. 401 response → POST /auth/refresh {"refresh_token": <memory>} → ganti keduanya dengan pasangan baru
-   (token lama langsung tidak berlaku: rotasi single-use)
+1. Login → POST /auth/login {username, password} tanpa header Authorization
+   → simpan access token + refresh token di memory
+2. Request terproteksi → Authorization: Bearer <access_token>
+3. 401 response → POST /auth/refresh {"refresh_token": <memory>} tanpa header Authorization
+   → ganti keduanya dengan pasangan baru (token lama langsung tidak berlaku: rotasi single-use)
 4. Refresh gagal (401) → buang kedua token, redirect ke /login
-5. Logout → POST /auth/logout {"refresh_token": <memory>} → buang kedua token (endpoint idempoten, 200)
+5. Logout → POST /auth/logout {"refresh_token": <memory>} tanpa header Authorization
+   → buang kedua token (endpoint idempoten, 200)
 ```
+
+**Kredensial per request:**
+
+| Request | Kredensial |
+| --- | --- |
+| `POST /auth/login` | `username` + `password` di body |
+| `POST /auth/refresh` | `refresh_token` di body |
+| `POST /auth/logout` | `refresh_token` di body |
+| Endpoint terproteksi | `Authorization: Bearer <access_token>` |
+
+Login, refresh, dan logout adalah `permitAll` (ADR-022 D7), tetapi `permitAll` hanya
+mengatur **otorisasi**, bukan autentikasi bearer. Resource server memproses header
+`Authorization` lebih dulu dan menolak token yang kedaluwarsa sebelum request mencapai
+controller, sehingga ketiga endpoint tersebut **tidak boleh** mengirim access token yang
+tersimpan — token itu justru mungkin sudah kedaluwarsa saat refresh atau logout dipanggil.
 
 **Aturan token:** token hanya di memory (bukan `localStorage`/`sessionStorage`), sehingga reload halaman
 memaksa login ulang. Refresh tidak boleh dipanggil paralel dari beberapa request; `lib/auth.ts` memegang

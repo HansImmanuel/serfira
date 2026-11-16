@@ -171,12 +171,26 @@ public class AppUser {
 	 * <p>The window is measured from the failure that crosses the threshold, not from the first
 	 * failure, so a slow trickle of attempts cannot keep an account locked indefinitely.
 	 *
-	 * @return whether this failure locked the account
+	 * <p>An elapsed lock is cleared before the new failure is counted: otherwise the next wrong
+	 * password would resume at the threshold and immediately lock the account again. A lock that
+	 * is still in force is left untouched and this failure is not counted — an in-flight request
+	 * can reach this method after another request established the lock, and letting it extend
+	 * {@code locked_until} would let a burst keep the account locked indefinitely.
+	 *
+	 * @return whether the account is now locked
 	 */
 	public boolean recordFailedLogin(int maxAttempts, Duration lockWindow, OffsetDateTime now) {
 		Objects.requireNonNull(now, "now");
 		if (maxAttempts < 1) {
 			throw new IllegalArgumentException("maxAttempts must be at least 1");
+		}
+		if (isLockedAt(now)) {
+			return true;
+		}
+		if (lockedUntil != null) {
+			// The previous window has elapsed: this failure starts a fresh sequence.
+			failedLoginAttempts = 0;
+			lockedUntil = null;
 		}
 		failedLoginAttempts++;
 		this.updatedAt = now;

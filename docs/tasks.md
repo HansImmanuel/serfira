@@ -28,11 +28,12 @@ The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **
 → **T21b** DONE → **T27** (CI & runtime gates) is the frontier and independent within the sprint. T22 and
 T28 remain later-sprint work.
 
-**Verified test counts:** full local `./gradlew test` run (2026-11-16, on the T21b branch) = 116 suites / 893
-tests / 0 failed, and `./gradlew check` green (the previous T21a baseline was 112 / 866). T21b adds
-`AuthRefreshIT` (6), `AuthLogoutIT` (4), `AuthLockoutIT` (4), `DevKeyProductionGuardTest` (7) and 6
-`/auth/refresh` + `/auth/logout` matrix cells, so the counts, not just compilation, confirm the new suites
-ran. CI on `main` currently reports red for a GitHub billing reason, not a test failure.
+**Verified test counts:** full local `./gradlew check` run (2026-11-16, on the T21b branch, after the review
+fixes) = **117 suites / 911 tests / 0 failed** (the first T21b run was 116 / 893; the previous T21a baseline
+was 112 / 866). The review-fix delta is `AppUserTest` (6 new domain tests), `AuthLockoutIT` 4 → 9,
+`DevKeyProductionGuardTest` 7 → 14, with `AuthRefreshIT` (6) and `AuthLogoutIT` (4) unchanged, so the counts,
+not just compilation, confirm the new cases ran. CI on `main` currently reports red for a GitHub billing
+reason, not a test failure.
 
 **Implemented (verified in source):**
 
@@ -198,6 +199,25 @@ column was already in V1. Docs updated: ADR-022 addendum D10–D13, `02_TECH_SPE
 `.kiro/steering/{tech,structure,product}.md`. Verification: `./gradlew test` = **116 suites / 893 tests / 0
 failed** (baseline 112/866; +4 suites, +21 tests, +6 matrix cells), `./gradlew check` green. Not run: nothing —
 Docker was available for the Testcontainers ITs.
+Review fix (2026-11-16, same branch): the Qodo/CodeRabbit findings on PR #20 were verified against the code
+and the real ones fixed. **Lockout concurrency:** `AuthService.login` lost its `@Transactional` — the lookup
+now ends before Argon2, so the KDF holds no pooled connection and the independent failure/success writes
+cannot starve the pool; `LoginAttemptRecorder` (`REQUIRES_NEW`) and the new `SuccessfulLoginRecorder` both
+re-read the row via `AppUserRepository.findLockedById` (`PESSIMISTIC_WRITE`), so concurrent failures
+increment the persisted counter exactly once and a success that loses the race answers 423 instead of
+clearing the freshly committed lock. `AppUser.recordFailedLogin` clears an elapsed lock (restart at 1) and
+leaves an active one untouched (no window extension). Access tokens are minted only after the success
+transaction commits (`CompletedLogin`). **Dev-key guard:** compares decoded key bytes (`MessageDigest.isEqual`) so unpadded
+Base64 cannot smuggle the public key past a string compare, treats malformed Base64 as non-matching, and
+uses `Environment.matchesProfiles("prod", "production")` so `spring.profiles.default=prod` is guarded too.
+**Refresh race test:** a test-only repository proxy barrier releases both refreshes after
+`findByTokenHash`; the previous pre-call barrier could pass without the conditional update ever racing.
+**Lockout race tests:** a test-only pausable `PasswordEncoder` parks a successful Argon2 verification while
+concurrent failures commit the lock. Also removed the duplicated refresh hashing/lifetime into
+`RefreshToken.issue/hash`, and documented the `permitAll`-does-not-skip-bearer caveat in
+`06_FRONTEND_SPEC.md` and `.kiro/steering/tech.md`. No migration, no production lock added for a test.
+Verification: `./gradlew check` = **117 suites / 911 tests / 0 failed**; all `*IT` suites ran (Docker
+available).
 Decision (2026-11-15, pre-implementation): the three open choices are settled. (a) X-14 transport =
 **response body**; no cookie/CSRF/CORS work this phase because there is no browser client — revisit at
 G2. (b) A locked account answers **423 `LOCKED` `ACCOUNT_LOCKED`** with the minutes remaining; the

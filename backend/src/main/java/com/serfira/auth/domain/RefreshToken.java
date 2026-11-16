@@ -1,6 +1,11 @@
 package com.serfira.auth.domain;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -29,6 +34,12 @@ import jakarta.persistence.Table;
 @Entity
 @Table(name = "refresh_token")
 public class RefreshToken {
+
+	/**
+	 * Lifetime of a newly issued token. The window slides on every rotation: there is no absolute
+	 * session cap (ADR-022 addendum D11).
+	 */
+	public static final Duration DEFAULT_LIFETIME = Duration.ofDays(7);
 
 	private static final int TOKEN_HASH_LENGTH = 64;
 
@@ -84,6 +95,26 @@ public class RefreshToken {
 		this.updatedAt = now;
 		this.createdBy = userId;
 		this.updatedBy = userId;
+	}
+
+	/**
+	 * Builds the stored row for a freshly issued raw token: only its digest is persisted, with the
+	 * standard seven-day window.
+	 */
+	public static RefreshToken issue(UUID userId, String rawToken, OffsetDateTime now) {
+		Objects.requireNonNull(now, "now");
+		return new RefreshToken(userId, hash(rawToken), now.plus(DEFAULT_LIFETIME), now);
+	}
+
+	/** SHA-256 hex digest of a raw token, used both when storing and when looking one up. */
+	public static String hash(String rawToken) {
+		Objects.requireNonNull(rawToken, "rawToken");
+		try {
+			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			return HexFormat.of().formatHex(digest.digest(rawToken.getBytes(StandardCharsets.UTF_8)));
+		} catch (NoSuchAlgorithmException ex) {
+			throw new IllegalStateException("SHA-256 not available", ex);
+		}
 	}
 
 	public UUID getId() {

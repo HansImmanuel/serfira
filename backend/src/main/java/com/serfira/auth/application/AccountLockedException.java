@@ -1,5 +1,8 @@
 package com.serfira.auth.application;
 
+import java.time.Duration;
+import java.time.OffsetDateTime;
+
 import org.springframework.http.HttpStatus;
 
 import com.serfira.shared.error.ErrorCode;
@@ -19,5 +22,14 @@ public class AccountLockedException extends SerfiraException {
 	public AccountLockedException(long minutesRemaining) {
 		super(ErrorCode.ACCOUNT_LOCKED, HttpStatus.LOCKED,
 				"Account locked; try again in " + Math.max(1, minutesRemaining) + " minute(s)");
+	}
+
+	/**
+	 * Creates the exception for a lock that is still in force, rounding the remaining whole
+	 * minutes up so a sub-minute remainder reads as "1 minute" instead of "0".
+	 */
+	public static AccountLockedException forLockout(OffsetDateTime lockedUntil, OffsetDateTime now) {
+		long seconds = Duration.between(now, lockedUntil).getSeconds();
+		return new AccountLockedException(Math.max(1, (seconds + 59) / 60));
 	}
 }

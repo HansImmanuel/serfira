@@ -85,7 +85,9 @@ Sprint 6b (Phase-2 security boundary + CI hardening) — **berjalan** (detail: a
       (ADR-022; PR #19 + fixes `070e7ad`)
 - [x] T21b — Refresh rotation (`POST /api/v1/auth/refresh`, single-use, race-safe via conditional revoke),
       logout idempoten (`POST /api/v1/auth/logout`), brute-force lockout 5 × `PT15M` → 423 `ACCOUNT_LOCKED`
-      (counter dicatat di transaksi `REQUIRES_NEW`), dev-key guard untuk profil `prod`/`production`,
+      (login tanpa outer transaction; kegagalan di `REQUIRES_NEW` dan sukses di recorder terpisah, keduanya
+      mengunci baris `app_user` sehingga kegagalan paralel terserialisasi), dev-key guard untuk profil
+      `prod`/`production` (termasuk `spring.profiles.default`, dibandingkan per byte hasil decode Base64),
       transport refresh token di body (menutup X-14, `AppUser` pindah ke gaya entity proyek → menutup A-14)
       (ADR-022 D10–D13)
 - [ ] T27 — CI & runtime gates: OWASP Dependency-Check, gitleaks, Compose smoke

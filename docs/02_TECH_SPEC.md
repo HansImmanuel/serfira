@@ -311,16 +311,26 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   threshold mengisi `locked_until` = waktu kegagalan yang melewati ambang + window. Threshold dan window
   adalah konfigurasi (`serfira.auth.lockout.max-attempts`, default 5; `serfira.auth.lockout.window`, default
   `PT15M`). Akun terkunci menjawab **423 `ACCOUNT_LOCKED`** dengan sisa menit, bahkan bila password benar, dan
-  tidak membayar verifikasi Argon2; login sukses mereset counter dan lock. Pencatatan kegagalan berjalan di
-  transaksi `REQUIRES_NEW` supaya tidak ikut ter-rollback oleh 401.
+  tidak membayar verifikasi Argon2; login sukses mereset counter dan lock. Lock yang sudah lewat dianggap
+  selesai: kegagalan berikutnya memulai hitungan baru dari 1, dan kegagalan yang datang saat lock masih aktif
+  tidak memperpanjang `locked_until`.
+  `AuthService.login` sengaja **tidak** berjalan dalam satu transaksi: lookup user singkat, verifikasi Argon2
+  tanpa memegang koneksi DB, lalu dua transaksi independen — `LoginAttemptRecorder` (`REQUIRES_NEW`, lock baris
+  `PESSIMISTIC_WRITE`) untuk kegagalan dan `SuccessfulLoginRecorder` untuk sukses. Recorder sukses memegang
+  lock baris yang sama, memeriksa ulang lock/aktif/interaktif, mereset counter, dan menyimpan refresh token
+  dalam satu commit; access token baru dicetak setelah commit tersebut. Dengan begitu kegagalan paralel
+  terserialisasi (tidak ada lost update pada counter) dan request sukses yang kalah balapan tidak pernah
+  menerbitkan token untuk akun yang sudah terkunci.
 - **Transport refresh token (X-14, ADR-022 D10).** Token dikembalikan di **body respons**
   (`{access_token, refresh_token}`) untuk login maupun refresh; tidak ada cookie, sehingga tidak ada CSRF
   handling maupun CORS ber-kredensial. Frontend menyimpan keduanya di memory. Cookie `HttpOnly` ditunda
   sampai ada browser client nyata (G2).
-- **Dev-key production guard (T21b, ADR-022 D13).** Saat profil `prod`/`production` aktif, aplikasi gagal
-  start bila `serfira.security.jwt.secret-base64`, `serfira.security.pii.encryption-key`, atau
-  `serfira.security.pii.hmac-key` masih bernilai default publik `docker-compose.yml`. Pesan menyebut nama
-  properti (tidak pernah nilainya). Profil dev/test/demo tetap berjalan dengan nilai default tersebut.
+- **Dev-key production guard (T21b, ADR-022 D13).** Saat profil `prod`/`production` aktif (termasuk lewat
+  `spring.profiles.default`), aplikasi gagal start bila `serfira.security.jwt.secret-base64`,
+  `serfira.security.pii.encryption-key`, atau `serfira.security.pii.hmac-key` masih bernilai default publik
+  `docker-compose.yml`. Perbandingan dilakukan pada byte hasil decode Base64, sehingga nilai yang hanya beda
+  padding tetap tertangkap; nilai konfigurasi yang bukan Base64 valid dianggap bukan default. Pesan menyebut
+  nama properti (tidak pernah nilainya). Profil dev/test/demo tetap berjalan dengan nilai default tersebut.
 - Access token disimpan di memory oleh frontend, bukan localStorage.
 - `created_by`/`updated_by` untuk user request berasal dari JWT principal; job memakai seeded non-interactive user `SYSTEM`. Semua audit actor menggunakan UUID `app_user.id`.
 

@@ -4,29 +4,48 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import com.serfira.TestcontainersConfiguration;
+import com.serfira.auth.application.AccountLockedException;
+import com.serfira.auth.application.AuthService;
+import com.serfira.auth.application.LoginAttemptRecorder;
 import com.serfira.auth.application.LoginRequest;
+import com.serfira.auth.application.TokenPairResponse;
 import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.security.AppRole;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
@@ -38,12 +57,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * {@code serfira.auth.lockout.*} so the policy is configuration, not a constant.
  *
  * <p>Every assertion on the counter reads the <b>database</b>, not the response. That is the point:
- * {@code AuthService.login} throws a 401 on failure, so a counter incremented inside its transaction
- * would be rolled back and lockout would silently never fire while the HTTP answers still looked
+ * {@code AuthService.login} answers a 401 on failure, so a counter incremented inside a caller's
+ * rollback would be lost and lockout would silently never fire while the HTTP answers still looked
  * correct. The failures are written through {@code LoginAttemptRecorder}'s {@code REQUIRES_NEW}
  * transaction, and only a committed read proves it.
+ *
+ * <p>The concurrency cases use real PostgreSQL transactions. {@code AuthService.login} holds no
+ * transaction while Argon2 runs, so the pausable encoder below can park one successful request
+ * inside verification while other requests establish the lock; that is exactly the race the
+ * row lock in {@code SuccessfulLoginRecorder} has to resolve.
  */
-@Import({TestcontainersConfiguration.class, AuthClockTestConfiguration.class})
+@Import({TestcontainersConfiguration.class, AuthClockTestConfiguration.class,
+		AuthLockoutIT.PausableEncoderConfiguration.class})
 @SpringBootTest
 @AutoConfigureMockMvc
 class AuthLockoutIT {
@@ -67,6 +92,15 @@ class AuthLockoutIT {
 
 	@Autowired
 	PasswordEncoder passwordEncoder;
+
+	@Autowired
+	AuthService authService;
+
+	@Autowired
+	LoginAttemptRecorder loginAttemptRecorder;
+
+	@Autowired
+	PausablePasswordEncoder pausablePasswordEncoder;
 
 	@Autowired
 	FixedClock authFixedClock;
@@ -97,8 +131,7 @@ class AuthLockoutIT {
 			// Committed by a separate transaction: a rollback would leave this at 0.
 			assertThat(failedAttempts(userId)).isEqualTo(attempt);
 		}
-		assertThat(jdbc.queryForObject(
-				"select locked_until from app_user where id = ?", OffsetDateTime.class, userId)).isNull();
+		assertThat(lockedUntil(userId)).isNull();
 	}
 
 	@Test
@@ -107,9 +140,7 @@ class AuthLockoutIT {
 		failLoginTimes(MAX_ATTEMPTS);
 
 		assertThat(failedAttempts(userId)).isEqualTo(MAX_ATTEMPTS);
-		assertThat(jdbc.queryForObject(
-				"select locked_until from app_user where id = ?", OffsetDateTime.class, userId).toInstant())
-				.isEqualTo(testNow.plus(WINDOW).toInstant());
+		assertThat(lockedUntil(userId).toInstant()).isEqualTo(testNow.plus(WINDOW).toInstant());
 
 		// The password is correct, but the lock answers first, before any Argon2 verification.
 		MvcResult locked = login(PASSWORD);
@@ -119,9 +150,7 @@ class AuthLockoutIT {
 		assertThat(errorMessage(locked)).contains("15 minute");
 		assertThat(jdbc.queryForObject("select count(*) from refresh_token", Long.class)).isZero();
 		// An attempt while locked does not extend the window.
-		assertThat(jdbc.queryForObject(
-				"select locked_until from app_user where id = ?", OffsetDateTime.class, userId).toInstant())
-				.isEqualTo(testNow.plus(WINDOW).toInstant());
+		assertThat(lockedUntil(userId).toInstant()).isEqualTo(testNow.plus(WINDOW).toInstant());
 	}
 
 	@Test
@@ -136,8 +165,7 @@ class AuthLockoutIT {
 				.as("response body: %s", result.getResponse().getContentAsString())
 				.isEqualTo(200);
 		assertThat(failedAttempts(userId)).isZero();
-		assertThat(jdbc.queryForObject(
-				"select locked_until from app_user where id = ?", OffsetDateTime.class, userId)).isNull();
+		assertThat(lockedUntil(userId)).isNull();
 		assertThat(jdbc.queryForObject("select count(*) from refresh_token", Long.class)).isEqualTo(1);
 	}
 
@@ -149,11 +177,116 @@ class AuthLockoutIT {
 		assertThat(login(PASSWORD).getResponse().getStatus()).isEqualTo(200);
 
 		assertThat(failedAttempts(userId)).isZero();
-		assertThat(jdbc.queryForObject(
-				"select locked_until from app_user where id = ?", OffsetDateTime.class, userId)).isNull();
+		assertThat(lockedUntil(userId)).isNull();
 		// The next failure starts again at one, not at the threshold.
 		assertThat(login("WrongPassword!").getResponse().getStatus()).isEqualTo(401);
 		assertThat(failedAttempts(userId)).isEqualTo(1);
+	}
+
+	@Test
+	void anExpiredLockFollowedByOneWrongPasswordStartsTheCounterAtOne() throws Exception {
+		UUID userId = seedUser();
+		failLoginTimes(MAX_ATTEMPTS);
+
+		authFixedClock.advanceBy(WINDOW.plusSeconds(1));
+		MvcResult result = login("WrongPassword!");
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(401);
+		assertEnvelopeError(result, "UNAUTHORIZED");
+		// The old counter must not resume at the threshold and lock the account again.
+		assertThat(failedAttempts(userId)).isEqualTo(1);
+		assertThat(lockedUntil(userId)).isNull();
+	}
+
+	@Test
+	void concurrentFailuresIncrementTheCounterExactlyOnceEachAndLockAtTheThreshold() throws Exception {
+		UUID userId = seedUser();
+
+		runConcurrentFailures(userId, MAX_ATTEMPTS);
+
+		assertThat(failedAttempts(userId)).isEqualTo(MAX_ATTEMPTS);
+		assertThat(lockedUntil(userId).toInstant()).isEqualTo(testNow.plus(WINDOW).toInstant());
+	}
+
+	@Test
+	void aFailureAfterTheLockIsCommittedDoesNotExtendTheWindow() throws Exception {
+		UUID userId = seedUser();
+		failLoginTimes(MAX_ATTEMPTS);
+		OffsetDateTime committedLock = lockedUntil(userId);
+
+		// An attempt that passed the early check before the lock committed can still reach the
+		// recorder afterwards. It must not renew the window.
+		authFixedClock.advanceBy(Duration.ofMinutes(1));
+		loginAttemptRecorder.recordFailure(userId);
+
+		assertThat(failedAttempts(userId)).isEqualTo(MAX_ATTEMPTS);
+		assertThat(lockedUntil(userId).toInstant()).isEqualTo(committedLock.toInstant());
+	}
+
+	@Test
+	void successfulLoginCannotMintTokensWhenConcurrentFailuresLockTheAccountFirst() throws Exception {
+		UUID userId = seedUser();
+		pausablePasswordEncoder.arm();
+
+		ExecutorService pool = Executors.newSingleThreadExecutor();
+		Future<TokenPairResponse> successfulAttempt = pool.submit(
+				() -> authService.login(new LoginRequest(USERNAME, PASSWORD)));
+		try {
+			// The successful request has passed the early check and is inside Argon2. It holds no
+			// database transaction now, so these failures can commit the lock underneath it.
+			assertThat(pausablePasswordEncoder.awaitVerificationStarted())
+					.as("successful login reached password verification")
+					.isTrue();
+			failLoginTimes(MAX_ATTEMPTS);
+			assertThat(lockedUntil(userId).toInstant()).isEqualTo(testNow.plus(WINDOW).toInstant());
+
+			pausablePasswordEncoder.releaseVerification();
+
+			assertThatThrownBy(() -> successfulAttempt.get(10, TimeUnit.SECONDS))
+					.isInstanceOf(ExecutionException.class)
+					.hasCauseInstanceOf(AccountLockedException.class);
+		} finally {
+			// Unblock the worker even when an assertion above fails, then stop the pool.
+			pausablePasswordEncoder.releaseVerification();
+			pool.shutdownNow();
+		}
+
+		assertThat(jdbc.queryForObject("select count(*) from refresh_token", Long.class)).isZero();
+		assertThat(failedAttempts(userId)).isEqualTo(MAX_ATTEMPTS);
+		assertThat(lockedUntil(userId).toInstant()).isEqualTo(testNow.plus(WINDOW).toInstant());
+	}
+
+	@Test
+	void successfulLoginWinningTheRaceLeavesLaterFailuresCountingFromOne() throws Exception {
+		UUID userId = seedUser();
+
+		assertThat(login(PASSWORD).getResponse().getStatus()).isEqualTo(200);
+		assertThat(failedAttempts(userId)).isZero();
+
+		runConcurrentFailures(userId, 3);
+
+		// The success cleared the counter before the failures acquired the row lock.
+		assertThat(failedAttempts(userId)).isEqualTo(3);
+		assertThat(lockedUntil(userId)).isNull();
+	}
+
+	private void runConcurrentFailures(UUID userId, int attempts) throws Exception {
+		CyclicBarrier bothReady = new CyclicBarrier(attempts);
+		Callable<Void> failure = () -> {
+			bothReady.await();
+			loginAttemptRecorder.recordFailure(userId);
+			return null;
+		};
+		ExecutorService pool = Executors.newFixedThreadPool(attempts);
+		try {
+			List<Future<Void>> outcomes = pool.invokeAll(
+					java.util.Collections.nCopies(attempts, failure));
+			for (Future<Void> outcome : outcomes) {
+				outcome.get(10, TimeUnit.SECONDS);
+			}
+		} finally {
+			pool.shutdownNow();
+		}
 	}
 
 	private void failLoginTimes(int times) throws Exception {
@@ -165,6 +298,11 @@ class AuthLockoutIT {
 	private int failedAttempts(UUID userId) {
 		return jdbc.queryForObject(
 				"select failed_login_attempts from app_user where id = ?", Integer.class, userId);
+	}
+
+	private OffsetDateTime lockedUntil(UUID userId) {
+		return jdbc.queryForObject(
+				"select locked_until from app_user where id = ?", OffsetDateTime.class, userId);
 	}
 
 	private UUID seedUser() {
@@ -210,5 +348,65 @@ class AuthLockoutIT {
 					settlement_quote, settlement, installment, journal_line, journal_entry,
 					contract, asset, customer
 				CASCADE""");
+	}
+
+	/**
+	 * Exposes the encoder as a primary bean so the test can park the next verification. It
+	 * delegates to the real Argon2 encoder, so hashes and timing stay production-shaped.
+	 */
+	@TestConfiguration(proxyBeanMethods = false)
+	static class PausableEncoderConfiguration {
+
+		@Bean
+		@Primary
+		PausablePasswordEncoder pausablePasswordEncoder() {
+			return new PausablePasswordEncoder();
+		}
+	}
+
+	/** Argon2 encoder that can hold the next {@code matches} call until the test releases it. */
+	static final class PausablePasswordEncoder implements PasswordEncoder {
+
+		private final PasswordEncoder delegate = Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8();
+		private final AtomicBoolean pauseArmed = new AtomicBoolean(false);
+		private volatile CountDownLatch verificationStarted = new CountDownLatch(0);
+		private volatile CountDownLatch verificationMayFinish = new CountDownLatch(0);
+
+		void arm() {
+			verificationStarted = new CountDownLatch(1);
+			verificationMayFinish = new CountDownLatch(1);
+			pauseArmed.set(true);
+		}
+
+		boolean awaitVerificationStarted() throws InterruptedException {
+			return verificationStarted.await(10, TimeUnit.SECONDS);
+		}
+
+		void releaseVerification() {
+			verificationMayFinish.countDown();
+		}
+
+		@Override
+		public String encode(CharSequence rawPassword) {
+			return delegate.encode(rawPassword);
+		}
+
+		@Override
+		public boolean matches(CharSequence rawPassword, String encodedPassword) {
+			if (pauseArmed.compareAndSet(true, false)) {
+				CountDownLatch started = verificationStarted;
+				CountDownLatch mayFinish = verificationMayFinish;
+				started.countDown();
+				try {
+					if (!mayFinish.await(10, TimeUnit.SECONDS)) {
+						throw new IllegalStateException("Timed out waiting to release password verification");
+					}
+				} catch (InterruptedException ex) {
+					Thread.currentThread().interrupt();
+					throw new IllegalStateException("Interrupted while pausing password verification", ex);
+				}
+			}
+			return delegate.matches(rawPassword, encodedPassword);
+		}
 	}
 }
