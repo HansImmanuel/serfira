@@ -58,7 +58,7 @@ Every business module uses the same four layers: `com.serfira.<module>.{api, app
 ## Code style
 
 - Tabs for indentation. Import groups: project/third-party, then `java.*`, then static imports.
-- Constructor injection with `private final` fields. No field `@Autowired` in main code, and no Lombok (`auth.domain.AppUser` is a known deviation tracked as ambiguity A-14; do not copy it).
+- Constructor injection with `private final` fields. No field `@Autowired` in main code, and no Lombok.
 - Entities have a `protected` no-arg JPA constructor plus a validating public constructor (`Objects.requireNonNull`, guards that mirror DB CHECK constraints). State changes go through intention-revealing methods, not setters.
 - Enums are persisted with `@Enumerated(EnumType.STRING)`. IDs are `UUID` (`GenerationType.UUID`).
 - Javadoc explains the **why** and cites spec sections (`TS §2.3`, `DM §1.4`, `PRD P-3`, `ADR-010`). Keep that style for new public types and non-obvious logic.

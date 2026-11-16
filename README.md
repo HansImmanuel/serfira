@@ -105,7 +105,7 @@ flowchart LR
 | `ledger`     | Double-entry journal, chart of accounts, posting                      | Built  |
 | `settlement` | Early settlement quote and execution                                  | Built  |
 | `reporting`  | Read-only reports (aging)                                             | Built  |
-| `auth`       | App users, Argon2id login, access/refresh token issuance              | Built  |
+| `auth`       | App users, Argon2id login, token rotation/logout/lockout              | Built  |
 | `shared`     | Clock, audit, error envelope, idempotency, document numbers, security | Built  |
 
 Every module follows `com.serfira.<module>.{api, application, domain, infrastructure}`.
@@ -147,16 +147,22 @@ PostgreSQL 16, so Docker must be running). CI runs the same task on every push a
 
 ### Calling the API
 
-Every endpoint except health, OpenAPI and login requires a bearer JWT (HS256). Obtain one from
-`POST /api/v1/auth/login` with a seeded user's credentials. The access token is valid for 15 minutes
+Every endpoint except health, OpenAPI and the three token endpoints (`POST /api/v1/auth/login`,
+`/refresh`, `/logout`) requires a bearer JWT (HS256). Obtain one from `POST /api/v1/auth/login` with a
+seeded user's credentials. The access token is valid for 15 minutes
 and carries a canonical UUID `sub` (the id of an **active** `app_user`, recorded as `created_by` on
 writes), an `exp`, and a `roles` string array (for example `["ADMIN_OPERASIONAL"]`). A non-UUID,
 `SYSTEM`, unknown or inactive subject, or a missing `exp`, is rejected with 401; a token without an
-allowed role is 403. Login returns a refresh token too; rotation/logout arrive with T21b.
+allowed role is 403. Login returns an access + refresh token pair in the body; rotate the refresh
+token with `POST /api/v1/auth/refresh` (single-use — the presented token stops working) and revoke it
+with `POST /api/v1/auth/logout` (idempotent). Five consecutive failed logins lock the account for
+15 minutes and answer 423 `ACCOUNT_LOCKED`.
 
 | Method | Endpoint                              | Purpose                                                            |
 | ------ | ------------------------------------- | ------------------------------------------------------------------ |
 | `POST` | `/api/v1/auth/login`                  | Exchange username/password for access + refresh tokens             |
+| `POST` | `/api/v1/auth/refresh`                | Rotate a refresh token into a new access + refresh pair            |
+| `POST` | `/api/v1/auth/logout`                 | Revoke a refresh token (idempotent)                                |
 | `POST` | `/api/v1/contracts`                   | Create a DRAFT contract (`Idempotency-Key` required)               |
 | `POST` | `/api/v1/contracts/{id}/activate`     | Activate and generate the schedule (idempotent)                    |
 | `GET`  | `/api/v1/contracts`                   | List contracts (paged, filter by status, search)                   |
@@ -174,26 +180,31 @@ allowed role is 403. Login returns a refresh token too; rotation/logout arrive w
 | `GET`  | `/api/v1/reports/aging`               | Portfolio and per-contract aging buckets                           |
 
 Every mutation above is restricted to `ADMIN_OPERASIONAL`; read endpoints follow the role matrix
-(see Security below). Login is open to all three business roles and is the only endpoint reachable
-without a token besides health and OpenAPI.
+(see Security below). Login, refresh and logout are open to all three business roles and are the only
+endpoints reachable without a token besides health and OpenAPI — refresh/logout take the refresh token
+itself as their credential.
 
 ## Security
 
-- **Default-deny with a role matrix.** Only health, info, OpenAPI, and login are public. Every endpoint
+- **Default-deny with a role matrix.** Only health, info, OpenAPI, and the three token endpoints are
+  public. Every endpoint
   enforces the role matrix from one matcher table ending in `denyAll`; roles come from the JWT `roles`
   claim. → [ADR-005](docs/adr/ADR-005-resource-server-before-auth-stories.md),
   [ADR-015](docs/adr/ADR-015-jwt-roles-claim-and-endpoint-authorization.md)
 - **Real users and Argon2id login.** `POST /api/v1/auth/login` verifies an Argon2id hash and issues a
   15-minute HS256 access token plus a refresh token whose SHA-256 hash is stored (`refresh_token`).
   Credential failures are a generic 401; a saturated Argon2 verification semaphore returns a retryable
-  503 `AUTHENTICATION_CAPACITY_EXCEEDED`. → [ADR-022](docs/adr/ADR-022-auth-foundation.md)
+  503 `AUTHENTICATION_CAPACITY_EXCEEDED`. Refresh tokens rotate on use and a replay is rejected with
+  401; five failed logins lock an account for 15 minutes and answer 423 `ACCOUNT_LOCKED`.
+  → [ADR-022](docs/adr/ADR-022-auth-foundation.md)
 - **Attributable writes.** A UUID JWT subject is bound to the audit context and recorded as
   `created_by`/`updated_by`. A token whose subject is not a UUID, is unknown or belongs to an inactive
   user, or that carries no `exp`, is rejected with 401 (ADR-015, ADR-022). Scheduled jobs run as a
   seeded `SYSTEM` principal that can never log in (inactive, unusable password hash, enforced by a
   check constraint).
 - **Fail-fast secrets.** The app refuses to start without its PII encryption key, HMAC key, and
-  JWT secret:
+  JWT secret, and refuses to start a `prod`/`production` deployment that still uses the public
+  `docker-compose.yml` dev values:
 
   ```
   SERFIRA_SECURITY_PII_ENCRYPTION_KEY=<base64 32-byte key>

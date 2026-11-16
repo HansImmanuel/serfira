@@ -12,7 +12,8 @@ import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
 
 /**
- * Deterministic clock for {@link AuthLoginIT} (T21a).
+ * Deterministic clock for the auth ITs (T21a/T21b: `AuthLoginIT`, `AuthRefreshIT`, `AuthLogoutIT`,
+ * `AuthLockoutIT`).
  *
  * <p>Pinned once when the suite loads, so the issued-at/expiry window and {@code last_login_at}
  * are exact within a run. It is captured relative to the machine clock (truncated to seconds)

@@ -1,6 +1,11 @@
 package com.serfira.auth.domain;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -15,8 +20,13 @@ import jakarta.persistence.Table;
  * JPA entity for {@code refresh_token} (Addendum §3.1/§3.3, V1__baseline.sql).
  *
  * <p>Only the SHA-256 hash of the opaque refresh token is stored ({@code token_hash}); the raw
- * value is returned once to the client and never persisted or logged. T21a issues the row;
- * T21b owns rotation/revocation ({@code revoked_at}, {@code replaced_by_id}).
+ * value is returned once to the client and never persisted or logged.
+ *
+ * <p>Rotation (T21b) revokes the presented row and links it to its replacement through
+ * {@code revoked_at}/{@code replaced_by_id}. That transition is deliberately **not** an entity
+ * method: it runs as a conditional bulk update in {@code RefreshTokenRepository} so that exactly
+ * one of two concurrent refreshes can win the row. Mutable setters would invite a
+ * read-modify-write implementation that lets both callers mint a token.
  *
  * <p>Audit columns are explicit rather than inherited from {@code Auditable}: the actor of a login
  * is the authenticating user, not the request's {@code AuditContext} (SYSTEM while unauthenticated).
@@ -24,6 +34,12 @@ import jakarta.persistence.Table;
 @Entity
 @Table(name = "refresh_token")
 public class RefreshToken {
+
+	/**
+	 * Lifetime of a newly issued token. The window slides on every rotation: there is no absolute
+	 * session cap (ADR-022 addendum D11).
+	 */
+	public static final Duration DEFAULT_LIFETIME = Duration.ofDays(7);
 
 	private static final int TOKEN_HASH_LENGTH = 64;
 
@@ -81,6 +97,26 @@ public class RefreshToken {
 		this.updatedBy = userId;
 	}
 
+	/**
+	 * Builds the stored row for a freshly issued raw token: only its digest is persisted, with the
+	 * standard seven-day window.
+	 */
+	public static RefreshToken issue(UUID userId, String rawToken, OffsetDateTime now) {
+		Objects.requireNonNull(now, "now");
+		return new RefreshToken(userId, hash(rawToken), now.plus(DEFAULT_LIFETIME), now);
+	}
+
+	/** SHA-256 hex digest of a raw token, used both when storing and when looking one up. */
+	public static String hash(String rawToken) {
+		Objects.requireNonNull(rawToken, "rawToken");
+		try {
+			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			return HexFormat.of().formatHex(digest.digest(rawToken.getBytes(StandardCharsets.UTF_8)));
+		} catch (NoSuchAlgorithmException ex) {
+			throw new IllegalStateException("SHA-256 not available", ex);
+		}
+	}
+
 	public UUID getId() {
 		return id;
 	}
@@ -101,16 +137,8 @@ public class RefreshToken {
 		return revokedAt;
 	}
 
-	public void setRevokedAt(OffsetDateTime revokedAt) {
-		this.revokedAt = revokedAt;
-	}
-
 	public UUID getReplacedById() {
 		return replacedById;
-	}
-
-	public void setReplacedById(UUID replacedById) {
-		this.replacedById = replacedById;
 	}
 
 	public OffsetDateTime getCreatedAt() {
@@ -125,16 +153,23 @@ public class RefreshToken {
 		return updatedAt;
 	}
 
-	public void setUpdatedAt(OffsetDateTime updatedAt) {
-		this.updatedAt = Objects.requireNonNull(updatedAt, "updatedAt");
-	}
-
 	public UUID getUpdatedBy() {
 		return updatedBy;
 	}
 
-	public void setUpdatedBy(UUID updatedBy) {
-		this.updatedBy = updatedBy;
+	/** Whether this token was rotated away or logged out. */
+	public boolean isRevoked() {
+		return revokedAt != null;
+	}
+
+	/**
+	 * Whether the token may still be exchanged for a new pair: not revoked and not past its
+	 * expiry. Expiry is checked here as well as in the query so the rule holds regardless of how
+	 * the caller loaded the row.
+	 */
+	public boolean isUsableAt(OffsetDateTime now) {
+		Objects.requireNonNull(now, "now");
+		return !isRevoked() && now.isBefore(expiresAt);
 	}
 
 	private static String requireHash(String tokenHash) {

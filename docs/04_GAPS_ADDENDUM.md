@@ -133,8 +133,8 @@ GET  /api/v1/contracts/{id}/credit          -- lihat saldo & histori kredit
 ### 3.2 Endpoint baru
 ```
 POST /api/v1/auth/login     -- {username, password} → access + refresh token   (T21a, live)
-POST /api/v1/auth/refresh   -- rotate refresh token → access + refresh token baru   (T21b, belum dibangun)
-POST /api/v1/auth/logout    -- revoke refresh token   (T21b, belum dibangun)
+POST /api/v1/auth/refresh   -- {refresh_token} → access + refresh token baru; token lama direvoke (T21b, live)
+POST /api/v1/auth/logout    -- {refresh_token} → revoke; idempoten              (T21b, live)
 ```
 
 ### 3.3 Keputusan
@@ -142,6 +142,9 @@ POST /api/v1/auth/logout    -- revoke refresh token   (T21b, belum dibangun)
 - `created_by` / `updated_by` di semua user-facing write diisi dari `app_user.id` hasil JWT claim, bukan string bebas. Job memakai principal `SYSTEM`.
 - Bootstrap exception: seeded `SYSTEM` user dapat memiliki `created_by=NULL` / `updated_by=NULL` pada insert awal; write berikutnya tetap memakai UUID `app_user.id`.
 - RBAC memakai default-deny.
+- Refresh token dikembalikan di **body respons** (bukan cookie `HttpOnly`), dan brute-force lockout memakai
+  5 percobaan / 15 menit (dapat dikonfigurasi) dengan jawaban **423 `ACCOUNT_LOCKED`**; replay refresh token
+  ditolak **401 tanpa** mencabut seluruh keluarga token (ADR-022 D10–D12, T21b).
 - Endpoint job scheduler internal (billing, denda, aging, reconciliation) tidak lewat JWT user; jalankan in-process dengan seeded non-interactive user `SYSTEM`.
 
 ### 3.4 Endpoint-to-Role Matrix
@@ -175,7 +178,7 @@ Legenda: ✅ = diizinkan | ❌ = dilarang | — = tidak relevan
 
 > **Catatan implementasi:** Gunakan Spring Security `@PreAuthorize` atau `SecurityFilterChain` dengan role-based matchers. Default-deny berarti setiap endpoint baru harus secara eksplisit mendaftarkan role yang diizinkan; endpoint tanpa deklarasi otomatis `403`. Response 403 menggunakan error envelope standar dengan `code: FORBIDDEN`.
 >
-> **Status (T7/T21a, ADR-015/ADR-022):** Matrix ini ditegakkan lewat **satu tabel matcher** di `ResourceServerSecurityConfiguration` yang diakhiri `denyAll()`. Role dibaca dari claim `roles` (array string); `SYSTEM` pada token menolak seluruh token (403). Token tanpa `exp`, dengan `sub` non-UUID, atau dengan `sub` yang bukan `app_user` aktif → 401 (ADR-015 D5, ADR-022 D6). `POST /auth/login` adalah pengecualian by-design: `permitAll` karena ia menerbitkan token pertama (ADR-022 D7); baris `/auth/refresh` dan `/auth/logout` baru berlaku saat T21b. Setiap endpoint baru menambah barisnya di tabel ini beserta tes 403-nya.
+> **Status (T7/T21a/T21b, ADR-015/ADR-022):** Matrix ini ditegakkan lewat **satu tabel matcher** di `ResourceServerSecurityConfiguration` yang diakhiri `denyAll()`. Role dibaca dari claim `roles` (array string); `SYSTEM` pada token menolak seluruh token (403). Token tanpa `exp`, dengan `sub` non-UUID, atau dengan `sub` yang bukan `app_user` aktif → 401 (ADR-015 D5, ADR-022 D6). `POST /auth/login`, `/auth/refresh`, dan `/auth/logout` adalah pengecualian by-design: `permitAll` karena login menerbitkan token pertama dan refresh/logout dipanggil justru saat access token sudah mati — kredensialnya adalah refresh token di body (ADR-022 D7, D10). Setiap endpoint baru menambah barisnya di tabel ini, dengan sel "tidak 401/403" untuk semua role pada endpoint `permitAll` dan sel 403 eksplisit untuk endpoint ber-role.
 
 ---
 

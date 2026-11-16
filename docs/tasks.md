@@ -20,17 +20,20 @@ Completed Work index, open tasks, and open ambiguities.
 **Snapshot:** `main` @ `278c57e`. **Sprint 6 is COMPLETE** — T16 (PR #11), T17 (PR #12), T19 (PR #13), T18
 (PR #14), T27a (PR #15) and T31 (PR #16 + review fixes PR #17) are all **merged to `main`**. **Sprint 6b has
 started:** T20 (observability baseline) is **DONE and merged** (PR #18, including the post-review
-`LogContext`/`CorrelationIdFilter` fixes in `0c05dfe`), and **T21a** (auth foundation) is **DONE and merged
-via PR #19** (`278c57e`, including the review fixes in `070e7ad`).
+`LogContext`/`CorrelationIdFilter` fixes in `0c05dfe`), **T21a** (auth foundation) is **DONE and merged
+via PR #19** (`278c57e`, including the review fixes in `070e7ad`), and **T21b** (refresh rotation, logout,
+lockout, dev-key guard) is **DONE on branch `t21b-refresh-lockout`**, awaiting its PR.
 
 The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **T20** DONE → **T21a** DONE
-→ **T21b** (refresh rotation + lockout) is the frontier, with **T27** (CI & runtime gates) independent
-within the sprint. T22 and T28 remain later-sprint work.
+→ **T21b** DONE → **T27** (CI & runtime gates) is the frontier and independent within the sprint. T22 and
+T28 remain later-sprint work.
 
-**Verified test counts:** full local `./gradlew check` run (2026-11-15, on the merged T21a tree) = 112
-suites / 866 tests / 0 failed (the previous T20 baseline was 111 / 856). T21a adds 7 `AuthLoginIT` cases and
-3 `/auth/login` matrix cells, so the counts, not just compilation, confirm the new suites ran. CI on `main`
-currently reports red for a GitHub billing reason, not a test failure.
+**Verified test counts:** full local `./gradlew check` run (2026-11-16, on the T21b branch, after the review
+fixes) = **117 suites / 911 tests / 0 failed** (the first T21b run was 116 / 893; the previous T21a baseline
+was 112 / 866). The review-fix delta is `AppUserTest` (6 new domain tests), `AuthLockoutIT` 4 → 9,
+`DevKeyProductionGuardTest` 7 → 14, with `AuthRefreshIT` (6) and `AuthLogoutIT` (4) unchanged, so the counts,
+not just compilation, confirm the new cases ran. CI on `main` currently reports red for a GitHub billing
+reason, not a test failure.
 
 **Implemented (verified in source):**
 
@@ -70,7 +73,8 @@ currently reports red for a GitHub billing reason, not a test failure.
   waive/reduce (T15); effective penalty owned by `penalty` behind `EffectivePenaltyPort` (T15/T30, ADR-019).
 - Write-off (T19, F5): accrue-before-resolve, pure `WriteOffEngine` caps recognized receivable, open
   installments → `WRITTEN_OFF`, contract `ACTIVE → TERMINATED`, one balanced `WRITE_OFF` journal.
-- Endpoints (16): `POST /api/v1/auth/login`, `POST /api/v1/contracts`,
+- Endpoints (18): `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`,
+  `POST /api/v1/auth/logout`, `POST /api/v1/contracts`,
   `POST /api/v1/contracts/{id}/activate`, `GET /api/v1/contracts`,
   `GET /api/v1/contracts/{id}`, `GET /api/v1/contracts/{id}/installments`,
   `GET /api/v1/contracts/{id}/statement`, `POST /api/v1/payments`, `POST /api/v1/payments/{id}/void`,
@@ -84,9 +88,18 @@ currently reports red for a GitHub billing reason, not a test failure.
   Argon2 capacity guard is saturated it is 503 `AUTHENTICATION_CAPACITY_EXCEEDED` (ADR-022 D9). Demo users
   (`admin`/`finance`/`manager`) are seeded by the repeatable `R__demo_seed.sql` only under the `demo`
   profile.
-- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all sixteen
+- Auth stateful half (T21b, ADR-022 D10–D13): `POST /api/v1/auth/refresh` rotates single-use and race-safe
+  (replacement inserted, then a conditional `WHERE revoked_at IS NULL` revoke; the loser of a race, a
+  replayed/expired/logged-out token, or a deactivated account is 401 and mints nothing), and
+  `POST /api/v1/auth/logout` revokes idempotently. Login lockout is 5 failures / `PT15M`, configurable via
+  `serfira.auth.lockout.*`, answering 423 `ACCOUNT_LOCKED` with the minutes remaining; the failure counter is
+  written in a `REQUIRES_NEW` transaction so the thrown 401 cannot roll it back. `DevKeyProductionGuard`
+  refuses to start a `prod`/`production` deployment on the public `docker-compose` keys. Refresh transport is
+  the response body (X-14 closed); `AppUser` moved to project entity style (A-14 closed).
+- Security: JWT HS256 resource server, default-deny, Addendum §3.4 role matrix enforced on all eighteen
   endpoints (T7, ADR-015; every mutation above is ADMIN_OPERASIONAL only). `sub` must be the UUID of an
-  active `app_user` with `exp`. No refresh/logout/lockout, no `iss`/`aud` validation yet (ADR-005; T21b).
+  active `app_user` with `exp`. Login, refresh and logout are `permitAll` by design (ADR-022 D7/D10). No
+  `iss`/`aud` validation yet (ADR-005, deferred with CR-10).
 
 Full per-task implementation notes for all DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
@@ -94,10 +107,10 @@ Full per-task implementation notes for all DONE work are in `tasks-archive.md`; 
 **Blockers and critical gaps:** none open.
 
 **Specification/implementation discrepancies:** X-1 … X-13 are all resolved except **X-9** (TS §7 repo/
-package names — doc-only, DEFERRED). X-3 was resolved by T20. **X-14 is open:** `06_FRONTEND_SPEC.md`
-assumes login sets the refresh token as an httpOnly cookie while T21a returns it in the response body
-(ADR-022 D3/D5); T21b decides the transport. The resolved X-table with per-item detail is in
-`tasks-archive.md`.
+package names — doc-only, DEFERRED). X-3 was resolved by T20. **X-14 is resolved by T21b:** the refresh
+token travels in the response body (no `HttpOnly` cookie, no CSRF/CORS credential work this phase), and
+`02_TECH_SPEC.md` §2.6 plus `06_FRONTEND_SPEC.md` §1.1/§1.4 were updated to match (ADR-022 D10). The
+resolved X-table with per-item detail is in `tasks-archive.md`.
 
 ---
 
@@ -135,6 +148,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T31   | Durable void idempotency key: `payment_void_idempotency` side table, V22, closes ADR-020 finding #5                | ADR-017, ADR-020 D3, `t31-durable-void-idempotency-key` |
 | T20   | Observability baseline: `X-Request-Id` filter, ECS JSON logs, `request_id` on idempotency claims (X-3)             | Addendum §10, `t20-observability-baseline`, PR #18      |
 | T21a  | Auth foundation: `app_user` login, Argon2id, 15-min HS256 token, active-user decoder check, demo seed              | ADR-022, PR #19                                         |
+| T21b  | Auth stateful half: refresh rotation, idempotent logout, brute-force lockout, dev-key prod guard, X-14/A-14 closed  | ADR-022 D10–D13, `t21b-refresh-lockout`                 |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ### Sprint summaries (detail in the archive)
@@ -146,8 +160,9 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 - **Sprint 6 — Void, Consistency & Write-off:** COMPLETE. T16, T17, T19, T18 DONE and merged (ADR-020,
   PR #14); T27a DONE and merged (PR #15); T31 DONE and merged (PR #16 + review fixes PR #17). No
   implementation work remains.
-- **Sprint 6b — Phase-2 security boundary + CI hardening:** IN PROGRESS. T20 (observability baseline, PR #18)
-  and T21a (auth foundation, PR #19) are DONE and merged; T21b and T27 are the remaining tickets below.
+- **Sprint 6b — Phase-2 security boundary + CI hardening:** IN PROGRESS. T20 (observability baseline, PR #18),
+  T21a (auth foundation, PR #19) and T21b (rotation/logout/lockout/dev-key guard) are DONE; T27 is the
+  remaining ticket below.
 
 ---
 
@@ -155,20 +170,54 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 
 **Goal (05_SPRINT_PLAN.md Sprint 6b):** a clear security boundary before the frontend is built — real
 authentication (login/refresh/logout, Argon2id, brute-force lockout), `created_by` sourced from a real
-`app_user`, and CI/runtime gates. The default-deny RBAC role matrix on sixteen endpoints is already live
-(T7, ADR-015), and T21a supplied the identity *source* those matchers authorize against (ADR-022).
+`app_user`, and CI/runtime gates. The default-deny RBAC role matrix on eighteen endpoints is already live
+(T7, ADR-015), and T21a/T21b supplied the identity *source* those matchers authorize against (ADR-022).
 
-**Dependency order:** T21a (DONE) → T21b. T27 is independent within the sprint.
+**Dependency order:** T21a (DONE) → T21b (DONE). T27 is independent within the sprint and now the frontier.
 
-**Estimated load:** T21b (3) + T27 (2) = **5 pts**.
+**Estimated load:** T21b (3, DONE) + T27 (2) = **5 pts**; **2 pts remain**.
 
 Business rules live in `04_GAPS_ADDENDUM.md` §3, §10 and the cited ADRs; these tasks point to them and do
 not restate them.
 
 ### T21b — Refresh rotation, logout, brute-force lockout, dev-key guard (3 pts)
 
-**Status:** TODO
+**Status:** DONE
 **Estimate:** 3 pts
+Implementation note (2026-11-16, branch `t21b-refresh-lockout`): shipped as decided. `AuthService` gained
+`refresh`/`logout`; `RefreshTokenRepository.revokeIfActive` is the conditional revoke (replacement inserted
+first, `revoked == 0` ⇒ replay ⇒ rollback), so the concurrent-refresh IT yields exactly one winner.
+`LoginAttemptRecorder` is a separate `@Service` with `REQUIRES_NEW`, and `AuthLockoutIT` asserts the
+**persisted** `failed_login_attempts` after every 401 — the regression test for the rollback trap. `AppUser`
+and `RefreshToken` moved to project entity style (no Lombok/setters; `isLockedAt`, `recordFailedLogin`,
+`recordSuccessfulLogin`, `isUsableAt`), closing A-14. `DevKeyProductionGuardConfiguration` compares the three
+keys against the compose defaults under `prod`/`production` and names property + env var, never the value.
+Two `permitAll` matcher rows added; `TokenPairResponse` replaced `LoginResponse`; `ErrorCode.ACCOUNT_LOCKED`
+added; `serfira.auth.lockout.max-attempts=5` / `.window=PT15M` in both properties files. No migration: every
+column was already in V1. Docs updated: ADR-022 addendum D10–D13, `02_TECH_SPEC.md` §2.6, `06_FRONTEND_SPEC.md`
+§1.1/§1.4/§2.1, `03_DOMAIN_MODEL.md` §2, `04_GAPS_ADDENDUM.md` §3.2–§3.4, `README.md`, `PROGRESS.md`,
+`.kiro/steering/{tech,structure,product}.md`. Verification: `./gradlew test` = **116 suites / 893 tests / 0
+failed** (baseline 112/866; +4 suites, +21 tests, +6 matrix cells), `./gradlew check` green. Not run: nothing —
+Docker was available for the Testcontainers ITs.
+Review fix (2026-11-16, same branch): the Qodo/CodeRabbit findings on PR #20 were verified against the code
+and the real ones fixed. **Lockout concurrency:** `AuthService.login` lost its `@Transactional` — the lookup
+now ends before Argon2, so the KDF holds no pooled connection and the independent failure/success writes
+cannot starve the pool; `LoginAttemptRecorder` (`REQUIRES_NEW`) and the new `SuccessfulLoginRecorder` both
+re-read the row via `AppUserRepository.findLockedById` (`PESSIMISTIC_WRITE`), so concurrent failures
+increment the persisted counter exactly once and a success that loses the race answers 423 instead of
+clearing the freshly committed lock. `AppUser.recordFailedLogin` clears an elapsed lock (restart at 1) and
+leaves an active one untouched (no window extension). Access tokens are minted only after the success
+transaction commits (`CompletedLogin`). **Dev-key guard:** compares decoded key bytes (`MessageDigest.isEqual`) so unpadded
+Base64 cannot smuggle the public key past a string compare, treats malformed Base64 as non-matching, and
+uses `Environment.matchesProfiles("prod", "production")` so `spring.profiles.default=prod` is guarded too.
+**Refresh race test:** a test-only repository proxy barrier releases both refreshes after
+`findByTokenHash`; the previous pre-call barrier could pass without the conditional update ever racing.
+**Lockout race tests:** a test-only pausable `PasswordEncoder` parks a successful Argon2 verification while
+concurrent failures commit the lock. Also removed the duplicated refresh hashing/lifetime into
+`RefreshToken.issue/hash`, and documented the `permitAll`-does-not-skip-bearer caveat in
+`06_FRONTEND_SPEC.md` and `.kiro/steering/tech.md`. No migration, no production lock added for a test.
+Verification: `./gradlew check` = **117 suites / 911 tests / 0 failed**; all `*IT` suites ran (Docker
+available).
 Decision (2026-11-15, pre-implementation): the three open choices are settled. (a) X-14 transport =
 **response body**; no cookie/CSRF/CORS work this phase because there is no browser client — revisit at
 G2. (b) A locked account answers **423 `LOCKED` `ACCOUNT_LOCKED`** with the minutes remaining; the
@@ -324,7 +373,7 @@ merged. This table carries only the later, not-yet-active sprints.
 | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | PRD C-5 update DRAFT contract                                                               | Already deferred in `05_SPRINT_PLAN.md`.                                         |
 | R-3 cash-in report, R-4 CSV export, P-6 gateway stub, S-5 restructuring                     | P2 / Fase 4 per PRD.                                                             |
-| Require auth for OpenAPI/Swagger outside dev                                                | ADR-005 made it public by design. Revisit with T21b (or G2, once a browser client exists). |
+| Require auth for OpenAPI/Swagger outside dev                                                | ADR-005 made it public by design. T21b kept it public; revisit at G2 (browser client).   |
 | Rate limiting, security headers, CORS policy                                                | No browser client or public deployment yet. Revisit with G2.                     |
 | SonarQube/SonarCloud in CI                                                                  | Decided out of scope for T27 (2026-11-07): needs a running server, an external dependency not worth it for this portfolio repo. The `org.sonarqube` plugin stays local/manual, never wired into `check` or CI. |
 | Envelope-rendering `ErrorController` for container-level errors                             | Boot's default JSON leaks no internals. Low value until a browser client exists. |
@@ -363,19 +412,19 @@ concern therefore reduces to:
 
 The 2026-09-29 code review and the 2026-09-30 external review (16 findings, CR-01…CR-16) are resolved or
 mapped to tasks. The full CR verdict table is in `tasks-archive.md`. The still-open findings map to TODO
-tasks: CR-10 → deferred (RS256/`iss`/`aud`, needs a real issuer), CR-16 → T21b (dev-key production guard),
-CR-11 → T28, CR-15 → T27. CR-14 was closed by T15. All others are DONE.
+tasks: CR-10 → deferred (RS256/`iss`/`aud`, needs a real issuer), CR-16 → T21b (dev-key production guard,
+DONE), CR-11 → T28, CR-15 → T27. CR-14 was closed by T15. All others are DONE.
 
 ### Ambiguities
 
 Resolved items (A-11, A-12, A-13) and the fully-resolved Phase-1 decisions (A-1…A-10) are recorded in
 ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). Sprint 6 is DONE, so the open
-tail is Sprint 6b (T21b, plus T27) and later (T22, T28). One decision is deferred to implementation inside its
-task, non-blocking: the OWASP Dependency-Check severity threshold + suppression policy (T27). The T21b
-lockout threshold/window is settled at 5 attempts / 15 minutes, configurable via `serfira.auth.lockout.*`
-(Decision 2026-11-15). The F2 auth decisions recorded so far are in **ADR-022** (T21a: Argon2id, 15-min HS256,
-active-user decoder check, hashed refresh tokens, and the **D9** Argon2 concurrency cap → 503
-`AUTHENTICATION_CAPACITY_EXCEEDED`); rotation/lockout/transport remain T21b.
+tail is Sprint 6b (T27) and later (T22, T28). One decision is deferred to implementation inside its task,
+non-blocking: the OWASP Dependency-Check severity threshold + suppression policy (T27). The F2 auth decisions
+are recorded in **ADR-022**: T21a covers Argon2id, 15-min HS256, the active-user decoder check, hashed refresh
+tokens and the **D9** Argon2 concurrency cap → 503 `AUTHENTICATION_CAPACITY_EXCEEDED`; the 2026-11-16
+addendum covers **D10** body transport (X-14), **D11** rotation/replay/logout, **D12** lockout (5 × `PT15M`,
+423 `ACCOUNT_LOCKED`) and **D13** the dev-key guard (CR-16).
 
 **A-14 (resolved by T21b, 2026-11-15) — Lombok and entity conventions in `auth.domain`.** `AppUser` used
 Lombok `@Getter`/`@Setter`, an implicit public no-arg constructor and no validating constructor, while
@@ -395,8 +444,8 @@ T27a (CI check gate) — DONE and merged (PR #15)
 Sprint 6b (active):
   T20 (observability) — DONE (PR #18)
   T20 ─► T21a (auth foundation) — DONE (PR #19) ─► T21b (refresh rotation, logout, lockout,
-                                                      dev-key guard, refresh-token transport X-14)
-  T27a ─► T27 (OWASP Dependency-Check + gitleaks + Compose smoke)   [independent within 6b]
+                                                      dev-key guard, refresh-token transport X-14) — DONE
+  T27a ─► T27 (OWASP Dependency-Check + gitleaks + Compose smoke)   [independent, now the frontier]
 
   T21b ─► T22 (frontend login), T28 (key rotation)
 ```

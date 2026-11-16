@@ -5,13 +5,13 @@
 - **Database**: PostgreSQL 16, schema owned by Flyway (`spring.jpa.hibernate.ddl-auto=validate`)
 - **Scheduling**: Spring scheduling + ShedLock 7.10 (JDBC provider) for the daily servicing job
 - **API docs**: springdoc-openapi 3.1 (`/swagger-ui.html`)
-- **Auth**: bearer JWT, HS256, via Spring OAuth2 resource server. Default-deny role matrix (ADR-015). `POST /api/v1/auth/login` is live (ADR-022): Argon2id passwords, 15-minute access token, opaque refresh token stored hashed. Refresh rotation/logout/lockout are T21b.
+- **Auth**: bearer JWT, HS256, via Spring OAuth2 resource server. Default-deny role matrix (ADR-015). `POST /api/v1/auth/login`, `/refresh` and `/logout` are live (ADR-022 D1–D13): Argon2id passwords, 15-minute access token, opaque refresh token stored hashed, single-use rotation (replay → 401), idempotent logout, and brute-force lockout (5 failures / `PT15M`, configurable, 423 `ACCOUNT_LOCKED`). Startup fails under `prod`/`production` if the JWT/PII keys are still the docker-compose dev defaults.
 - **JSON**: Jackson 3 (`tools.jackson.*` packages; annotations still `com.fasterxml.jackson.annotation`)
 - **Testing**: JUnit 5, AssertJ, Spring Boot Test, MockMvc, spring-security-test, Testcontainers 2.0 (PostgreSQL 16)
 - **Build**: Gradle 9.7.1 wrapper, Kotlin DSL (`backend/build.gradle.kts`)
 - **Container**: multi-stage Dockerfile (JRE 21, non-root), `docker-compose.yml` at repo root
 - **CI**: GitHub Actions (`.github/workflows/ci.yml`) runs `./gradlew check` (unit + Testcontainers IT)
-- Lombok is on the classpath but **not used**. Write explicit constructors/getters, matching existing code. (`auth.domain.AppUser` is the one exception, tracked as ambiguity A-14; do not copy it.)
+- Lombok is on the classpath but **not used**. Write explicit constructors/getters, matching existing code.
 
 Spring Boot 4 is modularized: Flyway auto-config needs `spring-boot-flyway`, and MockMvc test support is in `spring-boot-webmvc-test` (`org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`).
 
@@ -75,7 +75,7 @@ Health: `/actuator/health`. The app fails fast without `SERFIRA_SECURITY_PII_ENC
 **Security**
 
 - PII fields use `AesGcmStringAttributeConverter`; lookups and uniqueness use HMAC columns (`PiiHasher`). Mask PII in responses (`PiiMasker`).
-- Only health, info, OpenAPI, and the token endpoints (`POST /api/v1/auth/login`) are public. Authorization is one matcher table in `ResourceServerSecurityConfiguration` ending in `denyAll()`: a new endpoint is denied until it gets a row there. Every protected row needs its allowed-role and 403 cells in `EndpointRoleMatrixIT`. A `permitAll` token endpoint cannot have a 403 cell by construction, so its cells assert instead that all three business roles are **not** denied (ADR-015 D3, ADR-022 D7).
+- Only health, info, OpenAPI, and the token endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`) are public. Authorization is one matcher table in `ResourceServerSecurityConfiguration` ending in `denyAll()`: a new endpoint is denied until it gets a row there. Every protected row needs its allowed-role and 403 cells in `EndpointRoleMatrixIT`. A `permitAll` token endpoint cannot have a 403 cell by construction, so its cells assert instead that all three business roles are **not** denied (ADR-015 D3, ADR-022 D7). Login uses username/password; refresh and logout use the refresh token in the body. `permitAll` does not bypass bearer authentication, so clients must not attach an access token to those three paths (an expired one would be rejected before the controller).
 - A valid token has an `exp`, a `sub` that is the canonical UUID of an **active** `app_user` (never `SYSTEM`), and a `roles` string array. A bad `sub` (unknown/inactive), missing `exp`, or an `app_user` that is not active → 401; no allowed role → 403. A saturated Argon2 verification semaphore on login → 503 `AUTHENTICATION_CAPACITY_EXCEEDED` (ADR-022 D9). `SYSTEM` never acts over HTTP (ADR-015 D4/D5, ADR-022 D6).
 
 ## Testing conventions

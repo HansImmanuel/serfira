@@ -329,7 +329,7 @@ Story baru "done" kalau **semua** terpenuhi:
 - F2 (5), F3 (2) = **7 pts**
 - ⚠️ Auth dipecah ke sprint tersendiri karena F2 (login/refresh/logout/brute-force) dan F3 (RBAC enforcement di semua endpoint) masing-masing non-trivial dan Sprint 6 asli sudah 16 pts.
 - **Exit:** login/refresh/logout berjalan; RBAC enforcement default-deny aktif sesuai endpoint-to-role matrix (Addendum §3.4); `created_by` terisi dari JWT principal; **Fase 2 selesai**.
-- **Status (2026-11-15; otoritatif di `docs/tasks.md`):** F3/RBAC sudah selesai di Sprint 4c (T7, ADR-015). T20 (observability, PR #18) dan T21a (login/Argon2id/token, PR #19) sudah merge; tersisa T21b (refresh/logout/lockout/dev-key guard) dan T27 (CI/runtime gates).
+- **Status (2026-11-16; otoritatif di `docs/tasks.md`):** F3/RBAC sudah selesai di Sprint 4c (T7, ADR-015). T20 (observability, PR #18), T21a (login/Argon2id/token, PR #19) dan T21b (refresh rotation/logout/lockout/dev-key guard, ADR-022 D10–D13) sudah selesai; tersisa T27 (CI/runtime gates) untuk menutup Sprint 6b.
 
 ### Sprint 7 — Frontend Core & Demo
 
