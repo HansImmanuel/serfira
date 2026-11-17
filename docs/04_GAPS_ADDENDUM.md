@@ -397,10 +397,14 @@ dengan angka bunga berjalan yang dihitung manual memakai konvensi ini.
 - **OpenAPI**: generate otomatis dari annotation Spring (springdoc-openapi), expose
   di `/v3/api-docs` dan Swagger UI di `/swagger-ui.html` — hampir tanpa effort
   tambahan, tapi jadi bukti konkret kontrak API rapi.
-- **CI pipeline** (GitHub Actions, `.github/workflows/ci.yml`): jalankan
-  `./gradlew test` (unit + integration test via Testcontainers) di setiap push/PR,
-  plus build image Docker. Tidak perlu deploy otomatis untuk portofolio — cukup
-  badge "tests passing" di README.
+- **CI pipeline** (GitHub Actions, `.github/workflows/ci.yml`): sejak T27a/T27 pipeline terdiri dari empat
+  job terpisah di setiap push/PR — `test` (`./gradlew check`: unit + integration Testcontainers),
+  `secrets` (gitleaks atas working tree dan seluruh history, aturan default + allowlist sempit untuk
+  key dev-only yang memang publik), `dependencies` (OWASP Dependency-Check pada dependency tree nyata,
+  gagal bila CVSS ≥ 7,0, butuh secret `NVD_API_KEY`), dan `compose-smoke` (`docker compose up --build`
+  → `/actuator/health` UP → `/v3/api-docs` tersaji → `down`). Kegagalan scanner/runtime terpisah dari
+  kegagalan test, dan tidak ada scanner yang di-wire ke `check` agar gate lokal tetap cepat. Tidak perlu
+  deploy otomatis untuk portofolio — cukup badge "tests passing" di README.
 
 ---
 

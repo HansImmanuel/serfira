@@ -145,6 +145,35 @@ cd backend
 One command runs both unit tests and `*IT` integration tests (Testcontainers starts a real
 PostgreSQL 16, so Docker must be running). CI runs the same task on every push and pull request.
 
+### Security and CI gates
+
+CI runs four independent jobs, so a scanner or boot failure is never mistaken for a test failure:
+
+| Job             | What it does                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------ |
+| `test`          | `./gradlew check` — unit tests + Testcontainers integration tests                                       |
+| `secrets`       | gitleaks over the working tree and the full history, with the reviewed allowlists in `.gitleaks.toml`   |
+| `dependencies`  | OWASP Dependency-Check on the real dependency tree; fails on High or Critical (CVSS ≥ 7.0)              |
+| `compose-smoke` | `docker compose up --build` → `/actuator/health` UP → `/v3/api-docs` served → `docker compose down`     |
+
+None of the scanners is wired into `check`: `./gradlew check` stays the fast local gate. Run them
+explicitly when you touch dependencies or anything that could carry a credential:
+
+```bash
+cd backend
+./gradlew dependencyCheckAnalyze --no-parallel --no-configuration-cache   # needs NVD_API_KEY
+
+# gitleaks (single self-contained binary, v8)
+gitleaks dir .            # working tree
+gitleaks git .            # full history
+```
+
+The vulnerability scan downloads the NVD feed and the NVD API rejects unkeyed requests, so it needs an
+`NVD_API_KEY` (free from <https://nvd.nist.gov/developers/request-an-api-key>) in the environment locally
+and as a repository secret in CI. Suppressions live in `backend/dependency-check-suppressions.xml`; every
+entry needs a written reason, and `failBuildOnUnusedSuppressionRule` fails the scan once a suppression
+stops matching anything.
+
 ### Calling the API
 
 Every endpoint except health, OpenAPI and the three token endpoints (`POST /api/v1/auth/login`,

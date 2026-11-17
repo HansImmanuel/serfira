@@ -10,7 +10,7 @@
 - **Testing**: JUnit 5, AssertJ, Spring Boot Test, MockMvc, spring-security-test, Testcontainers 2.0 (PostgreSQL 16)
 - **Build**: Gradle 9.7.1 wrapper, Kotlin DSL (`backend/build.gradle.kts`)
 - **Container**: multi-stage Dockerfile (JRE 21, non-root), `docker-compose.yml` at repo root
-- **CI**: GitHub Actions (`.github/workflows/ci.yml`) runs `./gradlew check` (unit + Testcontainers IT)
+- **CI**: GitHub Actions (`.github/workflows/ci.yml`) runs four separate jobs — `test` (`./gradlew check`: unit + Testcontainers IT), `secrets` (gitleaks over tree + full history), `dependencies` (OWASP Dependency-Check, fails on CVSS ≥ 7.0, needs the `NVD_API_KEY` secret), `compose-smoke` (`docker compose up --build` → `/actuator/health` UP → `/v3/api-docs` served → `down`). No scanner is wired into `check`.
 - Lombok is on the classpath but **not used**. Write explicit constructors/getters, matching existing code.
 
 Spring Boot 4 is modularized: Flyway auto-config needs `spring-boot-flyway`, and MockMvc test support is in `spring-boot-webmvc-test` (`org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`).
@@ -25,6 +25,7 @@ Run from `backend/` (Windows: `gradlew.bat` or `.\gradlew`):
 .\gradlew test --tests "*PaymentAllocationEngineTest"   # a single class
 .\gradlew build                                   # compile + test + bootJar
 .\gradlew bootJar                                 # build jar only
+.\gradlew dependencyCheckAnalyze --no-parallel --no-configuration-cache   # CVE scan; needs NVD_API_KEY
 ```
 
 Without Docker, `*IT` tests cannot run. Verify with `.\gradlew compileJava compileTestJava` and `.\gradlew test --tests "*Test"`, and state in the result that the `*IT` tests were not run.

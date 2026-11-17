@@ -17,23 +17,23 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `278c57e`. **Sprint 6 is COMPLETE** — T16 (PR #11), T17 (PR #12), T19 (PR #13), T18
-(PR #14), T27a (PR #15) and T31 (PR #16 + review fixes PR #17) are all **merged to `main`**. **Sprint 6b has
-started:** T20 (observability baseline) is **DONE and merged** (PR #18, including the post-review
-`LogContext`/`CorrelationIdFilter` fixes in `0c05dfe`), **T21a** (auth foundation) is **DONE and merged
-via PR #19** (`278c57e`, including the review fixes in `070e7ad`), and **T21b** (refresh rotation, logout,
-lockout, dev-key guard) is **DONE on branch `t21b-refresh-lockout`**, awaiting its PR.
+**Snapshot:** `main` @ `24ca19b`. **Sprints 6 and 6b are COMPLETE.** Sprint 6: T16 (PR #11), T17 (PR #12),
+T19 (PR #13), T18 (PR #14), T27a (PR #15) and T31 (PR #16 + review fixes PR #17) are merged to `main`.
+Sprint 6b: T20 (observability baseline, PR #18, plus the post-review `LogContext`/`CorrelationIdFilter` fixes
+in `0c05dfe`), T21a (auth foundation, PR #19, review fixes `070e7ad`), T21b (refresh rotation, logout,
+lockout, dev-key guard, PR #20, review fixes `11c8ef1`) and T27 (CI & runtime gates, branch
+`t27-ci-runtime-gates`).
 
-The live backlog is **Sprint 6b** (Phase-2 security boundary + CI hardening): **T20** DONE → **T21a** DONE
-→ **T21b** DONE → **T27** (CI & runtime gates) is the frontier and independent within the sprint. T22 and
-T28 remain later-sprint work.
+The Sprint 6b backlog is empty. Remaining work is later-sprint: **T22** (frontend login) and **T28** (key
+rotation).
 
 **Verified test counts:** full local `./gradlew check` run (2026-11-16, on the T21b branch, after the review
 fixes) = **117 suites / 911 tests / 0 failed** (the first T21b run was 116 / 893; the previous T21a baseline
 was 112 / 866). The review-fix delta is `AppUserTest` (6 new domain tests), `AuthLockoutIT` 4 → 9,
 `DevKeyProductionGuardTest` 7 → 14, with `AuthRefreshIT` (6) and `AuthLogoutIT` (4) unchanged, so the counts,
-not just compilation, confirm the new cases ran. CI on `main` currently reports red for a GitHub billing
-reason, not a test failure.
+not just compilation, confirm the new cases ran. T27 changed no test sources, so its 2026-11-17 `check` run
+reports the same **117 / 911 / 0** (results reused as up-to-date). CI on `main` currently reports red for a
+GitHub billing reason, not a test failure.
 
 **Implemented (verified in source):**
 
@@ -100,11 +100,19 @@ reason, not a test failure.
   endpoints (T7, ADR-015; every mutation above is ADMIN_OPERASIONAL only). `sub` must be the UUID of an
   active `app_user` with `exp`. Login, refresh and logout are `permitAll` by design (ADR-022 D7/D10). No
   `iss`/`aud` validation yet (ADR-005, deferred with CR-10).
+- CI & runtime gates (T27, CR-15): four independent GitHub Actions jobs — `test` (`./gradlew check`),
+  `secrets` (gitleaks over tree + full history, `.gitleaks.toml` with four value-and-path-scoped
+  allowlists), `dependencies` (OWASP Dependency-Check plugin 13.0.0 on the real dependency tree, fails on
+  CVSS ≥ 7.0, `NVD_API_KEY` secret required and guarded, NVD cache, suppressions with a written reason each),
+  and `compose-smoke` (`up --build` → health UP → `/v3/api-docs` → `down -v`). The scan runs separately with
+  `--no-parallel --no-configuration-cache` (Gradle 9 plugin limitation). No scanner is wired into `check`.
 
 Full per-task implementation notes for all DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
 
-**Blockers and critical gaps:** none open.
+**Blockers and critical gaps:** none open. Operational note: T27's `dependencies` job needs a one-time
+repository secret `NVD_API_KEY` (free from nvd.nist.gov); without it that job fails by design rather than
+silently skipping the gate.
 
 **Specification/implementation discrepancies:** X-1 … X-13 are all resolved except **X-9** (TS §7 repo/
 package names — doc-only, DEFERRED). X-3 was resolved by T20. **X-14 is resolved by T21b:** the refresh
@@ -149,6 +157,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T20   | Observability baseline: `X-Request-Id` filter, ECS JSON logs, `request_id` on idempotency claims (X-3)             | Addendum §10, `t20-observability-baseline`, PR #18      |
 | T21a  | Auth foundation: `app_user` login, Argon2id, 15-min HS256 token, active-user decoder check, demo seed              | ADR-022, PR #19                                         |
 | T21b  | Auth stateful half: refresh rotation, idempotent logout, brute-force lockout, dev-key prod guard, X-14/A-14 closed  | ADR-022 D10–D13, `t21b-refresh-lockout`                 |
+| T27   | CI & runtime gates: OWASP Dependency-Check (CVSS ≥ 7.0), gitleaks (tree + history), Compose smoke, four jobs       | CR-15, `t27-ci-runtime-gates`                           |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ### Sprint summaries (detail in the archive)
@@ -160,9 +169,9 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 - **Sprint 6 — Void, Consistency & Write-off:** COMPLETE. T16, T17, T19, T18 DONE and merged (ADR-020,
   PR #14); T27a DONE and merged (PR #15); T31 DONE and merged (PR #16 + review fixes PR #17). No
   implementation work remains.
-- **Sprint 6b — Phase-2 security boundary + CI hardening:** IN PROGRESS. T20 (observability baseline, PR #18),
-  T21a (auth foundation, PR #19) and T21b (rotation/logout/lockout/dev-key guard) are DONE; T27 is the
-  remaining ticket below.
+- **Sprint 6b — Phase-2 security boundary + CI hardening:** COMPLETE. T20 (observability baseline, PR #18),
+  T21a (auth foundation, PR #19), T21b (rotation/logout/lockout/dev-key guard, PR #20) and T27 (CI & runtime
+  gates) DONE. No implementation work remains.
 
 ---
 
@@ -173,9 +182,9 @@ authentication (login/refresh/logout, Argon2id, brute-force lockout), `created_b
 `app_user`, and CI/runtime gates. The default-deny RBAC role matrix on eighteen endpoints is already live
 (T7, ADR-015), and T21a/T21b supplied the identity *source* those matchers authorize against (ADR-022).
 
-**Dependency order:** T21a (DONE) → T21b (DONE). T27 is independent within the sprint and now the frontier.
+**Dependency order:** T21a (DONE) → T21b (DONE). T27 (DONE) was independent within the sprint and closed it.
 
-**Estimated load:** T21b (3, DONE) + T27 (2) = **5 pts**; **2 pts remain**.
+**Estimated load:** T21b (3, DONE) + T27 (2, DONE) = **5 pts**; **0 pts remain**.
 
 Business rules live in `04_GAPS_ADDENDUM.md` §3, §10 and the cited ADRs; these tasks point to them and do
 not restate them.
@@ -302,8 +311,41 @@ of its reach.
 
 ### T27 — CI & runtime gates: dependency + secret scan + Compose smoke (2 pts)
 
-**Status:** TODO
+**Status:** DONE
 **Estimate:** 2 pts
+Implementation note (2026-11-17, branch `t27-ci-runtime-gates`): shipped as the sprint's last gate, no
+application code touched and no scanner wired into `check` (T27a parity). Decisions fixed here:
+(1) **Dependency-Check** — Gradle plugin `org.owasp.dependencycheck` 13.0.0 with `failBuildOnCVSS = 7.0`
+(High + Critical fail, Medium and below report only), HTML report, `suppressionFile =
+dependency-check-suppressions.xml`, `failBuildOnUnusedSuppressionRule = true` so a stale suppression reds
+the scan, and `analyzers.ossIndex.warnOnlyOnRemoteErrors = true` because the NVD feed — not OSS Index — is
+the gate's source of truth. `NVD_API_KEY` is read from the environment when present. The suppression file
+is empty today with a written policy header: every future entry needs a reason.
+(2) **Gradle 9 workaround** — the plugin resolves configurations during execution, which Gradle 9.7.1
+rejects under parallel scheduling (upstream issue #462), so the scan runs as its own invocation with
+`--no-parallel --no-configuration-cache`.
+(3) **gitleaks** — `.gitleaks.toml` extends the default rules and allowlists only four provably-not-secret
+shapes, each scoped by path *and* exact value (build outputs `backend/(build|bin)`; the public test-only
+PII/JWT keys in `src/test/resources/application.properties`; one T31 test `Idempotency-Key` literal; the
+committed dev-only compose keys plus the `DevKeyProductionGuard` that names them, ADR-022 D13). Both the
+base64 and decoded forms are listed because gitleaks reports decoded secrets from history.
+(4) **CI** — four independent jobs (`test`, `secrets`, `dependencies`, `compose-smoke`); the old build-only
+`docker` job is replaced by the real smoke. The `dependencies` job fails loudly with an `::error::` guard
+step when the `NVD_API_KEY` secret is absent, caches `~/.gradle/dependency-check-data`, and uploads the
+report on failure. `gitleaks/gitleaks-action@v3` (v2 is retired), PR comments disabled so the workflow stays
+on `contents: read`.
+Verification: `gitleaks dir .` and `gitleaks git .` (99 commits) both clean at exit 0, and a scratch
+`api_token = "…"` probe returned exit 1 and disappeared after removal (positive control; an AWS *example*
+key does not fire, it is allowlisted by gitleaks itself). A second probe planted the same shape inside
+`docker-compose.yml` — a file whose dev keys *are* allowlisted — and still failed the scan at exit 1, so the
+allowlist is value-scoped rather than file-wide. ODC task wiring verified by `--dry-run` plus two
+env probes: a dummy `NVD_API_KEY` reaches the scanner core (`Invalid API Key: dummy-*****`) while no key
+fails with `NvdApiException: Invalid API Key, length of 0` — i.e. the key genuinely gates the scan. Compose
+smoke rehearsed locally end-to-end: `up --build` → `/actuator/health` **UP after 4 attempts** →
+`/v3/api-docs` served (**51,851 bytes, 17 paths**) → `down -v` removed containers, volume and network.
+`./gradlew check` = **117 suites / 911 tests / 0 failed** (test sources unchanged, so the T21b result set is
+reused; `check` reported success). A full ODC scan with a real NVD key — and therefore the CI-green
+acceptance criterion — cannot be produced locally and is left to the pipeline run.
 
 **Goal:** Harden CI beyond `check` with two self-contained scanners and a runtime smoke test, so a
 high-severity CVE, a committed secret, or an app that fails to boot cannot land on `main`.
@@ -413,14 +455,16 @@ concern therefore reduces to:
 The 2026-09-29 code review and the 2026-09-30 external review (16 findings, CR-01…CR-16) are resolved or
 mapped to tasks. The full CR verdict table is in `tasks-archive.md`. The still-open findings map to TODO
 tasks: CR-10 → deferred (RS256/`iss`/`aud`, needs a real issuer), CR-16 → T21b (dev-key production guard,
-DONE), CR-11 → T28, CR-15 → T27. CR-14 was closed by T15. All others are DONE.
+DONE), CR-11 → T28, CR-15 → T27 (DONE). CR-14 was closed by T15. All others are DONE.
 
 ### Ambiguities
 
 Resolved items (A-11, A-12, A-13) and the fully-resolved Phase-1 decisions (A-1…A-10) are recorded in
-ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). Sprint 6 is DONE, so the open
-tail is Sprint 6b (T27) and later (T22, T28). One decision is deferred to implementation inside its task,
-non-blocking: the OWASP Dependency-Check severity threshold + suppression policy (T27). The F2 auth decisions
+ADR-012, ADR-013, ADR-015 and ADR-017; detail is in `tasks-archive.md` (T1). Sprint 6b is DONE, so the
+open tail is only later-sprint work (T22, T28). The one decision left to implementation inside its task,
+the OWASP Dependency-Check severity threshold + suppression policy, was fixed by T27 and is recorded on
+that task (see its Implementation note): fail on CVSS ≥ 7.0, reviewed suppression file with a written
+reason per entry, `failBuildOnUnusedSuppressionRule` on, and no scanner wired into `check`. The F2 auth decisions
 are recorded in **ADR-022**: T21a covers Argon2id, 15-min HS256, the active-user decoder check, hashed refresh
 tokens and the **D9** Argon2 concurrency cap → 503 `AUTHENTICATION_CAPACITY_EXCEEDED`; the 2026-11-16
 addendum covers **D10** body transport (X-14), **D11** rotation/replay/logout, **D12** lockout (5 × `PT15M`,
@@ -445,7 +489,7 @@ Sprint 6b (active):
   T20 (observability) — DONE (PR #18)
   T20 ─► T21a (auth foundation) — DONE (PR #19) ─► T21b (refresh rotation, logout, lockout,
                                                       dev-key guard, refresh-token transport X-14) — DONE
-  T27a ─► T27 (OWASP Dependency-Check + gitleaks + Compose smoke)   [independent, now the frontier]
+  T27a ─► T27 (OWASP Dependency-Check + gitleaks + Compose smoke) — DONE, closes Sprint 6b
 
-  T21b ─► T22 (frontend login), T28 (key rotation)
+  T22 (frontend login), T28 (key rotation)
 ```

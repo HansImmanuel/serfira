@@ -1,0 +1,54 @@
+# gitleaks configuration (T27).
+#
+# Extends the built-in rule set and adds allowlists only where the finding is provably not a secret.
+# Every allowlist states why, and each is scoped as narrowly as possible (path + value), so a real
+# credential added later to the same file still fails the scan.
+
+title = "Serfira secret scan"
+
+[extend]
+useDefault = true
+
+# --- generic-api-key: the false-positive shapes in this repo ---
+
+[[rules]]
+id = "generic-api-key"
+
+# 1. Build outputs. `backend/build/` and `backend/bin/` are generated copies of tracked sources and are
+#    git-ignored, so CI never sees them; they only appear when a developer runs the scan locally.
+[[rules.allowlists]]
+description = "Generated build output, not source (git-ignored; mirrors already-scanned sources)"
+paths = ['''^backend/(build|bin)/''']
+
+# 2. Test-only PII/JWT keys in src/test/resources/application.properties. These are the public dev key
+#    pair the test suite boots against (T21a); they are not credentials to anything, and DevKeyProductionGuard
+#    exists precisely so they can never be used outside dev/test.
+[[rules.allowlists]]
+description = "Public test-only PII/JWT keys in src/test/resources (T21a test fixtures, not credentials)"
+condition = "AND"
+paths = ['''^backend/src/test/resources/application\.properties$''']
+# Both the base64 form and the value gitleaks reports after decoding it, so the entry survives either
+# extraction behaviour.
+regexes = ['''^(0123456789abcdef0123456789abcdef|abcdef0123456789abcdef0123456789|MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=|YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=)$''']
+
+# 3. `String freshNoOpKey = "t31-noop-fresh"` in a T31 void-idempotency IT: a test Idempotency-Key value,
+#    matched only because the variable name ends in `Key` and the literal is entropic enough for the
+#    generic rule.
+[[rules.allowlists]]
+description = "Test Idempotency-Key literal in a T31 integration test, not a credential"
+condition = "AND"
+paths = ['''^backend/src/test/java/com/serfira/payment/VoidIdempotencyKeyDurabilityIT\.java$''']
+regexes = ['''^t31-noop-fresh$''']
+
+# 4. The three committed dev-only keys: the docker-compose defaults and the guard that refuses to start a
+#    prod deployment on exactly those values (ADR-022 D13). They are public by design, reach no real data,
+#    and are the reason the guard exists. History revisions report both the base64 and the decoded forms,
+#    so both are listed; a different key value in either file still fails the scan.
+[[rules.allowlists]]
+description = "Committed dev-only compose keys and the production guard that names them (ADR-022 D13)"
+condition = "AND"
+paths = [
+	'''^docker-compose\.yml$''',
+	'''^backend/src/main/java/com/serfira/shared/security/DevKeyProductionGuardConfiguration\.java$'''
+]
+regexes = ['''^(0123456789abcdef0123456789abcdef|abcdef0123456789abcdef0123456789|c2VyZmlyYS1kZXYtb25seS1qd3Qtc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm|MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=|YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=)$''']

@@ -3,6 +3,10 @@ plugins {
 	id("org.springframework.boot") version "4.1.1"
 	id("io.spring.dependency-management") version "1.1.7"
 	id("org.sonarqube") version "7.5.0.8588"
+	// Dependency-vulnerability scan (T27). The plugin registers its own tasks only — it never attaches to
+	// `check`, so `./gradlew check` stays exactly the gate T27a defined. CI runs `dependencyCheckAnalyze`
+	// in its own job; locally it is an explicit, manual command.
+	id("org.owasp.dependencycheck") version "13.0.0"
 }
 
 group = "com.serfira"
@@ -75,4 +79,21 @@ dependencies {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+}
+
+// Dependency-vulnerability gate (T27). Policy: fail on High or Critical (CVSS >= 7.0). Anything suppressed
+// in dependency-check-suppressions.xml must state a reason, and a suppression that stops matching fails the
+// scan instead of lingering. The plugin is deliberately not wired into `check`: this scans the NVD feed, so
+// it is too slow and too network-dependent to sit in the local/CI test gate (T27a).
+dependencyCheck {
+	failBuildOnCVSS.set(7.0f)
+	formats.set(listOf("HTML"))
+	suppressionFile.set("dependency-check-suppressions.xml")
+	failBuildOnUnusedSuppressionRule.set(true)
+	// Optional: an NVD API key only lifts NVD's request throttle (8s without one). CI supplies it from a
+	// repository secret; local runs pick it up from the environment when present.
+	providers.environmentVariable("NVD_API_KEY").orNull?.takeIf(String::isNotBlank)?.let { nvd.apiKey.set(it) }
+	// OSS Index enriches findings with upstream metadata; a rate limit or outage there must not red the CVE
+	// gate, whose source of truth is the NVD feed.
+	analyzers.ossIndex.warnOnlyOnRemoteErrors.set(true)
 }

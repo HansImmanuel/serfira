@@ -9,8 +9,11 @@ permissions:
   contents: read
 
 jobs:
+  # Unit + integration tests. `check` is the only local gate (T27a); the scanners below are separate jobs
+  # so a CVE, a leaked secret, or a boot failure is never reported as a test failure.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -26,10 +29,110 @@ jobs:
         working-directory: backend
         run: ./gradlew check --no-daemon
 
-  docker:
+  # Secret scan (T27, steering 60-security). gitleaks-action v3 (Node 24); a license key is only required
+  # for organization accounts, and PR comments are disabled so the workflow stays on `contents: read`.
+  secrets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: a secret is a leak even once it has been deleted from the working tree.
+          fetch-depth: 0
 
-      - name: Build Docker images from Compose
-        run: docker compose build
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  # Dependency-vulnerability scan (T27). Runs the OWASP dependency-check Gradle plugin on the real
+  # dependency tree; fails on High or Critical (CVSS >= 7.0) per backend/build.gradle.kts.
+  #
+  # Two things are deliberate here:
+  #  * its own job — the scan downloads the NVD feed and must never slow down or red the test job;
+  #  * `--no-parallel` and no configuration cache — the plugin resolves configurations during execution,
+  #    which Gradle 9 rejects under parallel scheduling (upstream issue #462).
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The NVD API rejects unkeyed/empty keys, so the scan cannot run without this secret. Fail loudly
+      # instead of silently skipping a security gate.
+      - name: Require the NVD API key
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "::error::Repository secret NVD_API_KEY is not set; the dependency-vulnerability gate cannot run."
+            exit 1
+          fi
+
+      # The NVD cache is the difference between a ~2-minute scan and a cold ~15-minute one.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.gradle/dependency-check-data
+          key: dependency-check-data-${{ runner.os }}-v1
+          restore-keys: |
+            dependency-check-data-${{ runner.os }}-
+
+      - name: Dependency vulnerability scan (fails on CVSS >= 7.0)
+        working-directory: backend
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: >-
+          ./gradlew dependencyCheckAnalyze --no-daemon
+          --no-parallel --no-configuration-cache
+
+      - name: Upload the dependency-check report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: backend/build/reports/dependency-check
+          if-no-files-found: ignore
+
+  # Runtime smoke test (T27, CR-15): the stack must actually boot and serve its contract, not merely
+  # build. `docker compose up --build` replaces the previous build-only job, so a boot failure is one
+  # obvious red job rather than a broken image that only fails later.
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the stack
+        run: docker compose up --build -d
+
+      - name: Wait for /actuator/health to report UP
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/actuator/health | grep -q '"status":"UP"'; then
+              echo "health is UP after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::/actuator/health did not report UP within 5 minutes"
+          docker compose logs app
+          exit 1
+
+      # The OpenAPI document is the runtime contract (Addendum 11): if springdoc cannot build it, the
+      # app is up but useless to clients.
+      - name: Assert the OpenAPI document is served
+        run: |
+          curl -fsS http://127.0.0.1:8080/v3/api-docs -o /tmp/openapi.json
+          grep -q '"openapi"' /tmp/openapi.json
+          echo "OpenAPI document served ($(wc -c < /tmp/openapi.json) bytes)"
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

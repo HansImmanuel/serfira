@@ -2,7 +2,7 @@
 
 ```
 serfira/
-├── .github/workflows/ci.yml     # CI: ./gradlew check (unit + Testcontainers IT)
+├── .github/workflows/ci.yml     # CI: check (unit + Testcontainers IT) + gitleaks + dependency-check + compose smoke
 ├── docker-compose.yml           # postgres:16 + app (dev-only secrets, DB/API bound to 127.0.0.1)
 ├── docs/                        # Specs (Bahasa Indonesia), ADRs, progress log. Source of truth.
 │   ├── 01_PRD.md … 06_FRONTEND_SPEC.md
