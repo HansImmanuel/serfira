@@ -1,7 +1,7 @@
 # Frontend Specification — Multifinance Loan Servicing Core System
 
-- Versi: 0.1 (pre-Sprint 7)
-- Stack: Next.js 14 (App Router), TypeScript, shadcn/ui, React Query (TanStack Query v5)
+- Versi: 0.2 (pre-Sprint 7, stack version re-verified 2026-11-19)
+- Stack: Next.js 16 (App Router), TypeScript, shadcn/ui, React Query (TanStack Query v5)
 - Scope: Fase 1–2 halaman operasional; Fase 3 menambahkan reporting.
 
 > **Filosofi:** FE adalah thin operational UI, bukan showcase design. Gunakan shadcn/ui komponen as-is, tidak perlu custom design system. Fokus pada kebenaran data dan UX workflow yang efisien.
@@ -13,12 +13,18 @@
 ### 1.1 Stack Decision
 | Concern | Pilihan | Alasan |
 |---|---|---|
-| Framework | Next.js 14 App Router | SSR/SSG untuk initial load, server components untuk data fetching |
+| Framework | Next.js 16 App Router (pin `16.4.6`) | SSR/SSG untuk initial load, server components untuk data fetching; major terbaru yang lolos cek CVE |
 | UI Components | shadcn/ui | Akselerasi development, tidak perlu design dari nol |
 | Data fetching (client) | TanStack Query v5 | Caching, refetch, loading state otomatis |
 | Forms | React Hook Form + Zod | Validasi client-side, type-safe |
 | HTTP client | Custom `apiFetch` wrapper | Satu tempat unwrap `{data, error}` envelope |
 | Auth state | Memory (access token + refresh token) | Sesuai Tech Spec §2.6. X-14 sudah diputuskan (ADR-022 D10): refresh token dikirim di body, bukan cookie, jadi tidak ada CSRF/CORS ber-kredensial. |
+
+> **Versi framework (diverifikasi 2026-11-19).** `next@latest` = **16.4.6** (Node ≥ 20.9.0, React 19). Query
+> OSV.dev dengan `version: 16.4.6` mengembalikan **nol advisory** (semua severity); advisory HIGH/CRITICAL
+> Next.js yang terdaftar sudah di-fix pada rilis ≤ 16.4.6. Pin versi eksak **16.4.6**, bukan rentang `^`,
+> dan cek ulang CVE saat T32 dimulai serta setiap kali versi dinaikkan (advisory baru bisa muncul kapan
+> saja). Jangan menaikkan major tanpa cek CVE dan tanpa mencatat hasilnya di ADR-023.
 
 ### 1.2 Struktur Folder
 ```
@@ -404,7 +410,11 @@ Backend tetap menjadi enforcement utama; frontend hanya mengurangi confusion.
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
 ```
 
-API calls melalui Next.js `app/api/` route handlers untuk menghindari CORS issue di development, atau langsung ke BE jika sudah dikonfigurasi CORS. Untuk MVP/portofolio, konfigurasi langsung dengan CORS di BE lebih sederhana.
+API dipanggil **langsung** dari browser ke backend (`NEXT_PUBLIC_API_BASE_URL`) dengan CORS di sisi backend;
+tidak ada BFF, `app/api/` proxy, atau route handler perantara. Ini keputusan Sprint 7: satu boundary auth
+(token di memory, tanpa cookie), satu kontrak error envelope, dan tidak ada lapisan yang bisa menyimpang
+dari API. Detail CORS (origin allowlist, header, tanpa credentials) dan konsekuensi keamanannya dicatat di
+**ADR-023** (T35); endpoint auth tidak pernah membawa access token (ADR-022 D7).
 
 ---
 

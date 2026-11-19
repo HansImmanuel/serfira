@@ -758,3 +758,269 @@ valid EXCESS allocation but WITHOUT its KAS journal). **Finding:** consistency c
 (Σ allocations ≠ `payment.amount`) is **unstageable end-to-end** because V12's DEFERRABLE
 `assert_payment_has_allocations()` rejects any such payment at COMMIT; check B is defense-in-depth,
 validated at the engine level (`ConsistencyCheckEngineTest`), not end-to-end. Logged as a follow-up below.
+
+---
+
+## Completed task detail — Sprint 6b (T21b, T27)
+
+Moved out of `tasks.md` on 2026-11-19. Sprint 6b is closed; these are the scope bodies and close-out notes
+for T21b and T27. A-14 (Lombok/entity conventions in `auth.domain`) was resolved by T21b and is recorded in
+its note. The one-line index stays in `tasks.md` → Completed Work.
+
+### T21b — Refresh rotation, logout, brute-force lockout, dev-key guard (3 pts)
+
+**Status:** DONE
+**Estimate:** 3 pts
+Implementation note (2026-11-16, branch `t21b-refresh-lockout`): shipped as decided. `AuthService` gained
+`refresh`/`logout`; `RefreshTokenRepository.revokeIfActive` is the conditional revoke (replacement inserted
+first, `revoked == 0` ⇒ replay ⇒ rollback), so the concurrent-refresh IT yields exactly one winner.
+`LoginAttemptRecorder` is a separate `@Service` with `REQUIRES_NEW`, and `AuthLockoutIT` asserts the
+**persisted** `failed_login_attempts` after every 401 — the regression test for the rollback trap. `AppUser`
+and `RefreshToken` moved to project entity style (no Lombok/setters; `isLockedAt`, `recordFailedLogin`,
+`recordSuccessfulLogin`, `isUsableAt`), closing A-14. `DevKeyProductionGuardConfiguration` compares the three
+keys against the compose defaults under `prod`/`production` and names property + env var, never the value.
+Two `permitAll` matcher rows added; `TokenPairResponse` replaced `LoginResponse`; `ErrorCode.ACCOUNT_LOCKED`
+added; `serfira.auth.lockout.max-attempts=5` / `.window=PT15M` in both properties files. No migration: every
+column was already in V1. Docs updated: ADR-022 addendum D10–D13, `02_TECH_SPEC.md` §2.6, `06_FRONTEND_SPEC.md`
+§1.1/§1.4/§2.1, `03_DOMAIN_MODEL.md` §2, `04_GAPS_ADDENDUM.md` §3.2–§3.4, `README.md`, `PROGRESS.md`,
+`.kiro/steering/{tech,structure,product}.md`. Verification: `./gradlew test` = **116 suites / 893 tests / 0
+failed** (baseline 112/866; +4 suites, +21 tests, +6 matrix cells), `./gradlew check` green. Not run: nothing —
+Docker was available for the Testcontainers ITs.
+Review fix (2026-11-16, same branch): the Qodo/CodeRabbit findings on PR #20 were verified against the code
+and the real ones fixed. **Lockout concurrency:** `AuthService.login` lost its `@Transactional` — the lookup
+now ends before Argon2, so the KDF holds no pooled connection and the independent failure/success writes
+cannot starve the pool; `LoginAttemptRecorder` (`REQUIRES_NEW`) and the new `SuccessfulLoginRecorder` both
+re-read the row via `AppUserRepository.findLockedById` (`PESSIMISTIC_WRITE`), so concurrent failures
+increment the persisted counter exactly once and a success that loses the race answers 423 instead of
+clearing the freshly committed lock. `AppUser.recordFailedLogin` clears an elapsed lock (restart at 1) and
+leaves an active one untouched (no window extension). Access tokens are minted only after the success
+transaction commits (`CompletedLogin`). **Dev-key guard:** compares decoded key bytes (`MessageDigest.isEqual`) so unpadded
+Base64 cannot smuggle the public key past a string compare, treats malformed Base64 as non-matching, and
+uses `Environment.matchesProfiles("prod", "production")` so `spring.profiles.default=prod` is guarded too.
+**Refresh race test:** a test-only repository proxy barrier releases both refreshes after
+`findByTokenHash`; the previous pre-call barrier could pass without the conditional update ever racing.
+**Lockout race tests:** a test-only pausable `PasswordEncoder` parks a successful Argon2 verification while
+concurrent failures commit the lock. Also removed the duplicated refresh hashing/lifetime into
+`RefreshToken.issue/hash`, and documented the `permitAll`-does-not-skip-bearer caveat in
+`06_FRONTEND_SPEC.md` and `.kiro/steering/tech.md`. No migration, no production lock added for a test.
+Verification: `./gradlew check` = **117 suites / 911 tests / 0 failed**; all `*IT` suites ran (Docker
+available).
+Decision (2026-11-15, pre-implementation): the three open choices are settled. (a) X-14 transport =
+**response body**; no cookie/CSRF/CORS work this phase because there is no browser client — revisit at
+G2. (b) A locked account answers **423 `LOCKED` `ACCOUNT_LOCKED`** with the minutes remaining; the
+username-existence tell is accepted, bounded by the D9 Argon2 semaphore. (c) A replayed refresh token is
+**rejected only** (401); no token-family cascade revocation in T21b. All three go into the ADR-022
+addendum at implementation.
+
+**Goal:** Complete story **F2** with the stateful half of auth — rotating refresh tokens, logout,
+brute-force lockout — plus a production guard against the dev-only key fallbacks.
+
+**Scope.**
+
+- **`POST /api/v1/auth/refresh`** — rotate: validate the presented refresh token against its stored hash and
+  expiry, issue a new access + new refresh token, revoke the old row (`revoked_at`) and point it at the new
+  one via `replaced_by_id`. A reused/revoked refresh token is rejected (detect replay). Never stateless-only
+  for refresh (Addendum §3.3). Rotation is **race-safe**: the old row is revoked by a conditional update
+  (`… WHERE revoked_at IS NULL`) that exactly one concurrent caller can win, so two parallel refreshes cannot
+  both mint. Refresh also **rejects an `app_user` that is inactive or carries a non-HTTP role**, so a
+  deactivated account cannot keep minting access tokens. The new refresh token's 7-day expiry is **sliding**
+  (re-issued from each rotation); there is no absolute session cap — record that in the ADR.
+- **`POST /api/v1/auth/logout`** — revoke the presented refresh token (`revoked_at`); idempotent.
+- **Brute-force lockout (Addendum §3.1/§3.3).** On failed login increment `failed_login_attempts`; past a
+  threshold set `locked_until`; a locked account is rejected until the window passes; a success resets the
+  counter. Threshold and window are **configuration** (`serfira.auth.lockout.max-attempts`, default 5;
+  `serfira.auth.lockout.window`, default `PT15M`), not constants, and are mirrored into the test properties so
+  the ITs need not burn real Argon2 verifications.
+- **Dev-key production guard (CR-16).** Fail fast at startup in a production profile if the JWT/PII keys are
+  still the documented `docker-compose` dev defaults, so a deployment cannot silently run on demo keys.
+- **Docs fallout.** Update `.kiro/steering/tech.md`: the public-path list (§Security) must say login **and**
+  refresh/logout are public, and its §Tech Stack auth line still calls rotation/logout/lockout "T21b". Update
+  `.kiro/steering/structure.md` and `tech.md` where they cite ambiguity **A-14**, which this task closes.
+- **Refresh-token transport (X-14).** Settle whether the refresh token is returned in the response body
+  (current T21a behaviour, ADR-022 D3/D5) or set as an `HttpOnly` cookie (Tech Spec §2.6,
+  `06_FRONTEND_SPEC.md` §2.1). Whichever wins, update the document that loses and the login response shape.
+- **Role matrix.** Add `/auth/refresh` and `/auth/logout` rows (§3.4). Both are `permitAll` — they are
+  called when the access token is dead, so they cannot require one (the same by-design exception as login,
+  ADR-022 D7) — so their matrix cells assert "not 401/403" for all three roles rather than a 403 cell.
+
+**Business Rules.** Refresh tokens are stored hashed and single-use via rotation; a revoked or
+already-rotated token never mints a new access token (replay detection). Logout must not error on an
+already-revoked token. Lockout state lives on `app_user` (`failed_login_attempts`, `locked_until`). The
+dev-key guard must not weaken dev ergonomics — it only trips under the production profile.
+
+**Implementation Notes.** Owner: same `auth` module as T21a. Source: Addendum §3.2–3.3, §18, ADR-005,
+CR-10/CR-16. The lockout threshold/window is settled at 5 attempts / 15 min, configurable via
+`serfira.auth.lockout.*`, and recorded in the ADR-022 addendum at implementation (Decision 2026-11-15). The
+Argon2 capacity guard (ADR-022 D9) already exists; lockout operates on top of it.
+
+**Failure bookkeeping must survive the throw.** `AuthService.login` is `@Transactional` and throws on
+failure, so incrementing `failed_login_attempts` inside it would be rolled back and lockout would never
+fire — with a green test suite unless the IT asserts the persisted counter. Record the failure in a
+`@Transactional(propagation = REQUIRES_NEW)` component, or as one atomic statement
+(`… SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN … THEN … END … WHERE id = ?`)
+that also avoids a lost update under concurrent attempts. Same class of defect in rotation: guard it with the
+conditional revoke above and treat "0 rows affected" as replay.
+
+**Dependencies:** T21a (app_user, refresh_token, login all exist). **Closes A-14** in passing: `AppUser` is
+already edited for lockout behaviour, so it moves to project entity style at the same time (protected no-arg
+constructor, validating constructor, intention-revealing methods, no Lombok) instead of leaving steering and
+code in contradiction. No migration is needed — `app_user.locked_until`/`failed_login_attempts` and
+`refresh_token.revoked_at`/`replaced_by_id` are all in V1.
+
+**Acceptance Criteria.** A refresh rotates both tokens, revokes the old, and links `replaced_by_id`; a
+reused old refresh token is rejected. Logout revokes and is idempotent. N failed logins lock the account for
+the window; a correct login afterward is still blocked until it expires; a success resets the counter. A
+failed login leaves its increment **persisted** despite the thrown 401 (asserted in the DB, not only the
+status code). Under the production profile, startup fails if the keys are the dev defaults.
+`/auth/refresh` and `/auth/logout` have matrix rows whose cells assert all three roles are not denied. The
+ADR-022 addendum records D10 (transport), D11 (rotation/replay), D12 (lockout), D13 (dev-key guard), and
+`tasks.md` marks X-14 resolved.
+
+**Tests.** IT (Testcontainers): rotation happy path + old-token-rejected replay + expired refresh +
+refresh-for-inactive-user + two concurrent refreshes yield exactly one winner; logout idempotency (repeat and
+unknown token both 200) + refresh-after-logout rejected; lockout after N failures, correct password still
+blocked, reset on success, and the **persisted counter** asserted (`FixedClock` drives `locked_until`); an
+`ApplicationContextRunner` test that the production profile with dev keys fails to start while demo/default
+does not. Extend `EndpointRoleMatrixIT` for the two endpoints.
+
+**Risks.** The production-profile startup guard can break CI or local `prod`-profile runs if the test
+harness supplies dev keys; scope the guard to a real production profile and keep the test/dev profiles out
+of its reach.
+
+### T27 — CI & runtime gates: dependency + secret scan + Compose smoke (2 pts)
+
+**Status:** DONE
+**Estimate:** 2 pts
+Close-out note (2026-11-19): implementation, PR #21 review remediation and local verification are complete.
+The keyed `dependencyCheckAnalyze` run and the pipeline execution of the `secrets`/`compose-smoke` steps
+remain unproven in CI because the GitHub account is locked for billing, so the CI acceptance run is deferred
+at the user's direction rather than treated as passed. Billing is an operational concern; no code or workflow
+work is outstanding.
+Implementation note (2026-11-17, branch `t27-ci-runtime-gates`): shipped as the sprint's last gate, no
+application code touched and no scanner wired into `check` (T27a parity). Decisions fixed here:
+(1) **Dependency-Check** — Gradle plugin `org.owasp.dependencycheck` 13.0.0 with `failBuildOnCVSS = 7.0`
+(High + Critical fail, Medium and below report only), HTML report, `suppressionFile =
+dependency-check-suppressions.xml`, `failBuildOnUnusedSuppressionRule = true` so a stale suppression reds
+the scan, and `analyzers.ossIndex.warnOnlyOnRemoteErrors = true` because the NVD feed — not OSS Index — is
+the gate's source of truth. A valid `NVD_API_KEY` is **required**, not optional: the NVD API rejects
+unkeyed/empty requests, so a blank key fails the scan instead of bypassing it. The suppression file is empty
+today with a written policy header: every future entry needs a reason.
+(2) **Gradle 9 workaround** — the plugin resolves configurations during execution, which Gradle 9.7.1
+rejects under parallel scheduling (upstream issue #462), so the scan runs as its own invocation with
+`--no-parallel --no-configuration-cache`.
+(3) **gitleaks** — `.gitleaks.toml` extends the default rules and allowlists only four provably-not-secret
+shapes, each scoped by path *and* exact value (build outputs `backend/(build|bin)`; the public test-only
+PII/JWT keys in `src/test/resources/application.properties`; one T31 test `Idempotency-Key` literal; the
+committed dev-only compose keys plus the `DevKeyProductionGuard` that names them, ADR-022 D13). Both the
+base64 and decoded forms are listed because gitleaks reports decoded secrets from history.
+(4) **CI** — jobs stay independent (`test`, `secrets`, `dependencies`, `compose-smoke`, plus a
+`dependencies-fork-notice` job that only runs on fork PRs); the old build-only `docker` job is replaced by
+the real smoke. The `secrets` job downloads a **pinned** gitleaks binary (8.30.1, SHA-256 verified) and runs
+`gitleaks git .` over the full history and `gitleaks dir .` over the working tree, both from the repository
+root with `--config .gitleaks.toml`. The earlier `gitleaks-action@v3` step was removed: it narrows
+`push`/`pull_request` to an event-specific commit range, so it could not serve as the full-history gate. The
+`dependencies` job fails loudly with an `::error::` guard step when the `NVD_API_KEY` secret is absent,
+caches `~/.gradle/dependency-check-data` under a per-run key
+(`dependency-check-data-${os}-v1-${run_id}`, restoring with the versioned `…-v1-` prefix), and uploads the
+report on failure. Fork-originated PRs receive no repository secrets, so `dependencies` is skipped there and
+`dependencies-fork-notice` reports the skip explicitly; `pull_request_target` is not used, so untrusted
+fork Gradle code never sees a secret. `compose-smoke` parses the served document with `jq` and asserts
+`paths` contains `/api/v1/payments` and `/api/v1/contracts` (the same surface `OpenApiSmokeIT` pins
+in-process), then tears the stack down unconditionally.
+
+Verification (original implementation, 2026-11-17): `gitleaks dir .` and `gitleaks git .` (99 commits) both
+clean at exit 0, and a scratch `api_token = "…"` probe returned exit 1 and disappeared after removal
+(positive control; an AWS *example* key does not fire, it is allowlisted by gitleaks itself). A second probe
+planted the same shape inside `docker-compose.yml` — a file whose dev keys *are* allowlisted — and still
+failed the scan at exit 1, so the allowlist is value-scoped rather than file-wide. ODC task wiring verified
+by `--dry-run` plus two env probes: a dummy `NVD_API_KEY` reaches the scanner core (`Invalid API Key:
+dummy-*****`) while no key fails with `NvdApiException: Invalid API Key, length of 0` — i.e. the key
+genuinely gates the scan. Compose smoke rehearsed locally end-to-end: `up --build` →
+`/actuator/health` **UP after 4 attempts** → `/v3/api-docs` served (**51,851 bytes, 17 paths**) → `down -v`
+removed containers, volume and network. `./gradlew check` = **117 suites / 911 tests / 0 failed** (test
+sources unchanged, so the T21b result set was reused). A full ODC scan with a real NVD key — and therefore
+the CI-green acceptance criterion — cannot be produced locally and is left to the pipeline run.
+
+Review remediation (2026-11-19, PR #21 findings). The gitleaks half and the smoke assertion were reworked and
+re-verified; the other findings were review/doc corrections.
+- **Full-history gate is now explicit.** The gitleaks action was replaced by a pinned CLI (8.30.1, linux_x64
+  archive SHA-256 `551f6fc8…470eb`, verified against the published asset). `gitleaks git .` scans the
+  history and `gitleaks dir .` the working tree, both from the repository root with `--config .gitleaks.toml`
+  and `--redact`; `.gitleaks.toml` is unchanged. Local re-run: `git` = 100 non-merge commits scanned, clean,
+  exit 0; `dir` = clean, exit 0. Positive controls: a scratch file containing
+  `api_token = "…"` made `dir` exit 1 and the scan returned to exit 0 after removal. History control: in a
+  scratch clone a probe secret was committed and then deleted in a later commit (HEAD tree and working tree
+  clean, `dir` exit 0), and `gitleaks git .` still failed at exit 1 with the finding attributed to the
+  historical commit — the property the event-range action could not provide.
+- **Smoke test asserts the contract.** `jq` now requires a `paths` object and the presence of
+  `/api/v1/payments` and `/api/v1/contracts`. Rehearsed against a real Compose stack: health UP,
+  `/v3/api-docs` parsed with **17 paths**, both assertions exit 0; a deliberate probe for a nonexistent path
+  exited 1 with the `::error::` annotation, and fixtures with a missing path or a missing `paths` object also
+  exit 1. `docker compose down -v` then removed both containers, the volume and the network. Teardown stays
+  `if: always()`.
+- **NVD key documented as required** (comment only, no scanner change or version bump). Re-verified keyless
+  behaviour: `dependencyCheckAnalyze` without the variable fails in 19s with `UpdateException: Error updating
+  the NVD Data`, caused by `NvdApiException: Invalid API Key, length of 0`, build exit 1 — the gate cannot
+  pass silently. CI reads the `NVD_API_KEY` secret; local scans must export it. A full keyed scan remains
+  CI-only.
+- **Caches and forks.** The NVD cache key is now per-run
+  (`dependency-check-data-${os}-v1-${run_id}`) with the versioned `…-v1-` restore prefix; fork PRs skip the
+  keyed job and get an explicit `dependencies-fork-notice` warning/summary instead, and
+  `pull_request_target` is not used.
+- **Validation:** `actionlint 1.7.12` exit 0, YAML parsed with all five jobs present; `./gradlew check
+  --rerun-tasks` = **117 suites / 911 tests / 0 failed** (4m15s).
+- **Merge diffs covered.** The history step now passes
+  `--log-opts="--all --full-history --diff-filter=tuxdb -m"`, restating gitleaks' built-in full-history
+  options and adding per-parent merge diffs. Proven with an "evil merge" probe whose secret is in neither
+  parent and was later deleted: default options scanned 3 commits with no leak, while the new command scanned
+  4 commits and exited 1. On this repository it scans 136 commits (vs 100) and stays clean at exit 0.
+- **Key documented precisely.** README now separates CI policy (the `dependencies` job rejects a missing
+  secret before Gradle runs; presence is not validity) from scanner behaviour (Dependency-Check only fails on
+  a missing/invalid key when it requests NVD data, and skips the update while `nvd.api.check.validforhours`,
+  default 4 h, has not elapsed), so a clean local run is not presented as proof of a valid key.
+Outstanding CI-only acceptance: the keyed `dependencyCheckAnalyze` run and the pipeline execution of the new
+`secrets`/`compose-smoke` steps. They are deferred while the GitHub account billing lock is resolved; T27 is
+closed at the user's direction with that limitation recorded.
+
+**Goal:** Harden CI beyond `check` with two self-contained scanners and a runtime smoke test, so a
+high-severity CVE, a committed secret, or an app that fails to boot cannot land on `main`.
+
+**Scope.**
+
+- **Dependency-vulnerability scan — OWASP Dependency-Check.** Add the Gradle `dependencyCheck` task (or the
+  GitHub Action) as a CI step. Fail the job on a high-severity finding; allow a reviewed suppression file for
+  accepted/false-positive CVEs.
+- **Secret scan — gitleaks.** Add gitleaks as a CI step over the repo/diff; guards the "never commit secrets"
+  rule (steering `60-security`) given the repo deliberately carries dev-only keys in compose that must not
+  spread to real secrets.
+- **Compose runtime smoke (CR-15).** A CI job: `docker compose up --build -d`, wait for `/actuator/health`
+  to go UP, assert `/v3/api-docs` (OpenAPI) responds, then `docker compose down`. Keep it a separate
+  job/step so a smoke failure is distinguishable from a unit/IT failure.
+- **Sonar is explicitly out of scope** (2026-11-07 decision): it needs a running SonarQube/SonarCloud
+  server, an external dependency not worth standing up for this portfolio repo; the `org.sonarqube` plugin
+  stays local/manual and is never wired into `check` or CI (consistent with T27a).
+
+**Business Rules.** Scanners must be self-contained (no external server) so CI stays hermetic and non-flaky.
+Each tool choice is justified in the task per `35-coding-standards`. No application code changes; this is
+CI/build config only. A suppression file for Dependency-Check is allowed but every suppression needs a
+one-line reason.
+
+**Implementation Notes.** Owner: CI config (`.github/workflows/ci.yml`) + Gradle. Source: CR-15, steering
+`35-coding-standards`. Justification per tool: OWASP Dependency-Check is the de-facto OSS CVE scanner for
+JVM dependency trees and runs self-contained; gitleaks is a single self-contained binary with a strong
+default rule set. The open decision is the Dependency-Check severity threshold + suppression policy, fixed
+at implementation (tracked as the open ambiguity in Planning Notes, non-blocking).
+
+**Dependencies:** T27a (the `./gradlew check` gate, DONE).
+
+**Acceptance Criteria.** CI runs OWASP Dependency-Check and gitleaks and fails on a real high-severity CVE
+or a committed secret (prove each with a scratch positive, then remove it). The Compose smoke job brings the
+app up, sees `/actuator/health` UP and `/v3/api-docs` served, and tears down cleanly. A green run on a clean
+`main`.
+
+**Tests.** CI config change, verified by a green CI run on the PR plus a deliberate-failure spot check for
+each scanner (shown in the PR description, not committed). No unit/IT changes.
+
+**Risks.** OWASP Dependency-Check downloads the NVD feed and can be slow or flaky on a cold cache, and a new
+high-severity CVE in a transitive dep can red the build without a code change; the reviewed suppression file
+plus NVD caching are the mitigations.

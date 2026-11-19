@@ -98,5 +98,6 @@ Sprint 6b (Phase-2 security boundary + CI hardening) — **selesai** (detail: ar
       diam-diam dinyatakan lulus. Run acceptance ber-key di CI ditunda selama lock billing akun GitHub;
       implementasi dan verifikasi lokal selesai, jadi task ditutup atas arahan pengguna.
 
-Sprint berikutnya: T22 (G1–G6 reporting/frontend/demo/outbox) dan T28 (rotasi kunci PII/HMAC) — lihat
-[tasks.md](tasks.md) → Future / Deferred Work.
+Sprint 7 direncanakan di [tasks.md](tasks.md): T35 (CORS + ADR-023), T32 (G2 shell/login/kontrak),
+T33 (G3 pembayaran/jadwal/statement), T34 (G5 demo) — 13 pts. T28 (rotasi kunci PII/HMAC) pindah ke
+Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 di Sprint 8b.

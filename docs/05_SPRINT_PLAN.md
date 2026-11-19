@@ -338,12 +338,20 @@ Story baru "done" kalau **semua** terpenuhi:
 - G2 (5), G3 (5), G5 (2) = **12 pts**
 - **Exit:** login → contract → payment → statement berjalan; demo script repeatable.
 
+> **Re-planned 2026-11-19 (`docs/tasks.md` adalah otoritatif):** Sprint 7 = T35 (CORS + ADR-023, 1) +
+> T32 (G2, 5) + T33 (G3, 5) + T34 (G5, 2) = **13 pts**. T28 (rotasi kunci PII/HMAC, CR-11) pindah ke
+> Sprint 8 sebagai T28a/T28b; payments-history tab dan dialog settlement/write-off menjadi T39 di
+> Sprint 8b.
+
 ### Sprint 8 — Reporting & Outbox
 
 **Goal:** Reporting manajemen dan event foundation selesai.
 
 - G1 (3), G4 (3), G6 (2) = **8 pts**
 - **Exit:** dashboard metrics punya definisi tertulis, aging/outstanding report siap, outbox publisher log-based berjalan; **Fase 3 selesai**.
+
+> **Re-planned 2026-11-19:** Sprint 8 = T28a (2) + T28b (3) + T36 (G1, 3) + T37 (G4, 3) + T38 (G6, 2) =
+> **13 pts**; T39 (payments tab, settlement, write-off UI, 2 pts) adalah Sprint 8b.
 
 ### Deferred backlog — tidak dihitung dalam 100 points
 
