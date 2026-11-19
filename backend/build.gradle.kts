@@ -90,8 +90,11 @@ dependencyCheck {
 	formats.set(listOf("HTML"))
 	suppressionFile.set("dependency-check-suppressions.xml")
 	failBuildOnUnusedSuppressionRule.set(true)
-	// Optional: an NVD API key only lifts NVD's request throttle (8s without one). CI supplies it from a
-	// repository secret; local runs pick it up from the environment when present.
+	// Required for the pinned scanner (13.0.0), not optional: the NVD API rejects unkeyed/empty requests, so
+	// a scan without a valid key fails with `NvdApiException: Invalid API Key` instead of returning results.
+	// CI supplies it from the repository secret `NVD_API_KEY`; local scans must export the same environment
+	// variable. The value is only set when non-blank, so a missing key is never papered over with an empty
+	// string — the scan fails, which is the intended behaviour (no silent bypass of the dependency gate).
 	providers.environmentVariable("NVD_API_KEY").orNull?.takeIf(String::isNotBlank)?.let { nvd.apiKey.set(it) }
 	// OSS Index enriches findings with upstream metadata; a rate limit or outage there must not red the CVE
 	// gate, whose source of truth is the NVD feed.
