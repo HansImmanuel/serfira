@@ -9,8 +9,11 @@ permissions:
   contents: read
 
 jobs:
+  # Unit + integration tests. `check` is the only local gate (T27a); the scanners below are separate jobs
+  # so a CVE, a leaked secret, or a boot failure is never reported as a test failure.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -26,10 +29,174 @@ jobs:
         working-directory: backend
         run: ./gradlew check --no-daemon
 
-  docker:
+  # Secret scan (T27, steering 60-security). Two explicit gitleaks invocations over the checkout, both run
+  # from the repository root so `.gitleaks.toml` is the configuration in force:
+  #  * `git` scans every commit reachable from HEAD — a secret is a leak even after a later commit deleted it;
+  #  * `dir` scans the working tree — files that never reached a commit are leaks too.
+  # The action-based scan is gone on purpose: gitleaks-action v3 still narrows `push`/`pull_request` to an
+  # event-specific commit range, so it cannot stand in for the full-history gate. The binary is pinned by
+  # version and checksum here, which the action does not offer.
+  secrets:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the history scan needs every commit, not the event-specific PR range.
+          fetch-depth: 0
+
+      - name: Install gitleaks (pinned version and checksum)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" \
+            -o "/tmp/${archive}"
+          echo "${GITLEAKS_LINUX_X64_SHA256}  /tmp/${archive}" | sha256sum -c -
+          sudo tar -xzf "/tmp/${archive}" -C /usr/local/bin gitleaks
+          gitleaks version
+
+      # `-m` makes `git log -p` emit a diff per merge parent, so a secret introduced only by a merge
+      # (conflict resolution, "evil merge") is scanned too. Custom log options replace gitleaks' defaults,
+      # so the built-in full-history options are restated unchanged.
+      - name: Scan the full commit history (including merge diffs)
+        run: gitleaks git . --config .gitleaks.toml --redact --no-banner --log-opts="--all --full-history --diff-filter=tuxdb -m"
+
+      - name: Scan the working tree
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner
+
+  # Dependency-vulnerability scan (T27). Runs the OWASP dependency-check Gradle plugin on the real
+  # dependency tree; fails on High or Critical (CVSS >= 7.0) per backend/build.gradle.kts.
+  #
+  # Two things are deliberate here:
+  #  * its own job — the scan downloads the NVD feed and must never slow down or red the test job;
+  #  * `--no-parallel` and no configuration cache — the plugin resolves configurations during execution,
+  #    which Gradle 9 rejects under parallel scheduling (upstream issue #462).
+  #
+  # Fork policy: GitHub does not expose repository secrets to workflows triggered by fork-originated
+  # `pull_request` events, and running fork-supplied Gradle code with a privileged secret is exactly what
+  # `pull_request_target` would enable — so it is not used. The keyed gate runs on `main` pushes and on
+  # same-repository PRs; the `dependencies-fork-notice` job tells fork PRs, visibly, that the gate was
+  # skipped.
+  dependencies:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker images from Compose
-        run: docker compose build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The NVD API rejects unkeyed/empty keys, so the scan cannot run without this secret. Fail loudly
+      # instead of silently skipping a security gate.
+      - name: Require the NVD API key
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "::error::Repository secret NVD_API_KEY is not set; the dependency-vulnerability gate cannot run."
+            exit 1
+          fi
+
+      # The NVD cache is the difference between a ~2-minute scan and a cold ~15-minute one. The key is
+      # per-run so a refreshed NVD database is always saved; `restore-keys` restores the most recent
+      # snapshot from any earlier run.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.gradle/dependency-check-data
+          key: dependency-check-data-${{ runner.os }}-v1-${{ github.run_id }}
+          restore-keys: |
+            dependency-check-data-${{ runner.os }}-v1-
+
+      - name: Dependency vulnerability scan (fails on CVSS >= 7.0)
+        working-directory: backend
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: >-
+          ./gradlew dependencyCheckAnalyze --no-daemon
+          --no-parallel --no-configuration-cache
+
+      - name: Upload the dependency-check report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: backend/build/reports/dependency-check
+          if-no-files-found: ignore
+
+  # Fork-originated PRs get no repository secrets, so the keyed scan above is skipped there. This job runs
+  # instead of it and says so out loud: a skipped gate must never read as a pass. It executes no fork code
+  # and consumes no secret.
+  dependencies-fork-notice:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Explain the skipped dependency gate
+        run: |
+          echo "::warning title=Dependency vulnerability gate skipped::OWASP Dependency-Check did not run for this fork PR (${{ github.event.pull_request.head.repo.full_name }}): GitHub does not expose repository secrets to fork PRs, so no NVD API key is available. This is a skip, not a pass — a maintainer must run the scan before merging."
+          {
+            echo "### Dependency vulnerability gate skipped"
+            echo ""
+            echo "This pull request comes from a fork, so the repository secret \`NVD_API_KEY\` is not"
+            echo "available and OWASP Dependency-Check was **not run**. Treat the dependency gate as"
+            echo "outstanding, not green: run the scan (or open the work as a same-repository branch)"
+            echo "before merging."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Runtime smoke test (T27, CR-15): the stack must actually boot and serve its contract, not merely
+  # build. `docker compose up --build` replaces the previous build-only job, so a boot failure is one
+  # obvious red job rather than a broken image that only fails later.
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the stack
+        run: docker compose up --build -d
+
+      - name: Wait for /actuator/health to report UP
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/actuator/health | grep -q '"status":"UP"'; then
+              echo "health is UP after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::/actuator/health did not report UP within 5 minutes"
+          docker compose logs app
+          exit 1
+
+      # The OpenAPI document is the runtime contract (Addendum 11): if springdoc cannot build it, the
+      # app is up but useless to clients. Parsing with jq pins the two business paths the running app must
+      # expose — the same surface `OpenApiSmokeIT` asserts in-process — instead of merely noticing that the
+      # document is non-empty.
+      - name: Assert the OpenAPI contract is served
+        run: |
+          curl -fsS http://127.0.0.1:8080/v3/api-docs -o /tmp/openapi.json
+          if ! jq -e '.paths | type == "object"' /tmp/openapi.json > /dev/null; then
+            echo "::error::/v3/api-docs has no paths object"
+            docker compose logs app
+            exit 1
+          fi
+          for path in /api/v1/payments /api/v1/contracts; do
+            if ! jq -e --arg path "$path" '.paths | has($path)' /tmp/openapi.json > /dev/null; then
+              echo "::error::OpenAPI document is missing the $path path"
+              docker compose logs app
+              exit 1
+            fi
+          done
+          echo "OpenAPI contract served: $(jq '.paths | length' /tmp/openapi.json) paths, including /api/v1/payments and /api/v1/contracts"
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

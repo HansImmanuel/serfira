@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+	OWASP Dependency-Check suppressions (T27).
+
+	Policy: only false positives and explicitly accepted risks belong here. Every <suppress> entry must
+	carry a <notes> line stating why it is suppressed, and `failBuildOnUnusedSuppressionRule = true` in
+	build.gradle.kts fails the scan as soon as a rule stops matching, so stale suppressions cannot pile up.
+
+	The gate itself is `failBuildOnCVSS = 7.0`: High (7.0-8.9) and Critical (9.0-10.0) findings fail the
+	build; Medium and below are reported but do not.
+
+	No entries yet — the project's current dependency tree is clean at this threshold.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+</suppressions>

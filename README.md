@@ -145,6 +145,51 @@ cd backend
 One command runs both unit tests and `*IT` integration tests (Testcontainers starts a real
 PostgreSQL 16, so Docker must be running). CI runs the same task on every push and pull request.
 
+### Security and CI gates
+
+CI runs four gate jobs — plus a notice job that only appears on fork-originated PRs — so a scanner or boot
+failure is never mistaken for a test failure:
+
+| Job                       | What it does                                                                                          |
+| ------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `test`                    | `./gradlew check` — unit tests + Testcontainers integration tests                                      |
+| `secrets`                 | pinned gitleaks CLI: full commit history (`gitleaks git`) and working tree (`gitleaks dir`), both with `.gitleaks.toml` |
+| `dependencies`            | OWASP Dependency-Check on the real dependency tree; fails on High or Critical (CVSS ≥ 7.0)             |
+| `dependencies-fork-notice` | fork PRs only: states that the keyed dependency gate was **skipped**, never that it passed             |
+| `compose-smoke`           | `docker compose up --build` → `/actuator/health` UP → `/v3/api-docs` contract check → `docker compose down` |
+
+None of the scanners is wired into `check`: `./gradlew check` stays the fast local gate. Run them
+explicitly when you touch dependencies or anything that could carry a credential:
+
+```bash
+# dependency-vulnerability scan — runs inside backend/ because that is where Gradle lives
+cd backend
+./gradlew dependencyCheckAnalyze --no-parallel --no-configuration-cache
+
+# secret scans — from the repository root, so `.gitleaks.toml` is the config in force
+cd ..
+gitleaks git . --config .gitleaks.toml --log-opts="--all --full-history --diff-filter=tuxdb -m"   # history, merge diffs included
+gitleaks dir . --config .gitleaks.toml    # working tree
+```
+
+The vulnerability scan downloads the NVD feed, and Dependency-Check cannot refresh that feed without a
+valid `NVD_API_KEY` (free from <https://nvd.nist.gov/developers/request-an-api-key>). Two layers behave
+differently:
+
+- **CI policy:** the `dependencies` job fails before Gradle runs when the `NVD_API_KEY` repository secret is
+  missing. That guard checks presence, not validity.
+- **Scanner behaviour:** Dependency-Check fails when it actually requests NVD data with a missing or invalid
+  key. It skips the update while its local NVD data is younger than `nvd.api.check.validforhours` (default
+  4 hours), so a recently refreshed cache can let a local run proceed without exercising a bad key — a clean
+  local run is not proof that the key works.
+
+Export the key for local scans and store it as the repository secret of the same name in CI.
+Fork-originated PRs receive no repository secrets, so the `dependencies` job is skipped for them
+and `dependencies-fork-notice` reports that explicitly; run the scan (or land the work through a
+same-repository branch) before merging such a PR. Suppressions live in
+`backend/dependency-check-suppressions.xml`; every entry needs a written reason, and
+`failBuildOnUnusedSuppressionRule` fails the scan once a suppression stops matching anything.
+
 ### Calling the API
 
 Every endpoint except health, OpenAPI and the three token endpoints (`POST /api/v1/auth/login`,
