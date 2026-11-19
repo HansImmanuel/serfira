@@ -74,7 +74,7 @@ Sprint 6 (void, consistency check, write-off, CI gate) — **selesai** (detail: 
 - [x] T31 — Durable void idempotency key: tabel `payment_void_idempotency`, V22; koreksi invariant DB V23
       (void tidak lagi dihitung terhadap cap, ADR-021) (PR #16 + review fixes PR #17)
 
-Sprint 6b (Phase-2 security boundary + CI hardening) — **berjalan** (detail: archive):
+Sprint 6b (Phase-2 security boundary + CI hardening) — **selesai** (detail: archive):
 
 - [x] T20 — Observability baseline: `CorrelationIdFilter` (`X-Request-Id`), ECS JSON logs, `request_id` pada
       `idempotency_keys` (menutup X-3) (Addendum §10, PR #18; fixes `0c05dfe`)
@@ -90,12 +90,13 @@ Sprint 6b (Phase-2 security boundary + CI hardening) — **berjalan** (detail: a
       `prod`/`production` (termasuk `spring.profiles.default`, dibandingkan per byte hasil decode Base64),
       transport refresh token di body (menutup X-14, `AppUser` pindah ke gaya entity proyek → menutup A-14)
       (ADR-022 D10–D13)
-- [ ] T27 — CI & runtime gates (CR-15) — **IN PROGRESS**, implementasi dan verifikasi lokal selesai tetapi
-      acceptance CI belum: OWASP Dependency-Check (gagal pada CVSS ≥ 7,0, `NVD_API_KEY` wajib), gitleaks CLI
-      ter-pin 8.30.1 atas working tree (`dir`) + seluruh history (`git`) dengan allowlist sempit, dan Compose
-      smoke (`up --build` → `/actuator/health` UP → kontrak `/v3/api-docs` divalidasi `jq` → `down`); job
-      terpisah, tidak ada scanner yang di-wire ke `check`, dan PR dari fork melewati gate dependency secara
-      eksplisit (job pemberitahuan), bukan diam-diam dinyatakan lulus
+- [x] T27 — CI & runtime gates (CR-15): OWASP Dependency-Check (gagal pada CVSS ≥ 7,0, `NVD_API_KEY` wajib
+      dan dijaga guard CI), gitleaks CLI ter-pin 8.30.1 atas working tree (`dir`) + seluruh history (`git`,
+      termasuk diff merge) dengan allowlist sempit, dan Compose smoke (`up --build` → `/actuator/health` UP →
+      kontrak `/v3/api-docs` divalidasi `jq` → `down`); job terpisah, tidak ada scanner yang di-wire ke
+      `check`, dan PR dari fork melewati gate dependency secara eksplisit (job pemberitahuan), bukan
+      diam-diam dinyatakan lulus. Run acceptance ber-key di CI ditunda selama lock billing akun GitHub;
+      implementasi dan verifikasi lokal selesai, jadi task ditutup atas arahan pengguna.
 
 Sprint berikutnya: T22 (G1–G6 reporting/frontend/demo/outbox) dan T28 (rotasi kunci PII/HMAC) — lihat
 [tasks.md](tasks.md) → Future / Deferred Work.

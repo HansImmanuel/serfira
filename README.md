@@ -168,15 +168,23 @@ cd backend
 
 # secret scans — from the repository root, so `.gitleaks.toml` is the config in force
 cd ..
-gitleaks git . --config .gitleaks.toml     # full commit history
-gitleaks dir . --config .gitleaks.toml     # working tree
+gitleaks git . --config .gitleaks.toml --log-opts="--all --full-history --diff-filter=tuxdb -m"   # history, merge diffs included
+gitleaks dir . --config .gitleaks.toml    # working tree
 ```
 
-The vulnerability scan downloads the NVD feed, and the NVD API rejects unkeyed requests, so the pinned
-scanner (13.0.0) **requires** a valid `NVD_API_KEY` (free from
-<https://nvd.nist.gov/developers/request-an-api-key>): export it locally, and set it as the repository
-secret of the same name in CI. A missing or invalid key fails the scan — the dependency gate never passes
-silently. Fork-originated PRs receive no repository secrets, so the `dependencies` job is skipped for them
+The vulnerability scan downloads the NVD feed, and Dependency-Check cannot refresh that feed without a
+valid `NVD_API_KEY` (free from <https://nvd.nist.gov/developers/request-an-api-key>). Two layers behave
+differently:
+
+- **CI policy:** the `dependencies` job fails before Gradle runs when the `NVD_API_KEY` repository secret is
+  missing. That guard checks presence, not validity.
+- **Scanner behaviour:** Dependency-Check fails when it actually requests NVD data with a missing or invalid
+  key. It skips the update while its local NVD data is younger than `nvd.api.check.validforhours` (default
+  4 hours), so a recently refreshed cache can let a local run proceed without exercising a bad key — a clean
+  local run is not proof that the key works.
+
+Export the key for local scans and store it as the repository secret of the same name in CI.
+Fork-originated PRs receive no repository secrets, so the `dependencies` job is skipped for them
 and `dependencies-fork-notice` reports that explicitly; run the scan (or land the work through a
 same-repository branch) before merging such a PR. Suppressions live in
 `backend/dependency-check-suppressions.xml`; every entry needs a written reason, and

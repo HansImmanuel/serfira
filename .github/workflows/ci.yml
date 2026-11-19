@@ -58,8 +58,11 @@ jobs:
           sudo tar -xzf "/tmp/${archive}" -C /usr/local/bin gitleaks
           gitleaks version
 
-      - name: Scan the full commit history
-        run: gitleaks git . --config .gitleaks.toml --redact --no-banner
+      # `-m` makes `git log -p` emit a diff per merge parent, so a secret introduced only by a merge
+      # (conflict resolution, "evil merge") is scanned too. Custom log options replace gitleaks' defaults,
+      # so the built-in full-history options are restated unchanged.
+      - name: Scan the full commit history (including merge diffs)
+        run: gitleaks git . --config .gitleaks.toml --redact --no-banner --log-opts="--all --full-history --diff-filter=tuxdb -m"
 
       - name: Scan the working tree
         run: gitleaks dir . --config .gitleaks.toml --redact --no-banner
