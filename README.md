@@ -258,6 +258,13 @@ itself as their credential.
   ```
 
 - **No plaintext PII in SQL, logs, or URLs.** API responses return customer data masked.
+- **Browser boundary (CORS).** A browser client on another origin must be allowlisted explicitly:
+  `SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS` takes comma-separated exact origins (lowercase, no trailing
+  slash, no default port); empty means no origin is allowed. Compose sets `http://localhost:3000` for the
+  demo frontend, so `./gradlew bootRun` outside Compose needs the variable set to serve a browser too.
+  Credentials are never allowed (tokens live in memory, never a cookie), and a disallowed origin is
+  rejected before authorization. CORS is not authorization: the role matrix still decides.
+  → [ADR-023](docs/adr/ADR-023-browser-client-boundary.md)
 
 ## Status and roadmap
 

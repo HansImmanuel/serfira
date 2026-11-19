@@ -101,3 +101,16 @@ Sprint 6b (Phase-2 security boundary + CI hardening) — **selesai** (detail: ar
 Sprint 7 direncanakan di [tasks.md](tasks.md): T35 (CORS + ADR-023), T32 (G2 shell/login/kontrak),
 T33 (G3 pembayaran/jadwal/statement), T34 (G5 demo) — 13 pts. T28 (rotasi kunci PII/HMAC) pindah ke
 Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 di Sprint 8b.
+
+## Sprint 7 — Frontend Core & Demo
+
+- [x] T35 — Browser-client CORS boundary + ADR-023: `CorsConfigurationSource` di security chain (preflight
+      dijawab sebelum matriks otorisasi), `AllowedOrigins` memvalidasi properti saat startup (wildcard,
+      path, query, default port, dan huruf non-kanonik ditolak), `allowCredentials=false`, `GET,POST`,
+      header `Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id` (expose `X-Request-Id`),
+      default kosong = tidak ada origin, Compose/test memakai `http://localhost:3000`; ADR-023 mencatat
+      boundary browser (token di memory, role hanya UX, tanpa `/me`) dan pin Next.js 16.4.6 + cek OSV
+      (branch `t35-cors-adr-023`)
+- [ ] T32 — G2: app shell, login, contract list/detail/create/activate
+- [ ] T33 — G3: payment, installments, statement, credit
+- [ ] T34 — G5: demo script, seed data, README close-out

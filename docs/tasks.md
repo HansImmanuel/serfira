@@ -17,14 +17,14 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `736f14b` (PR #21 merged). **Sprint 6b is COMPLETE** and **Sprint 7 is planned**
-(T35, T32, T33, T34 — 13 pts). Backend Phases 1–2 are implemented and merged; `frontend/` is the only
-empty module.
+**Snapshot:** `main` @ `1113172` (Sprint 7 plan committed). **Sprint 6b is COMPLETE**; **Sprint 7 is in
+progress** — T35 DONE on branch `t35-cors-adr-023` (PR pending), T32/T33/T34 still TODO. Backend Phases 1–2
+are implemented and merged; `frontend/` is the only empty module.
 
-**Verified test counts:** full local `./gradlew check --rerun-tasks` (2026-11-19) = **117 suites / 911
-tests / 0 failed** (4m15s). T27 added no test sources, so the totals match T21b's post-review run (the
-first T21b run was 116 / 893; the pre-T21b baseline was 112 / 866). CI on `main` is red for a GitHub
-billing reason, not a test failure.
+**Verified test counts:** full local `./gradlew test` (2026-11-19, branch `t35-cors-adr-023`) = **120 suites
+/ 926 tests / 0 failed** (3m30s). T35 added 3 suites / 15 tests (`AllowedOriginsTest`, `CorsIT`,
+`CorsDeniedByDefaultIT`) over the `main` baseline of 117 / 911. CI on `main` is red for a GitHub billing
+reason, not a test failure.
 
 **Implemented (verified in source):**
 
@@ -42,6 +42,9 @@ billing reason, not a test failure.
   three auth endpoints are `permitAll` (ADR-022).
 - Auth: Argon2id, 15-minute HS256 access token, hashed opaque refresh token with single-use rotation,
   idempotent logout, lockout (5 × `PT15M` → 423), dev-key production guard (ADR-022).
+- Browser boundary: exact-origin CORS in the security chain with startup validation, an empty default, no
+  credentials, and `403` before authorization for a disallowed origin (T35, ADR-023). The frontend itself
+  is not started.
 - PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
   search (ADR-004); rotation is **T28a/T28b** (Sprint 8).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, gitleaks, Dependency-Check and
@@ -95,6 +98,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T21a  | Auth foundation: `app_user` login, Argon2id, 15-min HS256 token, active-user decoder check, demo seed              | ADR-022, PR #19                                         |
 | T21b  | Auth stateful half: refresh rotation, idempotent logout, brute-force lockout, dev-key prod guard, X-14/A-14 closed  | ADR-022 D10–D13, `t21b-refresh-lockout`                 |
 | T27   | CI & runtime gates: OWASP Dependency-Check (CVSS ≥ 7.0), gitleaks (history incl. merge diffs + tree), Compose smoke | CR-15, `t27-ci-runtime-gates`                           |
+| T35   | Browser-client CORS boundary: exact-origin allowlist + startup validation, `CorsFilter` before the matrix, ADR-023 | ADR-023, `t35-cors-adr-023`                             |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ### Sprint summaries (detail in the archive)
@@ -120,7 +124,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 
 **Scope (13 pts):**
 
-- T35 — Browser-client CORS boundary + ADR-023 (1 pt)
+- T35 — Browser-client CORS boundary + ADR-023 (1 pt) — **DONE**
 - T32 — G2: app shell, login, contract list/detail/create/activate (5 pts)
 - T33 — G3: payment form, installment table, statement, credit tab (5 pts)
 - T34 — G5: demo script, seed data, README close-out (2 pts)
@@ -143,8 +147,23 @@ tasks point to them and do not restate them.
 
 ### T35 — Browser-client CORS boundary and ADR-023 (1 pt)
 
-Status: TODO
+Status: DONE
 Estimate: 1 pt
+Implementation note (2026-11-19, branch `t35-cors-adr-023`): CORS lives in
+`ResourceServerSecurityConfiguration` as a `CorsConfigurationSource` bean wired with `.cors(...)` as the
+first DSL call, so an untokened preflight is answered by the `CorsFilter` instead of falling through to
+`denyAll()`. `AllowedOrigins` validates the comma-separated property once at startup and rejects
+wildcards, blank entries, paths, queries, fragments, user info, out-of-range and default ports, and
+non-canonical case; the message names the offending entry. `allowCredentials=false`, methods `GET,POST`,
+allowed headers `Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id`, exposed `X-Request-Id`,
+max age 1800 s. Main properties ship an explicit empty default; Compose and the test profile set
+`http://localhost:3000`. ADR-023 records the boundary (direct calls, in-memory tokens, roles as UX only,
+no `/me`, unverified decode) and the Next.js 16.4.6 pin with its OSV check. One behaviour the review
+pinned: a non-preflight request from a disallowed origin is rejected by Spring's `CorsFilter` with 403 and
+the fixed body `Invalid CORS request` *before* authentication, not with the endpoint's 401. Tests: new
+`AllowedOriginsTest` (8), `CorsIT` (6), `CorsDeniedByDefaultIT` (1). Verified with
+`./gradlew test --tests "*Cors*" --tests "*AllowedOriginsTest"` and then the full `./gradlew test` =
+**120 suites / 926 tests / 0 failed**; `EndpointRoleMatrixIT` unchanged and green.
 
 **Goal:** Let the browser application on its own origin call the API without opening the API to arbitrary
 origins, and record the browser-client security boundary before frontend code exists.
@@ -448,8 +467,8 @@ are DONE.
 
 ### Ambiguities
 
-No open `A-n`. Sprint 7's browser-client choices are recorded in `06_FRONTEND_SPEC.md` §1.1/§1.4/§4 and are
-formalized as **ADR-023** in T35. The resolved Phase-1 decisions (A-1…A-14) and the X-table are in
+No open `A-n`. Sprint 7's browser-client choices are recorded in `06_FRONTEND_SPEC.md` §1.1/§1.4/§4 and
+formalized in **ADR-023** (T35, DONE). The resolved Phase-1 decisions (A-1…A-14) and the X-table are in
 `tasks-archive.md` and the cited ADRs.
 
 ### Dependency order (open tail)

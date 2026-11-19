@@ -325,6 +325,13 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   (`{access_token, refresh_token}`) untuk login maupun refresh; tidak ada cookie, sehingga tidak ada CSRF
   handling maupun CORS ber-kredensial. Frontend menyimpan keduanya di memory. Cookie `HttpOnly` ditunda
   sampai ada browser client nyata (G2).
+- **Browser boundary (T35, ADR-023).** Browser memanggil API **langsung** (tanpa BFF/proxy). CORS
+  didefinisikan sekali di `ResourceServerSecurityConfiguration`: origin persis dari
+  `serfira.security.cors.allowed-origins` (default kosong = tidak ada origin; divalidasi saat startup,
+  wildcard ditolak), method `GET,POST`, header `Authorization`/`Content-Type`/`Idempotency-Key`/
+  `X-Request-Id`, `X-Request-Id` di-expose, `allowCredentials=false`, preflight cache 30 menit. Preflight
+  dijawab sebelum matriks otorisasi; origin non-allowlist ditolak 403 tanpa header CORS. CORS bukan
+  mekanisme otorisasi — matriks peran tetap penegaknya.
 - **Dev-key production guard (T21b, ADR-022 D13).** Saat profil `prod`/`production` aktif (termasuk lewat
   `spring.profiles.default`), aplikasi gagal start bila `serfira.security.jwt.secret-base64`,
   `serfira.security.pii.encryption-key`, atau `serfira.security.pii.hmac-key` masih bernilai default publik

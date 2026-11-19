@@ -1,6 +1,7 @@
 package com.serfira.shared.security;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
@@ -35,11 +36,15 @@ import org.springframework.security.oauth2.server.resource.web.authentication.Be
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import com.serfira.shared.api.ApiResponse;
 import com.serfira.shared.audit.AuditContext;
 import com.serfira.shared.error.ApiError;
 import com.serfira.shared.error.ErrorCode;
+import com.serfira.shared.observability.CorrelationId;
 
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
@@ -61,6 +66,11 @@ import tools.jackson.databind.ObjectMapper;
  *
  * <p>{@code AuditActorBindingFilter} turns the JWT subject into the audit actor, so financial writes are
  * attributable (Addendum §3.3).
+ *
+ * <p><b>Browser client.</b> CORS is the only browser-specific control and is configured here
+ * (ADR-023): exact origins from {@code serfira.security.cors.allowed-origins}, an empty value allowing
+ * none, no credentials, and a filter position before the matcher table so an untokened preflight is
+ * answered instead of denied. CORS is not authorization — the table below remains the enforcement.
  *
  * <p>Configuration (base64): {@code serfira.security.jwt.secret-base64} must decode to at least 32 bytes
  * (HS256). Missing/short secrets fail fast at startup. Set {@code SERFIRA_SECURITY_JWT_SECRET_BASE64} in the
@@ -159,11 +169,36 @@ public class ResourceServerSecurityConfiguration {
 				JwtValidators.createDefault(), expiryRequired, subjectIsActorId, activeUserValidator);
 	}
 
+	/**
+	 * Browser CORS boundary (ADR-023). The allowlist is validated once at startup, so a malformed entry
+	 * fails the application instead of silently never matching an {@code Origin} header.
+	 *
+	 * <p>{@code allowCredentials} stays false: the client keeps its tokens in memory and sends a bearer
+	 * header, never a cookie, which is also why CSRF is disabled below. Wildcards are rejected by
+	 * {@link AllowedOrigins} — with credentials off Spring would otherwise serve {@code *} happily.
+	 */
+	@Bean
+	CorsConfigurationSource corsConfigurationSource(
+			@Value("${serfira.security.cors.allowed-origins:}") String allowedOrigins) {
+		CorsConfiguration configuration = new CorsConfiguration();
+		configuration.setAllowedOrigins(AllowedOrigins.parse(allowedOrigins));
+		configuration.setAllowedMethods(List.of("GET", "POST"));
+		configuration.setAllowedHeaders(
+				List.of("Authorization", "Content-Type", "Idempotency-Key", CorrelationId.HEADER));
+		configuration.setExposedHeaders(List.of(CorrelationId.HEADER));
+		configuration.setAllowCredentials(false);
+		configuration.setMaxAge(Duration.ofMinutes(30));
+		UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+		source.registerCorsConfiguration("/**", configuration);
+		return source;
+	}
+
 	@Bean
 	SecurityFilterChain securityFilterChain(
 			HttpSecurity http,
 			JwtDecoder jwtDecoder,
 			AuditContext auditContext,
+			CorsConfigurationSource corsConfigurationSource,
 			ObjectMapper objectMapper) throws Exception {
 		AuthenticationEntryPoint authenticationEntryPoint = (request, response, authException) -> {
 			LOGGER.warn("Rejected unauthenticated request to {}: {}", request.getRequestURI(), authException.getMessage());
@@ -179,6 +214,9 @@ public class ResourceServerSecurityConfiguration {
 		authenticationConverter.setJwtGrantedAuthoritiesConverter(new RolesClaimAuthoritiesConverter());
 
 		http
+				// The CorsFilter must run before authentication and authorization: a preflight carries no
+				// token and is not a business request (ADR-023). WithCredentials stays false by policy.
+				.cors(cors -> cors.configurationSource(corsConfigurationSource))
 				.csrf(csrf -> csrf.disable())
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 				// Addendum §3.4 matrix (ADR-015 D3). Order matters: the first matching rule wins.

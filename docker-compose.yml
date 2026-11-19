@@ -36,6 +36,9 @@ services:
       SERFIRA_SECURITY_PII_ENCRYPTION_KEY: ${SERFIRA_SECURITY_PII_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
       SERFIRA_SECURITY_PII_HMAC_KEY: ${SERFIRA_SECURITY_PII_HMAC_KEY:-YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=}
       SERFIRA_SECURITY_JWT_SECRET_BASE64: ${SERFIRA_SECURITY_JWT_SECRET_BASE64:-c2VyZmlyYS1kZXYtb25seS1qd3Qtc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm}
+      # Browser-client origin for the demo (T35, ADR-023). Exact origin only; empty would deny every
+      # browser origin. A real deployment sets its own origin(s), comma-separated.
+      SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS: ${SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
