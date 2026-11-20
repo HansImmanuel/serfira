@@ -78,6 +78,16 @@ frontend/
     └── api.ts                  ← ApiResponse<T> envelope type
 ```
 
+> **Status T32 (2026-11-20):** the shell, login, contract list/create/detail/activate and a minimal
+> statement page are implemented. Beyond the tree above, the delivered layout adds `app/providers.tsx`
+> (QueryClient + toaster), `components/auth/LoginForm.tsx`,
+> `components/contracts/{ContractListView,CreateContractForm,ContractDetailView,ActivateContractButton,CreditPanel,StatementView}.tsx`,
+> `components/shared/{AppHeader,AppSidebar,AuthGuard,RequireWrite}.tsx`,
+> `lib/{session,jwt,decimal,format,navigation}.ts` plus `lib/schemas/`, and
+> `hooks/{useContracts,useSession,useStatement,useIdempotencyKey}.ts`, with tests beside each unit and a
+> `test/` helper directory. `payments/`, `reports/`, `types/payment.ts` and `hooks/usePayment.ts` remain
+> T33/T37/T39.
+
 ### 1.3 API Client Pattern
 ```typescript
 // lib/api.ts
