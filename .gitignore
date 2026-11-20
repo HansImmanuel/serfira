@@ -32,7 +32,7 @@ review-pr-*
 .agents/
 .worktrees/
 
-# Frontend (placeholder for future phases)
+# Frontend build outputs and installed packages (frontend/.gitignore has the rest)
 node_modules/
 .next/
 

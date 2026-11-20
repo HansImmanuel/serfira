@@ -18,13 +18,15 @@ Completed Work index, open tasks, and open ambiguities.
 ## Current Project State
 
 **Snapshot:** `main` @ `1113172` (Sprint 7 plan committed). **Sprint 6b is COMPLETE**; **Sprint 7 is in
-progress** — T35 DONE on branch `t35-cors-adr-023` (PR pending), T32/T33/T34 still TODO. Backend Phases 1–2
-are implemented and merged; `frontend/` is the only empty module.
+progress** — T35 DONE on branch `t35-cors-adr-023` (PR #22 open) and T32 DONE on branch `t32-nextjs-shell`
+(stacked on T35, PR pending); T33/T34 still TODO. Backend Phases 1–2 are implemented and merged; the
+`frontend/` app shell, login and contract lifecycle journey are implemented.
 
-**Verified test counts:** full local `./gradlew test` (2026-11-19, branch `t35-cors-adr-023`) = **120 suites
-/ 926 tests / 0 failed** (3m30s). T35 added 3 suites / 15 tests (`AllowedOriginsTest`, `CorsIT`,
-`CorsDeniedByDefaultIT`) over the `main` baseline of 117 / 911. CI on `main` is red for a GitHub billing
-reason, not a test failure.
+**Verified test counts:** backend full local `./gradlew test --rerun-tasks` (2026-11-20, branch
+`t32-nextjs-shell`) = **120 suites / 926 tests / 0 failed** — unchanged from the T35 run, because T32 adds
+no backend code. Frontend `npm test` (2026-11-20) = **79 tests / 12 files / 0 failed**, plus green
+`npm run lint`, `npm run typecheck` and `npm run build`. T35 added 3 suites / 15 tests over the `main`
+baseline of 117 / 911. CI on `main` is red for a GitHub billing reason, not a test failure.
 
 **Implemented (verified in source):**
 
@@ -43,12 +45,16 @@ reason, not a test failure.
 - Auth: Argon2id, 15-minute HS256 access token, hashed opaque refresh token with single-use rotation,
   idempotent logout, lockout (5 × `PT15M` → 423), dev-key production guard (ADR-022).
 - Browser boundary: exact-origin CORS in the security chain with startup validation, an empty default, no
-  credentials, and `403` before authorization for a disallowed origin (T35, ADR-023). The frontend itself
-  is not started.
+  credentials, and `403` before authorization for a disallowed origin (T35, ADR-023). The frontend calls
+  the API directly — no BFF or proxy.
+- Frontend (`frontend/`, T32): Next.js 16.4.6 App Router shell with in-memory tokens, a single-flight
+  refresh-and-replay client, `/login`, a guarded dashboard, the contract book (filter/search/pagination),
+  create, detail with Jadwal/Kredit/Ledger tabs, activation, and a minimal statement page. Authorization
+  stays server-side; the JWT `roles` only drives which buttons render.
 - PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
   search (ADR-004); rotation is **T28a/T28b** (Sprint 8).
-- Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, gitleaks, Dependency-Check and
-  Compose smoke as separate CI jobs (T27). No scanner is wired into `check`.
+- Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
+  Dependency-Check and Compose smoke as separate CI jobs (T27, T32). No scanner is wired into `check`.
 
 Full per-task implementation notes for DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
@@ -99,6 +105,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T21b  | Auth stateful half: refresh rotation, idempotent logout, brute-force lockout, dev-key prod guard, X-14/A-14 closed  | ADR-022 D10–D13, `t21b-refresh-lockout`                 |
 | T27   | CI & runtime gates: OWASP Dependency-Check (CVSS ≥ 7.0), gitleaks (history incl. merge diffs + tree), Compose smoke | CR-15, `t27-ci-runtime-gates`                           |
 | T35   | Browser-client CORS boundary: exact-origin allowlist + startup validation, `CorsFilter` before the matrix, ADR-023 | ADR-023, `t35-cors-adr-023`                             |
+| T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ### Sprint summaries (detail in the archive)
@@ -217,12 +224,50 @@ API rather than copying an older recipe.
 
 ### T32 — G2: app shell, login and contract lifecycle (5 pts)
 
-Status: TODO
+Status: DONE
 Estimate: 5 pts
-Decision (2026-11-19): framework pinned to **Next.js 16.4.6** (React 19, Node ≥ 20.9.0) instead of the
-previously assumed 14. `next@latest` is 16.4.6, and an OSV.dev query with `version: 16.4.6` returns **no
-advisory at all** (any severity); the HIGH/CRITICAL Next.js advisories on record are all fixed at or below
-that release. Re-run the check before scaffolding and record the version + result in ADR-023 (T35).
+Implementation note (2026-11-20, branch `t32-nextjs-shell`, stacked on `t35-cors-adr-023`): scaffolded
+`frontend/` with `create-next-app@16.4.6` (TypeScript, Tailwind v4, ESLint, App Router, no `src/`, `@/*`)
+and shadcn/ui (`--base radix -p nova`, the Tailwind-v4/`cn` model), adding TanStack Query v5, React Hook
+Form + Zod and Vitest + React Testing Library (jsdom). Node is pinned to **24.16.0** in `frontend/.nvmrc`
+(CI reads it) with `engines.node >= 22.0.0` because the shadcn CLI's `cn` package needs Node 22+; the
+Next.js floor (20.9.0) is still met. The OSV re-check was repeated: `next@latest` = 16.4.6, zero advisories
+(any severity) for 16.4.6 and `latest` — recorded in ADR-023 D9. `tsconfig` target is ES2020 (the decimal
+helpers use BigInt literals); `typecheck` = `next typegen && tsc --noEmit`.
+
+`lib/api.ts` is the only envelope-aware layer: it unwraps `{data, error}` once, never attaches a bearer to
+`PUBLIC_AUTH_PATHS`, rotates the pair **once** on a 401 and replays the request through a private
+`alreadyRetried` flag (so a second 401 cannot loop), and shares one in-flight refresh between concurrent
+401s because rotation is single-use; a failed refresh clears the session and hard-redirects to `/login`.
+`lib/session.ts` keeps both tokens in module memory only (no storage, cookie, URL or log) and retains the
+typed username for the header because `sub` is an `app_user` UUID. `lib/auth.ts` owns login/logout
+(logout revokes best-effort and always forgets locally); `lib/navigation.ts` isolates the one hard
+navigation so the session logic stays testable.
+
+Screens: `/login` (401/423 envelope messages), the `(dashboard)` shell (client guard, sidebar, header,
+logout), `/contracts` (status filter, `q` search, pagination, `sort=created_at,desc`, DRAFT `outstanding`
+as "–"), `/contracts/new` (Zod incl. NIK 16 digits, phone 9–15, money exactly scale 2, rate exactly 2
+decimal places; `planned_start_date`; one `Idempotency-Key` per mount), `/contracts/[id]` (header, badge,
+activation dialog with no date input, Jadwal/Kredit/Ledger tabs), and a minimal
+`/contracts/[id]/statement` so the Ledger link is not dead (date-range/ref-type filters and payment links
+remain T33). Write actions (`Buat Kontrak`, `Aktifkan`) are hidden for non-`ADMIN_OPERASIONAL`; that is UX
+only and the backend matrix still answers 403.
+
+Money never touches a float: `lib/decimal.ts` does validation, comparison, percent→fraction and the two
+derived schedule sums with BigInt string arithmetic; `InstallmentTable` derives `recognized_total` and
+`resolved_amount` exactly as `InstallmentBalance` defines them and documents that. Display formatting is
+isolated in `lib/format.ts` (`id-ID`, `Asia/Jakarta`, missing value = "–").
+
+CI: new independent `frontend` job (`npm ci` → lint → typecheck → test → build, Node from `.nvmrc`). The
+gitleaks generic-key rule gained one path-only allowlist for `frontend/(node_modules|.next|coverage|out)`,
+mirroring T27's build-output precedent; tracked frontend files are still scanned. `npm audit` reports 0
+high/critical and 4 moderate, all through the shadcn CLI's `ts-morph`/`minimatch` chain (dev-only); JS
+dependency scanning stays a deferred follow-up as the task records.
+
+Verification: `npm ci`, `npm run lint` (0 problems), `npm run typecheck`, `npm test` (**79 tests / 12
+files**, 2026-11-20) and `npm run build` (8 routes) pass; backend `./gradlew test --rerun-tasks` remains
+**120 suites / 926 tests / 0 failed**. Branch is based on `t35-cors-adr-023` because T35 is its dependency
+and PR #22 is still open; both PRs must merge in order.
 
 **Goal:** Stand up the Next.js application and deliver the first complete operator journey: sign in, see
 the contract book, create a DRAFT contract, open its detail and activate it.

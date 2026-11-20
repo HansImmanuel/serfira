@@ -111,6 +111,14 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
       default kosong = tidak ada origin, Compose/test memakai `http://localhost:3000`; ADR-023 mencatat
       boundary browser (token di memory, role hanya UX, tanpa `/me`) dan pin Next.js 16.4.6 + cek OSV
       (branch `t35-cors-adr-023`)
-- [ ] T32 — G2: app shell, login, contract list/detail/create/activate
+- [x] T32 — G2: app shell, login, contract list/detail/create/activate. Scaffold Next.js 16.4.6 (App
+      Router, Tailwind v4 + shadcn/ui, TanStack Query, RHF + Zod, Vitest + RTL), Node 24.16.0 via
+      `.nvmrc`; token hanya di memori + refresh single-flight dan replay sekali; `/login`, shell
+      `(dashboard)` ber-guard, `/contracts` (filter/pencarian/paginasi, DRAFT outstanding "–"),
+      `/contracts/new` (Zod, `planned_start_date`, satu `Idempotency-Key` per mount), `/contracts/[id]`
+      (header, badge, aktivasi tanpa input tanggal, tab Jadwal/Kredit/Ledger) dan statement minimal;
+      job CI `frontend` + allowlist gitleaks untuk output build. Verifikasi: 79 test / 12 file, lint,
+      typecheck, build hijau; backend tetap 120 suite / 926 test (branch `t32-nextjs-shell`, stacked di
+      `t35-cors-adr-023`)
 - [ ] T33 — G3: payment, installments, statement, credit
 - [ ] T34 — G5: demo script, seed data, README close-out
