@@ -65,13 +65,21 @@ CORS-safelisted header, so it must be listed; `Accept` is safelisted and is not.
 `/**`; every path outside the public infrastructure routes is still denied by the matrix, so a
 path-scoped allowlist would add no security and one more place to forget.
 
+An empty value is a real, supported configuration, not a missing one. `docker-compose.yml` applies its
+`http://localhost:3000` default only when `SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS` is unset
+(`${VAR-default}`), so an explicitly empty value is preserved and still denies every origin.
+
 ### D5 — Fail-fast validation of the allowlist
 
 `AllowedOrigins` parses the property once at startup and rejects: the wildcard `*`, blank entries,
 missing or non-`http(s)` schemes, paths, queries, fragments, user info, out-of-range ports, explicit
-default ports (`http://localhost:80`), and non-canonical case. A browser never sends any of those, and a
-configured entry that can never match is indistinguishable from a CORS outage. `allowCredentials=false`
-makes `*` legal in Spring, so the wildcard ban has to be ours.
+default ports (`http://localhost:80`), and non-canonical host spelling. That last rule includes IPv6
+literals that are not in the browser's serialization (`[0:0:0:0:0:0:0:1]` instead of `[::1]`, uppercase
+hex, leading zeroes, a compressed run that is not the first longest one, or an embedded dotted IPv4). A
+browser never sends any of those, and a configured entry that can never match is indistinguishable from a
+CORS outage. IPv6 literals are parsed and re-serialized in-process with the WHATWG URL algorithm; no DNS
+lookup or network access is involved. `allowCredentials=false` makes `*` legal in Spring, so the wildcard
+ban has to be ours.
 
 ### D6 — A disallowed origin is rejected before authorization
 

@@ -154,8 +154,9 @@ Implementation note (2026-11-19, branch `t35-cors-adr-023`): CORS lives in
 first DSL call, so an untokened preflight is answered by the `CorsFilter` instead of falling through to
 `denyAll()`. `AllowedOrigins` validates the comma-separated property once at startup and rejects
 wildcards, blank entries, paths, queries, fragments, user info, out-of-range and default ports, and
-non-canonical case; the message names the offending entry. `allowCredentials=false`, methods `GET,POST`,
-allowed headers `Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id`, exposed `X-Request-Id`,
+non-canonical spelling (including non-canonical IPv6); the message names the offending entry.
+`allowCredentials=false`, methods `GET,POST`, allowed headers
+`Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id`, exposed `X-Request-Id`,
 max age 1800 s. Main properties ship an explicit empty default; Compose and the test profile set
 `http://localhost:3000`. ADR-023 records the boundary (direct calls, in-memory tokens, roles as UX only,
 no `/me`, unverified decode) and the Next.js 16.4.6 pin with its OSV check. One behaviour the review
@@ -164,6 +165,19 @@ the fixed body `Invalid CORS request` *before* authentication, not with the endp
 `AllowedOriginsTest` (8), `CorsIT` (6), `CorsDeniedByDefaultIT` (1). Verified with
 `./gradlew test --tests "*Cors*" --tests "*AllowedOriginsTest"` and then the full `./gradlew test` =
 **120 suites / 926 tests / 0 failed**; `EndpointRoleMatrixIT` unchanged and green.
+
+Review remediation (2026-11-21, PR #22): Compose now uses the unset-only default
+`${SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS-http://localhost:3000}`, so an explicitly empty value is
+preserved and denies every browser origin instead of silently falling back to localhost (ADR-023 D4).
+Verified with `docker compose config`: unset renders `http://localhost:3000`; an empty env-file value
+renders `""` (the old `:-` form rendered localhost for the same input). `AllowedOrigins` now re-serializes
+IPv6 literals the way a browser does and rejects non-canonical spellings (`[0:0:0:0:0:0:0:1]`, uppercase
+or leading-zero hex, a `::` run that is not the first longest, embedded dotted IPv4, zone ids) without DNS;
+`[::1]` and `[::ffff:7f00:1]` stay accepted. `AllowedOriginsTest` grew 8 -> 11. The review suggestion to
+put a localhost default in the main properties was not applied: ADR-023 D4 and this task's risk note
+require the empty default, Compose and the test profile carry the dev origin, and the README documents the
+`bootRun` variable. Verified: focused CORS suite 18 tests / 0 failed, full `./gradlew test` = **120 suites
+/ 929 tests / 0 failed**, `./gradlew check` green.
 
 **Goal:** Let the browser application on its own origin call the API without opening the API to arbitrary
 origins, and record the browser-client security boundary before frontend code exists.

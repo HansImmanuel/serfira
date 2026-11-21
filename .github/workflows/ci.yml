@@ -160,6 +160,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # T35/ADR-023 D4: an explicitly empty allowlist must stay empty. With `:-` Compose would
+      # substitute localhost and silently widen the browser boundary, which no Java test can catch.
+      - name: Assert the CORS allowlist interpolation keeps unset and empty distinct
+        run: |
+          printf 'SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS=\n' > /tmp/empty-cors.env
+          if ! docker compose --env-file /tmp/empty-cors.env config --format json \
+              | jq -e '.services.app.environment.SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS == ""' > /dev/null; then
+            echo "::error::Compose replaced an explicitly empty CORS allowlist with a default"
+            exit 1
+          fi
+          if ! docker compose config --format json \
+              | jq -e '.services.app.environment.SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS == "http://localhost:3000"' > /dev/null; then
+            echo "::error::Compose did not apply the localhost default when the CORS allowlist is unset"
+            exit 1
+          fi
+          echo "CORS allowlist interpolation: unset -> localhost, explicit empty -> empty"
+
       - name: Build and start the stack
         run: docker compose up --build -d
 
