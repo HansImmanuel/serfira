@@ -222,7 +222,7 @@ class ContractCreditIT {
 		MvcResult result = applyCredit("{\"amount\":" + available.add(BigDecimal.ONE).toPlainString() + "}");
 
 		assertThat(result.getResponse().getStatus()).isEqualTo(409);
-		assertThat(errorCode(result)).isEqualTo("CONFLICT");
+		assertThat(errorCode(result)).isEqualTo("CREDIT_EXCEEDS_BALANCE");
 		assertThat(count("contract_credit_application")).isEqualTo(applicationsBefore);
 		assertThat(journalEntryCount("CREDIT_APPLICATION")).isZero();
 		assertThat(creditStatuses()).containsOnly("AVAILABLE");
@@ -405,7 +405,7 @@ class ContractCreditIT {
 
 		MvcResult tooMuch = applyCredit("corrected-retry", "{\"amount\":9000000.00}");
 		assertThat(tooMuch.getResponse().getStatus()).isEqualTo(409);
-		assertThat(errorCode(tooMuch)).isEqualTo("CONFLICT");
+		assertThat(errorCode(tooMuch)).isEqualTo("CREDIT_EXCEEDS_BALANCE");
 		assertThat(applyClaims()).isZero();
 
 		MvcResult corrected = applyCredit("corrected-retry", "{\"amount\":1000000.00}");

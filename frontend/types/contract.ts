@@ -91,7 +91,8 @@ export interface CreditBalance {
 
 /**
  * `POST /contracts/{id}/credit/apply` body: `amount` applies part of the available balance; omitting it
- * applies all of it (Addendum §2.2). There is no `Idempotency-Key` on this endpoint by design.
+ * applies all of it (Addendum §2.2). The endpoint requires an `Idempotency-Key` header (ADR-017): the same key
+ * and body replay the stored result, a different body under the key is 409 `CONFLICT`.
  */
 export interface ApplyCreditPayload {
   amount?: string;

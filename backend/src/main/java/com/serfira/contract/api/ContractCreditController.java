@@ -80,8 +80,9 @@ public class ContractCreditController {
 					description = "CONTRACT_NOT_FOUND - no such contract"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
 					description = "CONTRACT_STATE_INVALID - contract is not ACTIVE; "
-							+ "CONFLICT - requested amount exceeds the available balance, or the Idempotency-Key was "
-							+ "already used for a different request; "
+							+ "CREDIT_EXCEEDS_BALANCE - requested amount exceeds the available balance (the key stays "
+							+ "usable for a corrected amount); "
+							+ "CONFLICT - the Idempotency-Key was already used for a different request; "
 							+ "IDEMPOTENCY_KEY_EXPIRED - the Idempotency-Key is spent (mint a fresh key); "
 							+ "CREDIT_NOT_APPLICABLE - no available credit, or no due installment with recognized "
 							+ "receivable to apply against; "

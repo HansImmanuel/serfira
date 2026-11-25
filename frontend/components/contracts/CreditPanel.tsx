@@ -46,9 +46,9 @@ export function CreditPanel({ contractId, contractStatus }: { contractId: string
   }
 
   const applications = data.applications;
-  // Role and status only: whether anything is left to apply is the dialog's own concern, so an outcome the
-  // operator has not read yet survives the balance dropping to zero after an apply that did commit.
-  const canApply = canWrite && contractStatus === "ACTIVE";
+  // Role only decides whether the dialog exists. Whether a *new* application may start (ACTIVE contract,
+  // balance left) is the dialog's `canStartNew`, so an unresolved apply survives the balance reaching zero
+  // or the contract closing because of the very apply whose response was lost.
 
   return (
     <div className="space-y-4">
@@ -60,9 +60,13 @@ export function CreditPanel({ contractId, contractStatus }: { contractId: string
         />
       ) : null}
 
-      {canApply ? (
+      {canWrite ? (
         <div className="flex justify-end">
-          <ApplyCreditDialog contractId={contractId} availableBalance={data.available_balance} />
+          <ApplyCreditDialog
+            contractId={contractId}
+            availableBalance={data.available_balance}
+            canStartNew={contractStatus === "ACTIVE"}
+          />
         </div>
       ) : null}
 

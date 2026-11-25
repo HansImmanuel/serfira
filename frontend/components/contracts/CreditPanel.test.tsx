@@ -1,3 +1,4 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -79,6 +80,14 @@ function sentKey(callIndex: number): string | undefined {
 
 function creditReads(): number {
   return vi.mocked(apiFetch).mock.calls.filter(([path]) => String(path).endsWith("/credit")).length;
+}
+
+function setStatus(view: ReturnType<typeof renderWithQueryClient>, status: ContractStatus) {
+  view.rerender(
+    <QueryClientProvider client={view.queryClient}>
+      <CreditPanel contractId="c1" contractStatus={status} />
+    </QueryClientProvider>,
+  );
 }
 
 function renderPanel(status: ContractStatus = "ACTIVE") {
@@ -411,5 +420,117 @@ describe("CreditPanel apply retry safety", () => {
     expect(await within(screen.getByRole("dialog")).findByText("Failed to fetch")).toBeInTheDocument();
     expect(await screen.findByText("Saldo kredit mungkin tidak terbaru")).toBeInTheDocument();
     expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Terapkan" })).toBeEnabled();
+  });
+
+  it("treats a balance rejection as an ordinary error: the key stays usable and the live balance is the ceiling", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    let rejected = false;
+    mockApi(
+      () => (rejected ? "100000.00" : "250000.00"),
+      async () => {
+        if (!rejected) {
+          rejected = true;
+          throw new ApiError("CREDIT_EXCEEDS_BALANCE", "amount exceeds the available credit balance", 409);
+        }
+        return { applied_amount: "100000.00", available_balance: "0.00", applications: [] };
+      },
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    const dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "200000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+
+    expect(await within(dialog).findByText("amount exceeds the available credit balance")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Mulai form baru" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Terapkan" })).toBeEnabled();
+
+    // Another operator applied credit meanwhile; the reloaded balance is what a new amount is checked against.
+    await vi.waitFor(() => expect(creditReads()).toBe(2));
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    expect(await within(dialog).findByText(/Melebihi saldo tersedia/)).toBeInTheDocument();
+    expect(applyCalls()).toHaveLength(1);
+
+    await user.clear(within(dialog).getByLabelText("Jumlah"));
+    await user.type(within(dialog).getByLabelText("Jumlah"), "100000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(applyCalls()).toHaveLength(2));
+
+    expect(sentKey(1)).toBe("key-1");
+  });
+
+  it("still lets the operator recover a lost apply after it closed the contract and emptied the balance", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    let committed = false;
+    let attempt = 0;
+    mockApi(
+      () => (committed ? "0.00" : "250000.00"),
+      async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          committed = true;
+          throw new TypeError("Failed to fetch");
+        }
+        return { applied_amount: "250000.00", available_balance: "0.00", applications: [] };
+      },
+    );
+    const user = userEvent.setup();
+    const view = renderWithQueryClient(<CreditPanel contractId="c1" contractStatus="ACTIVE" />);
+
+    let dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "250000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await within(dialog).findByText("Failed to fetch");
+    await user.click(within(dialog).getByRole("button", { name: "Batal" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    // The apply that matured the last installment closed the contract.
+    setStatus(view, "CLOSED");
+
+    dialog = await openDialog(user);
+    expect(within(dialog).getByText("Failed to fetch")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(applyCalls()).toHaveLength(2);
+    expect(sentKey(0)).toBe("key-1");
+    expect(sentKey(1)).toBe("key-1");
+  });
+
+  it("keeps the dialog mounted, error included, when the contract closes while it is open", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    const user = userEvent.setup();
+    const view = renderWithQueryClient(<CreditPanel contractId="c1" contractStatus="ACTIVE" />);
+
+    const dialog = await openDialog(user);
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await within(dialog).findByText("Failed to fetch");
+
+    setStatus(view, "CLOSED");
+
+    expect(within(screen.getByRole("dialog")).getByText("Failed to fetch")).toBeInTheDocument();
+  });
+
+  it("does not keep offering the apply once a definite rejection leaves nothing to recover", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", async () => {
+      throw new ApiError("CREDIT_NOT_APPLICABLE", "Tidak ada angsuran jatuh tempo", 409);
+    });
+    const user = userEvent.setup();
+    const view = renderWithQueryClient(<CreditPanel contractId="c1" contractStatus="ACTIVE" />);
+
+    const dialog = await openDialog(user);
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await within(dialog).findByText("Tidak ada angsuran jatuh tempo");
+    await user.click(within(dialog).getByRole("button", { name: "Batal" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    setStatus(view, "CLOSED");
+
+    expect(screen.queryByRole("button", { name: "Terapkan Kredit" })).not.toBeInTheDocument();
   });
 });

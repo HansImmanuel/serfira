@@ -449,7 +449,11 @@ and the pager is disabled while a request is in flight. (4) **Payment result** t
 known only when the last refetch succeeded and finished; otherwise it offers no further payment or credit
 advice and says the status is unconfirmed. Also fixed: a failed background contract refetch no longer
 unmounts the payment form (and so its key) while a contract is cached, and an expired payment key no longer
-claims the form was used with different values. Verified: lint, typecheck, `npm test` = **196 tests / 23
+claims the form was used with different values. Follow-up on the same PR: the balance-exceeded rejection has its
+own code (`CREDIT_EXCEEDS_BALANCE`) so the UI no longer mistakes it for a spent key and the key stays usable;
+after a definite 4xx the live balance is the ceiling again; and an unresolved apply (outcome unknown or key
+spent) stays recoverable even when the apply closed the contract or emptied the balance, because the dialog is
+gated by role only and `canStartNew` gates just a new application. Verified: lint, typecheck, `npm test` = **200 tests / 23
 files / 0 failed**, build; backend `./gradlew check` = 121 suites / 939 tests / 0 failed (7 new credit-apply idempotency tests). CI for PR #24 could not run (GitHub billing), so it is not
 evidence either way.
 

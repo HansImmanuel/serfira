@@ -139,6 +139,13 @@ real failure mode (a retry seconds or minutes after a lost response); the fronte
 operation and never reuses one across sessions. A permanent backstop would need a `credit_apply_request` table and
 is deliberately not added here.
 
+**Error codes.** On the idempotent write endpoints the generic `CONFLICT` means "this key was already used for a
+different request" and a client must treat the key as spent. The one business rule on the credit endpoint that
+used to share that code, a requested amount above the available balance, now answers `CREDIT_EXCEEDS_BALANCE`:
+it rolls the claim back, so the same key remains usable for a corrected amount. Re-coding the key conflict itself
+(for contract, payment, void and settlement as well) was considered and not done, because it changes the wire
+code of four endpoints this review did not touch.
+
 ### Resolution of the open T18 item (2026-10-11, Sprint 6 planning)
 
 The pre-business-logic permanent-key probe is **declined**. The varied-but-truthful 409 codes

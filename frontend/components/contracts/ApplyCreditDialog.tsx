@@ -21,6 +21,7 @@ import { useIdempotencyKey } from "@/hooks/useIdempotencyKey";
 import { useApplyCredit } from "@/hooks/useContract";
 import { compareMoney, normalizeMoney } from "@/lib/decimal";
 import { formatMoney } from "@/lib/format";
+import { ApiError } from "@/lib/api";
 import { isSpentKeyError } from "@/lib/idempotency";
 import type { ApplyCreditPayload, Money } from "@/types/contract";
 
@@ -58,12 +59,14 @@ export function validateCreditAmount(
 function ApplyCreditOperation({
   contractId,
   availableBalance,
+  canStartNew,
   initiallyOpen,
   onCompleted,
   onRestart,
 }: {
   contractId: string;
   availableBalance: Money;
+  canStartNew: boolean;
   initiallyOpen: boolean;
   onCompleted: () => void;
   onRestart: () => void;
@@ -78,6 +81,14 @@ function ApplyCreditOperation({
   const [fieldError, setFieldError] = useState<string | null>(null);
   const mutation = useApplyCredit(contractId);
   const spentKeyError = mutation.isError && isSpentKeyError(mutation.error) ? mutation.error : null;
+  // The outcome is unknown when no definite answer came back (network error, 5xx): the apply may have
+  // committed. A 4xx answer (balance exceeded, nothing applicable, ...) rolled the claim back, so nothing
+  // is outstanding and the live balance is the right ceiling again.
+  const outcomeUnknown =
+    mutation.isError && !(mutation.error instanceof ApiError && mutation.error.status < 500);
+  // An unresolved operation stays recoverable whatever else changed: the balance may be zero or the contract
+  // closed by the very apply whose response was lost, and a retry then replays the stored result.
+  const unresolved = outcomeUnknown || spentKeyError !== null;
 
   function changeOpen(next: boolean) {
     if (!next && mutation.isPending) {
@@ -88,7 +99,7 @@ function ApplyCreditOperation({
   }
 
   async function handleApply() {
-    const result = validateCreditAmount(amount, startingBalance);
+    const result = validateCreditAmount(amount, outcomeUnknown ? startingBalance : availableBalance);
     if ("error" in result) {
       setFieldError(result.error);
       return;
@@ -104,7 +115,7 @@ function ApplyCreditOperation({
     }
   }
 
-  const showTrigger = open || compareMoney(availableBalance, "0.00") > 0;
+  const showTrigger = open || unresolved || (canStartNew && compareMoney(availableBalance, "0.00") > 0);
 
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
@@ -181,9 +192,19 @@ function ApplyCreditOperation({
  *
  * <p>The endpoint is retry-safe through an `Idempotency-Key` (TS §2.2, ADR-017): the same key and amount
  * replay the stored result, a different amount under the same key is 409 `CONFLICT`. This wrapper stays
- * mounted whatever the balance does, so an outcome the operator has not yet read is never unmounted away.
+ * mounted whatever the balance or the contract status does, so an outcome the operator has not yet read is
+ * never unmounted away. `canStartNew` gates only a *new* application (contract ACTIVE); recovering an
+ * unresolved one is never gated by it.
  */
-export function ApplyCreditDialog({ contractId, availableBalance }: { contractId: string; availableBalance: Money }) {
+export function ApplyCreditDialog({
+  contractId,
+  availableBalance,
+  canStartNew,
+}: {
+  contractId: string;
+  availableBalance: Money;
+  canStartNew: boolean;
+}) {
   const [operation, setOperation] = useState({ id: 0, initiallyOpen: false });
 
   return (
@@ -191,6 +212,7 @@ export function ApplyCreditDialog({ contractId, availableBalance }: { contractId
       key={operation.id}
       contractId={contractId}
       availableBalance={availableBalance}
+      canStartNew={canStartNew}
       initiallyOpen={operation.initiallyOpen}
       onCompleted={() => setOperation((current) => ({ id: current.id + 1, initiallyOpen: false }))}
       onRestart={() => setOperation((current) => ({ id: current.id + 1, initiallyOpen: true }))}

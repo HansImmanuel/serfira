@@ -27,7 +27,7 @@ import com.serfira.penalty.application.EffectivePenaltyPort;
 import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.error.BadRequestException;
-import com.serfira.shared.error.ConflictException;
+import com.serfira.shared.error.CreditExceedsBalanceException;
 import com.serfira.shared.error.CreditNotApplicableException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
@@ -125,7 +125,7 @@ public class ContractCreditCommandService {
 	 * @throws ContractNotFoundException     if no contract has that id (404)
 	 * @throws ContractStateException        if the contract is not ACTIVE (409)
 	 * @throws BadRequestException           if a supplied amount is not positive scale-2 money, or the key is missing (400)
-	 * @throws ConflictException             if a supplied amount exceeds the available balance (409)
+	 * @throws CreditExceedsBalanceException if a supplied amount exceeds the available balance (409)
 	 * @throws CreditNotApplicableException  if there is no available credit, or nothing it can reduce (409)
 	 */
 	@Transactional
@@ -223,7 +223,7 @@ public class ContractCreditCommandService {
 		}
 		BigDecimal normalized = requestedAmount.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
 		if (normalized.compareTo(availableBalance) > 0) {
-			throw new ConflictException("amount " + normalized + " exceeds the available credit balance "
+			throw new CreditExceedsBalanceException("amount " + normalized + " exceeds the available credit balance "
 					+ availableBalance + " of contract " + contractNo);
 		}
 		return normalized;

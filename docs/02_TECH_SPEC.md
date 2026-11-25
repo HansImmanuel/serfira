@@ -279,7 +279,9 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   resolusi installment, dan jurnal `CREDIT_APPLICATION` berada dalam satu transaksi `@Transactional`, jadi apply yang
   ditolak me-rollback claim dan key tetap bisa dipakai untuk retry yang dikoreksi; retry identik mengembalikan
   `response_json` tersimpan tanpa baris aplikasi atau jurnal kedua; body berbeda → 409 `CONFLICT`; key lewat retention
-  → 409 `IDEMPOTENCY_KEY_EXPIRED`. Berbeda dari payment/contract, endpoint ini **tidak** punya backstop bisnis
+  → 409 `IDEMPOTENCY_KEY_EXPIRED`; jumlah melebihi saldo → 409 `CREDIT_EXCEEDS_BALANCE` (bukan `CONFLICT`, supaya
+  klien tidak mengira key terpakai; claim di-rollback sehingga key yang sama tetap bisa dipakai dengan jumlah
+  yang dikoreksi). Berbeda dari payment/contract, endpoint ini **tidak** punya backstop bisnis
   permanen (satu apply menghasilkan N baris aplikasi), sehingga setelah cleanup T18 menghapus baris claim, key yang
   dipakai ulang tidak lagi terdeteksi; jaminan retry-safe berlaku selama window retention (default 7 hari).
 - **Implementasi C3 (ADR-010):** `POST /api/v1/payments` memakai endpoint scope `POST /api/v1/payments` dengan

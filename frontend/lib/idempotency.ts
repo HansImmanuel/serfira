@@ -36,6 +36,10 @@ function uuidV4FromRandomValues(): string {
  * (`IDEMPOTENCY_KEY_EXPIRED`, ADR-017). Retrying with the same key cannot succeed, and silently minting a
  * new one could repeat money movement if the first attempt did commit — so the form offers an explicit
  * restart after the operator has checked the outcome.
+ *
+ * <p>`CONFLICT` is only trustworthy as "spent key" on endpoints whose own business rules never answer with
+ * it: payments and credit application. Credit's "amount exceeds the balance" therefore has its own code,
+ * `CREDIT_EXCEEDS_BALANCE`, which rolled the claim back and leaves the key usable.
  */
 const SPENT_KEY_CODES: ReadonlySet<string> = new Set(["CONFLICT", "IDEMPOTENCY_KEY_EXPIRED"]);
 
