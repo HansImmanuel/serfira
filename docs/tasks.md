@@ -22,11 +22,11 @@ progress** — T35 DONE on branch `t35-cors-adr-023` (PR #22 open) and T32 DONE 
 (stacked on T35, PR pending); T33/T34 still TODO. Backend Phases 1–2 are implemented and merged; the
 `frontend/` app shell, login and contract lifecycle journey are implemented.
 
-**Verified test counts:** backend full local `./gradlew test --rerun-tasks` (2026-11-20, branch
-`t32-nextjs-shell`) = **120 suites / 926 tests / 0 failed** — unchanged from the T35 run, because T32 adds
-no backend code. Frontend `npm test` (2026-11-20) = **79 tests / 12 files / 0 failed**, plus green
-`npm run lint`, `npm run typecheck` and `npm run build`. T35 added 3 suites / 15 tests over the `main`
-baseline of 117 / 911. CI on `main` is red for a GitHub billing reason, not a test failure.
+**Verified test counts:** backend full local `./gradlew check` (2026-11-25, branch `t32-nextjs-shell`) =
+**121 suites / 929 tests / 0 failed** (T35 baseline 120/926 plus `BigDecimalStringModuleTest`). Frontend
+`npm test` (2026-11-25) = **108 tests / 17 files / 0 failed**, plus green `npm run lint`,
+`npm run typecheck` and `npm run build` (the production build refuses to fall back to localhost without
+`NEXT_PUBLIC_API_BASE_URL`). CI on `main` is red for a GitHub billing reason, not a test failure.
 
 **Implemented (verified in source):**
 
@@ -48,9 +48,12 @@ baseline of 117 / 911. CI on `main` is red for a GitHub billing reason, not a te
   credentials, and `403` before authorization for a disallowed origin (T35, ADR-023). The frontend calls
   the API directly — no BFF or proxy.
 - Frontend (`frontend/`, T32): Next.js 16.4.6 App Router shell with in-memory tokens, a single-flight
-  refresh-and-replay client, `/login`, a guarded dashboard, the contract book (filter/search/pagination),
-  create, detail with Jadwal/Kredit/Ledger tabs, activation, and a minimal statement page. Authorization
-  stays server-side; the JWT `roles` only drives which buttons render.
+  refresh-and-replay client, a session generation that discards stale refreshes/responses, and cache
+  clearing on login/logout; `/login`, a guarded dashboard, the contract book (filter/search/pagination),
+  create, detail with Jadwal/Kredit/Ledger tabs, activation, and a minimal statement page. Money and rates
+  are exact decimal strings (ADR-024) formatted with BigInt, never a float. Authorization stays server-side;
+  the JWT `roles` only drives which buttons/tabs render, and credit/statement are hidden from `MANAJEMEN`
+  (the API still answers 403).
 - PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
   search (ADR-004); rotation is **T28a/T28b** (Sprint 8).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
@@ -268,6 +271,32 @@ Verification: `npm ci`, `npm run lint` (0 problems), `npm run typecheck`, `npm t
 files**, 2026-11-20) and `npm run build` (8 routes) pass; backend `./gradlew test --rerun-tasks` remains
 **120 suites / 926 tests / 0 failed**. Branch is based on `t35-cors-adr-023` because T35 is its dependency
 and PR #22 is still open; both PRs must merge in order.
+
+Review remediation note (2026-11-25, same branch, PR #23): the nine Qodo findings were verified against the
+frontend, the backend matcher table and the specs; all nine were valid and are fixed here.
+(1) **Stale refresh overwrote a newer session**: a session **generation** in `lib/session.ts` is captured by
+every request and refresh, so a rotation or late response from a replaced session is rejected with
+`SESSION_CHANGED` instead of overwriting the newer operator; concurrent 401s in one session still share one
+refresh and a stale flight cannot block a newer login.
+(2) **MANAJEMEN saw the Credit tab** and (3) **the statement navigation**: both are now rendered and queried
+only for `ADMIN_OPERASIONAL`/`FINANCE` (tab, link and query `enabled`), with an access-denied page for a
+direct URL; contract detail stays available to `MANAJEMEN`.
+(4) **Money formatting lost precision** and (5) **money input exceeded `NUMERIC(19,2)`**: money and rates are
+**exact decimal strings** on the wire (ADR-024: `BigDecimalStringModule` + `OpenApiConfiguration` in the
+backend, `Money = string` and BigInt formatting in the frontend), and operator input is bounded to
+`NUMERIC(19,2)` (17 integer digits, scale 2) before submit.
+(6) **A production build silently used localhost**: it now fails without an explicit
+`NEXT_PUBLIC_API_BASE_URL`; CI builds against `https://ci-build.invalid`.
+(7) **Logout left the Query cache**: `app/providers.tsx` cancels outstanding queries and clears the cache on
+login/logout, and logout clears tokens/snapshot/cache synchronously before the `keepalive` revocation.
+(8) **Phone validation disagreed with the backend**: input mirrors `PiiHasher.normalizePhone` (strip
+non-digits, `0`→`62`) before the 9–15 digit check.
+(9) **`crypto.randomUUID()` failed outside a secure context**: the `Idempotency-Key` uses it when available
+and otherwise an RFC 4122 v4 value from `getRandomValues()`, never `Math.random()`.
+Verification: `npm ci`, `npm run lint`, `npm run typecheck`, `npm test` (**17 files / 108 tests**, 2026-11-25)
+and `npm run build` pass; the build exits 1 with the documented message when the env var is absent. Backend
+`./gradlew check` = **121 suites / 929 tests / 0 failed** (2026-11-25). ADR-024, `02_TECH_SPEC.md` §2.2,
+`06_FRONTEND_SPEC.md` §3.1/§4 and the frontend README document the wire format, session and build rules.
 
 **Goal:** Stand up the Next.js application and deliver the first complete operator journey: sign in, see
 the contract book, create a DRAFT contract, open its detail and activate it.

@@ -120,5 +120,10 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
       job CI `frontend` + allowlist gitleaks untuk output build. Verifikasi: 79 test / 12 file, lint,
       typecheck, build hijau; backend tetap 120 suite / 926 test (branch `t32-nextjs-shell`, stacked di
       `t35-cors-adr-023`)
+      - Remediasi review Qodo (2026-11-25): generasi sesi + pembersihan cache saat logout, gating
+        Kredit/Ledger untuk `MANAJEMEN`, uang/rate sebagai string desimal eksak (ADR-024) dengan batas
+        `NUMERIC(19,2)` pada input, build produksi wajib `NEXT_PUBLIC_API_BASE_URL`, normalisasi telepon
+        `0`→`62`, dan fallback `Idempotency-Key` dari `getRandomValues`. Verifikasi: 108 test / 17 file,
+        lint/typecheck/build hijau; backend `./gradlew check` 121 suite / 929 test
 - [ ] T33 — G3: payment, installments, statement, credit
 - [ ] T34 — G5: demo script, seed data, README close-out

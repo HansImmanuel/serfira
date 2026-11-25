@@ -1,8 +1,10 @@
 /**
  * Login and logout (FE §1.4, §2.1), including the in-memory session handoff.
  *
- * <p>Login stores both tokens and the username that was typed; logout revokes the refresh token
- * (best effort — the endpoint is idempotent) and always forgets the local session.
+ * <p>Login stores both tokens and the username that was typed. Logout forgets the local session
+ * *first* — tokens, reactive snapshot and the Query cache — so no screen can keep rendering the
+ * previous operator's data while the best-effort revocation is in flight; the endpoint is
+ * idempotent, so a failed or aborted revocation still leaves the client logged out.
  */
 
 import type { TokenPair } from "@/types/auth";
@@ -20,18 +22,18 @@ export async function login(username: string, password: string): Promise<void> {
 
 export async function logout(): Promise<void> {
   const refreshToken = getRefreshToken();
+  clearSession();
   if (refreshToken === null) {
-    clearSession();
     return;
   }
   try {
     await apiFetch<void>("/auth/logout", {
       method: "POST",
       body: JSON.stringify({ refresh_token: refreshToken }),
+      // The page may navigate away immediately; keep the revocation alive across the unload.
+      keepalive: true,
     });
   } catch {
-    // Revocation is best effort: a failed call must not leave the tab looking logged in.
-  } finally {
-    clearSession();
+    // Revocation is best effort: the local session is already gone and the token will expire.
   }
 }

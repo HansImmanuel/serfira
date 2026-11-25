@@ -80,7 +80,31 @@ describe("logout", () => {
     const [url, init] = vi.mocked(fetch).mock.calls[1];
     expect(String(url)).toBe("http://localhost:8080/api/v1/auth/logout");
     expect(JSON.parse(String(init?.body))).toEqual({ refresh_token: "refresh-1" });
+    expect(init?.keepalive).toBe(true);
     expect(getSession().authenticated).toBe(false);
+  });
+
+  it("drops the local session before the revocation settles, so the tab is logged out immediately", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({ data: { access_token: "access-1", refresh_token: "refresh-1" }, error: null }),
+    );
+    await login("admin", "rahasia123");
+
+    let release!: () => void;
+    vi.mocked(fetch).mockReturnValue(
+      new Promise<Response>((resolve) => {
+        release = () => resolve(jsonResponse({ data: null, error: null }));
+      }),
+    );
+
+    const pending = logout();
+
+    expect(getSession().authenticated).toBe(false);
+    expect(getAccessToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
+
+    release();
+    await pending;
   });
 
   it("still forgets the session when the revoke call fails, so the tab is never left logged in", async () => {

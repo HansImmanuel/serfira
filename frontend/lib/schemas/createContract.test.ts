@@ -48,15 +48,28 @@ describe("createContractSchema", () => {
     expect(issuesOf({ ...validValues, nik: "317401010190000A" })).toContain("nik");
   });
 
-  it("requires a phone of 9 to 15 digits after separators", () => {
+  it("validates the phone length after the backend's trunk normalization", () => {
+    // A leading 0 becomes 62, so the server checks 9–15 digits *after* that conversion.
     expect(issuesOf({ ...validValues, phone: "0812345" })).toContain("phone");
+    expect(issuesOf({ ...validValues, phone: "08123456" })).not.toContain("phone");
+    expect(issuesOf({ ...validValues, phone: "12345678" })).toContain("phone");
+    expect(issuesOf({ ...validValues, phone: "123456789" })).not.toContain("phone");
     expect(issuesOf({ ...validValues, phone: "+62 812-3456-7890" })).not.toContain("phone");
-    expect(issuesOf({ ...validValues, phone: "0812345678901234567" })).toContain("phone");
+    // 14 raw digits + the 0→62 conversion is exactly the 15-digit maximum.
+    expect(issuesOf({ ...validValues, phone: "08123456789012" })).not.toContain("phone");
+    expect(issuesOf({ ...validValues, phone: "081234567890123" })).toContain("phone");
+    expect(issuesOf({ ...validValues, phone: "1234567890123456" })).toContain("phone");
   });
 
   it("rejects money input finer than scale 2 instead of rounding it", () => {
     expect(issuesOf({ ...validValues, asset_price: "20000000.005" })).toContain("asset_price");
     expect(issuesOf({ ...validValues, asset_price: "dua puluh juta" })).toContain("asset_price");
+  });
+
+  it("rejects money outside the NUMERIC(19,2) domain before submitting", () => {
+    expect(issuesOf({ ...validValues, asset_price: "99999999999999999" })).not.toContain("asset_price");
+    expect(issuesOf({ ...validValues, asset_price: "100000000000000000" })).toContain("asset_price");
+    expect(issuesOf({ ...validValues, down_payment: "100000000000000000" })).toContain("down_payment");
   });
 
   it("requires a positive asset price and a down payment below it", () => {
@@ -94,7 +107,7 @@ describe("toCreateContractPayload", () => {
       customer: {
         full_name: "Budi Santoso",
         nik: "3174010101900001",
-        phone: "081234567890",
+        phone: "6281234567890",
         address: "Jl. Merdeka No. 1, Jakarta",
       },
       asset: {
@@ -120,5 +133,11 @@ describe("toCreateContractPayload", () => {
 
     expect(payload.asset.serial_no).toBeNull();
     expect(payload.asset.plate_no).toBeNull();
+  });
+
+  it("normalizes the phone to the same digit form the backend hashes", () => {
+    const parsed = createContractSchema.parse({ ...validValues, phone: "+62 812-3456-7890" });
+
+    expect(toCreateContractPayload(parsed).customer.phone).toBe("6281234567890");
   });
 });

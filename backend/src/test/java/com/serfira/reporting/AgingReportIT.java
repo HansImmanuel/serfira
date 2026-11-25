@@ -305,7 +305,7 @@ class AgingReportIT {
 	}
 
 	private static BigDecimal decimal(JsonNode node, String field) {
-		return node.get(field).decimalValue();
+		return new BigDecimal(node.get(field).asText());
 	}
 
 	private static BigDecimal sumBuckets(JsonNode buckets) {

@@ -24,11 +24,12 @@ export function useInstallments(id: string, enabled = true) {
   });
 }
 
-export function useCredit(id: string) {
+/** Credit is readable by `ADMIN_OPERASIONAL`/`FINANCE` only (ADR-015 matcher table). */
+export function useCredit(id: string, enabled = true) {
   return useQuery({
     queryKey: [...contractKey(id), "credit"],
     queryFn: () => apiFetch<CreditBalance>(`/contracts/${id}/credit`),
-    enabled: id.length > 0,
+    enabled: id.length > 0 && enabled,
   });
 }
 

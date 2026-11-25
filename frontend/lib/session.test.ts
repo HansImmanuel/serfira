@@ -5,6 +5,7 @@ import {
   getAccessToken,
   getRefreshToken,
   getSession,
+  getSessionGeneration,
   setSession,
   subscribeSession,
   updateTokens,
@@ -52,7 +53,7 @@ describe("session store", () => {
 
   it("keeps the login username across a refresh, because the JWT subject is not a display name", () => {
     setSession({ access_token: ADMIN_TOKEN, refresh_token: "refresh-1" }, "admin");
-    updateTokens({ access_token: FINANCE_TOKEN, refresh_token: "refresh-2" });
+    updateTokens({ access_token: FINANCE_TOKEN, refresh_token: "refresh-2" }, getSessionGeneration());
 
     expect(getSession()).toEqual({
       authenticated: true,
@@ -71,7 +72,7 @@ describe("session store", () => {
     const unsubscribe = subscribeSession(listener);
 
     setSession({ access_token: ADMIN_TOKEN, refresh_token: "refresh-1" }, "admin");
-    updateTokens({ access_token: FINANCE_TOKEN, refresh_token: "refresh-2" });
+    updateTokens({ access_token: FINANCE_TOKEN, refresh_token: "refresh-2" }, getSessionGeneration());
     clearSession();
 
     expect(listener).toHaveBeenCalledTimes(3);
@@ -95,5 +96,32 @@ describe("session store", () => {
 
     expect(getSession().authenticated).toBe(false);
     expect(getSession().roles).toEqual([]);
+  });
+
+  it("starts a new generation on login and logout, but not on a token rotation", () => {
+    const before = getSessionGeneration();
+
+    setSession({ access_token: ADMIN_TOKEN, refresh_token: "refresh-1" }, "admin");
+    const afterLogin = getSessionGeneration();
+    expect(afterLogin).toBeGreaterThan(before);
+
+    expect(updateTokens({ access_token: FINANCE_TOKEN, refresh_token: "refresh-2" }, afterLogin)).toBe(true);
+    expect(getSessionGeneration()).toBe(afterLogin);
+
+    clearSession();
+    expect(getSessionGeneration()).toBeGreaterThan(afterLogin);
+  });
+
+  it("refuses a rotation that belongs to a replaced session", () => {
+    setSession({ access_token: ADMIN_TOKEN, refresh_token: "refresh-1" }, "admin");
+    const staleGeneration = getSessionGeneration();
+
+    clearSession();
+    setSession({ access_token: FINANCE_TOKEN, refresh_token: "refresh-2" }, "finance");
+
+    expect(updateTokens({ access_token: ADMIN_TOKEN, refresh_token: "refresh-3" }, staleGeneration)).toBe(false);
+    expect(getAccessToken()).toBe(FINANCE_TOKEN);
+    expect(getRefreshToken()).toBe("refresh-2");
+    expect(getSession().username).toBe("finance");
   });
 });

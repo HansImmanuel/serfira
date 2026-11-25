@@ -63,6 +63,10 @@ jobs:
 
       - name: Production build
         working-directory: frontend
+        # `NEXT_PUBLIC_*` is inlined at build time and a production build refuses to fall back to
+        # localhost. CI has no real API origin, so it builds against the reserved `.invalid` TLD.
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://ci-build.invalid
         run: npm run build
 
   # Secret scan (T27, steering 60-security). Two explicit gitleaks invocations over the checkout, both run

@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useContract, useInstallments } from "@/hooks/useContract";
-import { useCanWrite } from "@/hooks/useSession";
+import { useCanReadCredit, useCanReadStatement, useCanWrite } from "@/hooks/useSession";
 import { rateFractionToPercent } from "@/lib/decimal";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -36,6 +36,8 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
   const contract = useContract(contractId);
   const installments = useInstallments(contractId, contract.data?.status !== "DRAFT");
   const canWrite = useCanWrite();
+  const canReadCredit = useCanReadCredit();
+  const canReadStatement = useCanReadStatement();
 
   if (contract.isPending) {
     return <LoadingSpinner label="Memuat kontrak…" />;
@@ -69,12 +71,14 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
           <p className="text-sm text-muted-foreground">{detail.customer.full_name}</p>
         </div>
         <div className="flex gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/contracts/${detail.id}/statement`}>
-              <ExternalLink className="size-4" aria-hidden="true" />
-              Rekening koran
-            </Link>
-          </Button>
+          {canReadStatement ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/contracts/${detail.id}/statement`}>
+                <ExternalLink className="size-4" aria-hidden="true" />
+                Rekening koran
+              </Link>
+            </Button>
+          ) : null}
           {detail.status === "DRAFT" && canWrite ? (
             <ActivateContractButton contractId={detail.id} plannedStartDate={detail.planned_start_date} />
           ) : null}
@@ -152,8 +156,8 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
       <Tabs defaultValue="schedule" className="gap-3">
         <TabsList>
           <TabsTrigger value="schedule">Jadwal</TabsTrigger>
-          <TabsTrigger value="credit">Kredit</TabsTrigger>
-          <TabsTrigger value="ledger">Ledger</TabsTrigger>
+          {canReadCredit ? <TabsTrigger value="credit">Kredit</TabsTrigger> : null}
+          {canReadStatement ? <TabsTrigger value="ledger">Ledger</TabsTrigger> : null}
         </TabsList>
 
         <TabsContent value="schedule">
@@ -174,25 +178,29 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
           </div>
         </TabsContent>
 
-        <TabsContent value="credit">
-          <CreditPanel contractId={detail.id} />
-        </TabsContent>
+        {canReadCredit ? (
+          <TabsContent value="credit">
+            <CreditPanel contractId={detail.id} />
+          </TabsContent>
+        ) : null}
 
-        <TabsContent value="ledger">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Rekening koran</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <p className="text-muted-foreground">
-                Mutasi ledger kontrak ditampilkan apa adanya (debit/kredit literal, tanpa saldo berjalan).
-              </p>
-              <Button asChild variant="outline" size="sm">
-                <Link href={`/contracts/${detail.id}/statement`}>Buka rekening koran</Link>
-              </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
+        {canReadStatement ? (
+          <TabsContent value="ledger">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Rekening koran</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <p className="text-muted-foreground">
+                  Mutasi ledger kontrak ditampilkan apa adanya (debit/kredit literal, tanpa saldo berjalan).
+                </p>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/contracts/${detail.id}/statement`}>Buka rekening koran</Link>
+                </Button>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   );

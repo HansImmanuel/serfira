@@ -8,8 +8,13 @@ import type { StatementRow } from "@/types/contract";
 
 export const STATEMENT_PAGE_SIZE = 20;
 
-/** Ledger-literal statement page (FE §2.7). Filters and ref-type wiring land with T33. */
-export function useStatement(id: string, page: number) {
+/**
+ * Ledger-literal statement page (FE §2.7). Filters and ref-type wiring land with T33.
+ *
+ * <p>`enabled` lets the caller suppress the request for a role the matcher table denies; the page
+ * then renders an access-denied state instead of provoking a 403.
+ */
+export function useStatement(id: string, page: number, enabled = true) {
   return useQuery({
     queryKey: ["contract", id, "statement", page],
     queryFn: () =>
@@ -17,6 +22,6 @@ export function useStatement(id: string, page: number) {
         `/contracts/${id}/statement?page=${page}&size=${STATEMENT_PAGE_SIZE}`,
       ),
     placeholderData: keepPreviousData,
-    enabled: id.length > 0,
+    enabled: id.length > 0 && enabled,
   });
 }

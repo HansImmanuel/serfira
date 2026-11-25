@@ -35,6 +35,17 @@ function digitsOf(value: string): string {
   return value.replace(/\D/g, "");
 }
 
+/**
+ * Mirrors `PiiHasher.normalizePhone` (Addendum A9): strip non-digits, then convert a leading local
+ * trunk `0` to the international `62`. The backend validates the *normalized* length (9–15), so a
+ * 15-digit local number becomes 16 digits once normalized and must be rejected here as well;
+ * counting raw digits would let it through and earn a 400 from the API.
+ */
+export function normalizePhone(value: string): string {
+  const digits = digitsOf(value);
+  return digits.startsWith("0") ? `62${digits.slice(1)}` : digits;
+}
+
 function isCalendarDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (match === null) {
@@ -68,7 +79,7 @@ const moneyField = (label: string) =>
       if (normalizeMoney(value) === null) {
         ctx.addIssue({
           code: "custom",
-          message: `${label} harus berupa angka dengan maksimal 2 desimal.`,
+          message: `${label} harus berupa angka maksimal 17 digit bulat dan 2 desimal.`,
         });
       }
     })
@@ -99,7 +110,7 @@ export const createContractSchema = z
     phone: z
       .string()
       .superRefine((value, ctx) => {
-        const digits = digitsOf(value).length;
+        const digits = normalizePhone(value).length;
         if (digits < 9 || digits > 15) {
           ctx.addIssue({ code: "custom", message: "Nomor telepon harus 9–15 digit." });
         }
@@ -184,7 +195,7 @@ export function toCreateContractPayload(values: CreateContractValues): CreateCon
     customer: {
       full_name: values.full_name,
       nik: values.nik,
-      phone: values.phone,
+      phone: normalizePhone(values.phone),
       address: values.address,
     },
     asset: {

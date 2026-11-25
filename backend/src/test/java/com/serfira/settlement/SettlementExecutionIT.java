@@ -121,8 +121,8 @@ class SettlementExecutionIT {
 		JsonNode data = data(result);
 
 		UUID settlementId = UUID.fromString(data.get("settlement_id").asText());
-		assertThat(data.get("credit_used").decimalValue()).isEqualByComparingTo("0.00");
-		BigDecimal cashReceived = data.get("cash_received").decimalValue();
+		assertThat(new BigDecimal(data.get("credit_used").asText())).isEqualByComparingTo("0.00");
+		BigDecimal cashReceived = new BigDecimal(data.get("cash_received").asText());
 		assertThat(cashReceived).isGreaterThan(BigDecimal.ZERO);
 
 		// Exactly one non-reversal SETTLEMENT journal entry for this settlement.
@@ -289,7 +289,7 @@ class SettlementExecutionIT {
 		JsonNode data = data(result);
 
 		UUID settlementId = UUID.fromString(data.get("settlement_id").asText());
-		assertThat(data.get("credit_used").decimalValue()).isEqualByComparingTo(creditAmount);
+		assertThat(new BigDecimal(data.get("credit_used").asText())).isEqualByComparingTo(creditAmount);
 
 		// One settlement_credit_application for the source; the TITIPAN_NASABAH debit equals credit_used.
 		assertThat(jdbc.queryForObject(

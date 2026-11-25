@@ -25,6 +25,14 @@ describe("normalizeMoney", () => {
     expect(normalizeMoney("1.")).toBeNull();
     expect(normalizeMoney(".5")).toBeNull();
   });
+
+  it("accepts the largest NUMERIC(19,2) amount and rejects one unit more", () => {
+    expect(normalizeMoney("99999999999999999.99")).toBe("99999999999999999.99");
+    expect(normalizeMoney("-99999999999999999.99")).toBe("-99999999999999999.99");
+    // 18 integer digits no longer fit the column the backend validates against.
+    expect(normalizeMoney("100000000000000000")).toBeNull();
+    expect(normalizeMoney("-100000000000000000")).toBeNull();
+  });
 });
 
 describe("addMoney", () => {

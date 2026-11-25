@@ -138,11 +138,11 @@ class ContractStatementIT {
 				.filter(row -> row.get("account_code").asText().equals("PIUTANG_POKOK")).findFirst().orElseThrow();
 		JsonNode kas = activationLines.stream()
 				.filter(row -> row.get("account_code").asText().equals("KAS")).findFirst().orElseThrow();
-		assertThat(piutang.get("debit").decimalValue()).isEqualByComparingTo(principal);
-		assertThat(piutang.get("credit").decimalValue()).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(piutang.get("debit").asText())).isEqualByComparingTo(principal);
+		assertThat(new BigDecimal(piutang.get("credit").asText())).isEqualByComparingTo("0.00");
 		assertThat(piutang.get("account_name").asText()).isEqualTo("Receivable — principal");
-		assertThat(kas.get("credit").decimalValue()).isEqualByComparingTo(principal);
-		assertThat(kas.get("debit").decimalValue()).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(kas.get("credit").asText())).isEqualByComparingTo(principal);
+		assertThat(new BigDecimal(kas.get("debit").asText())).isEqualByComparingTo("0.00");
 
 		// A PAYMENT entry exists, dated the payment day, after the activation entry (chronological order).
 		List<String> refTypesInOrder = new ArrayList<>();

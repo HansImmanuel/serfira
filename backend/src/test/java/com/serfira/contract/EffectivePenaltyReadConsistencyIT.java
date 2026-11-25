@@ -169,8 +169,8 @@ class EffectivePenaltyReadConsistencyIT {
 		// schedule row, period 1's 1-30 aging bucket and the receivable snapshot all report it. The OLD
 		// zero-adjustment read would keep reporting this gross value after a waiver; the asserts after the
 		// waiver prove the routing now nets the adjustment instead.
-		assertThat(scheduleRow(1).get("penalty_amount").decimalValue()).isEqualByComparingTo(GROSS_PENALTY);
-		assertThat(scheduleRow(1).get("outstanding").decimalValue()).isEqualByComparingTo(GROSS_PENALTY);
+		assertThat(new BigDecimal(scheduleRow(1).get("penalty_amount").asText())).isEqualByComparingTo(GROSS_PENALTY);
+		assertThat(new BigDecimal(scheduleRow(1).get("outstanding").asText())).isEqualByComparingTo(GROSS_PENALTY);
 		assertThat(contractAgingBucket("dpd_1_30")).isEqualByComparingTo(GROSS_PENALTY);
 		assertThat(snapshotEffectivePenalty(1)).isEqualByComparingTo(GROSS_PENALTY);
 
@@ -183,8 +183,8 @@ class EffectivePenaltyReadConsistencyIT {
 
 		// (a) The schedule row now shows zero remaining penalty and zero outstanding for period 1.
 		JsonNode row = scheduleRow(1);
-		assertThat(row.get("penalty_amount").decimalValue()).isEqualByComparingTo("0.00");
-		assertThat(row.get("outstanding").decimalValue()).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(row.get("penalty_amount").asText())).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(row.get("outstanding").asText())).isEqualByComparingTo("0.00");
 
 		// (b) The aging report shows period 1 gone from its 1-30 bucket: that bucket is now zero (period 2's
 		// future residual only ever sits in Current, so it cannot mask this).
@@ -208,7 +208,7 @@ class EffectivePenaltyReadConsistencyIT {
 		assertThat(payment.getResponse().getStatus()).isEqualTo(201);
 		JsonNode paymentData = objectMapper.readTree(payment.getResponse().getContentAsString()).get("data");
 		assertThat(allocationTypes(paymentData)).containsExactly("PENALTY");
-		assertThat(paymentData.get("allocations").get(0).get("amount").decimalValue())
+		assertThat(new BigDecimal(paymentData.get("allocations").get(0).get("amount").asText()))
 				.isEqualByComparingTo(partialPenaltyPayment);
 
 		// The port is the single source of the remaining penalty: effective = gross − 0 − paidPenalty.
@@ -222,8 +222,8 @@ class EffectivePenaltyReadConsistencyIT {
 		// The schedule row's penalty_amount must equal the port's remaining penalty, NOT gross and NOT
 		// gross − adjustment (which both equal gross here).
 		JsonNode row = scheduleRow(1);
-		assertThat(row.get("penalty_amount").decimalValue()).isEqualByComparingTo(portEffective);
-		assertThat(row.get("penalty_amount").decimalValue()).isNotEqualByComparingTo(gross);
+		assertThat(new BigDecimal(row.get("penalty_amount").asText())).isEqualByComparingTo(portEffective);
+		assertThat(new BigDecimal(row.get("penalty_amount").asText())).isNotEqualByComparingTo(gross);
 	}
 
 	@Test
@@ -245,8 +245,8 @@ class EffectivePenaltyReadConsistencyIT {
 
 		// The schedule still returns 200 (no 409 leak) and reports the net remaining penalty, not gross.
 		JsonNode row = scheduleRow(1);
-		assertThat(row.get("penalty_amount").decimalValue()).isEqualByComparingTo(expectedNet);
-		assertThat(row.get("penalty_amount").decimalValue()).isNotEqualByComparingTo(GROSS_PENALTY);
+		assertThat(new BigDecimal(row.get("penalty_amount").asText())).isEqualByComparingTo(expectedNet);
+		assertThat(new BigDecimal(row.get("penalty_amount").asText())).isNotEqualByComparingTo(GROSS_PENALTY);
 	}
 
 	@Test
@@ -329,7 +329,7 @@ class EffectivePenaltyReadConsistencyIT {
 	private BigDecimal contractAgingBucket(String bucket) throws Exception {
 		for (JsonNode row : agingReport().get("contracts").get("content")) {
 			if (row.get("contract_id").asText().equals(contractId.toString())) {
-				return row.get("buckets").get(bucket).decimalValue();
+				return new BigDecimal(row.get("buckets").get(bucket).asText());
 			}
 		}
 		return BigDecimal.ZERO.setScale(2);

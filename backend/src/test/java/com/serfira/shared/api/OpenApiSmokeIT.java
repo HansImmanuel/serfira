@@ -47,6 +47,17 @@ class OpenApiSmokeIT {
 				.contains("ADMIN_OPERASIONAL");
 		assertThat(paths.at("/~1api~1v1~1contracts/get/responses/403/description").asText())
 				.contains("FINANCE").contains("MANAJEMEN");
+
+		// ADR-024: money and rates are exact decimal strings on the wire, so the document must not
+		// describe them as JSON numbers (a generated client would then parse them as doubles).
+		// springdoc names schema properties after the Java record components, not the snake_case wire names.
+		JsonNode schemas = objectMapper.readTree(result.getResponse().getContentAsString())
+				.get("components")
+				.get("schemas");
+		assertThat(schemas.at("/ContractResponse/properties/assetPrice/type").asText()).isEqualTo("string");
+		assertThat(schemas.at("/ContractResponse/properties/principal/type").asText()).isEqualTo("string");
+		assertThat(schemas.at("/ContractResponse/properties/interestRate/type").asText()).isEqualTo("string");
+		assertThat(schemas.at("/SettlementQuoteResponse/properties/cashDue/type").asText()).isEqualTo("string");
 	}
 
 	@Test

@@ -129,8 +129,8 @@ class ContractCreditIT {
 
 		// The read endpoint reports the same balance.
 		JsonNode read = data(getCredit(adminToken));
-		assertThat(read.get("total_credit").decimalValue()).isEqualByComparingTo(excess);
-		assertThat(read.get("available_balance").decimalValue()).isEqualByComparingTo(excess);
+		assertThat(new BigDecimal(read.get("total_credit").asText())).isEqualByComparingTo(excess);
+		assertThat(new BigDecimal(read.get("available_balance").asText())).isEqualByComparingTo(excess);
 		assertThat(read.get("applications")).isEmpty();
 	}
 
@@ -153,7 +153,7 @@ class ContractCreditIT {
 		fixedClock().setDate(LocalDate.of(2026, 1, 15));
 		MvcResult overpayment = pay("make-credit", "2000000.00");
 		assertThat(overpayment.getResponse().getStatus()).isEqualTo(201);
-		BigDecimal availableBefore = data(getCredit(adminToken)).get("available_balance").decimalValue();
+		BigDecimal availableBefore = new BigDecimal(data(getCredit(adminToken)).get("available_balance").asText());
 		assertThat(availableBefore).isEqualByComparingTo("2000000.00");
 
 		// Move to a date where periods 1 and 2 are due and bill them with a small payment, leaving most of
@@ -170,8 +170,8 @@ class ContractCreditIT {
 		MvcResult partialApply = applyCredit("{\"amount\":1000000.00}");
 		assertThat(partialApply.getResponse().getStatus()).isEqualTo(200);
 		JsonNode partialData = data(partialApply);
-		assertThat(partialData.get("applied_amount").decimalValue()).isEqualByComparingTo(partial);
-		assertThat(partialData.get("available_balance").decimalValue())
+		assertThat(new BigDecimal(partialData.get("applied_amount").asText())).isEqualByComparingTo(partial);
+		assertThat(new BigDecimal(partialData.get("available_balance").asText()))
 				.isEqualByComparingTo(availableBefore.subtract(partial));
 		assertThat(creditStatuses()).contains("AVAILABLE").doesNotContain("APPLIED");
 		UUID firstApplyEntry = latestEntry("CREDIT_APPLICATION");
@@ -181,7 +181,7 @@ class ContractCreditIT {
 		MvcResult fullApply = applyCredit("{}");
 		assertThat(fullApply.getResponse().getStatus()).isEqualTo(200);
 		JsonNode fullData = data(fullApply);
-		assertThat(fullData.get("available_balance").decimalValue()).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(fullData.get("available_balance").asText())).isEqualByComparingTo("0.00");
 		assertThat(creditStatuses()).containsOnly("APPLIED");
 		assertBalancedCreditJournal(latestEntry("CREDIT_APPLICATION"));
 
@@ -202,14 +202,14 @@ class ContractCreditIT {
 
 		// The read endpoint lists every application, oldest first.
 		JsonNode read = data(getCredit(adminToken));
-		assertThat(read.get("available_balance").decimalValue()).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(read.get("available_balance").asText())).isEqualByComparingTo("0.00");
 		assertThat(read.get("applications")).isNotEmpty();
 	}
 
 	@Test
 	void overApplyingMoreThanTheBalanceIsRejectedAndWritesNothing() throws Exception {
 		pay("over-apply-credit", "12000000.00");
-		BigDecimal available = data(getCredit(adminToken)).get("available_balance").decimalValue();
+		BigDecimal available = new BigDecimal(data(getCredit(adminToken)).get("available_balance").asText());
 		long applicationsBefore = count("contract_credit_application");
 
 		MvcResult result = applyCredit("{\"amount\":" + available.add(BigDecimal.ONE).toPlainString() + "}");

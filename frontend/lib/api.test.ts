@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearSession, getAccessToken, getSession, setSession } from "./session";
+import { clearSession, getAccessToken, getRefreshToken, getSession, setSession } from "./session";
 
 vi.mock("./navigation", () => ({
   redirectToLogin: vi.fn(),
@@ -35,6 +35,19 @@ function errorResponse(code: string, message: string, status: number) {
 function bearer(headers: RequestInit["headers"]): string | null {
   const record = (headers ?? {}) as Record<string, string>;
   return record.Authorization ?? null;
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 describe("apiUrl", () => {
@@ -221,5 +234,90 @@ describe("refreshAccessToken", () => {
     await expect(refreshAccessToken()).rejects.toMatchObject({ code: "NO_SESSION" });
     expect(fetch).not.toHaveBeenCalled();
     expect(redirectToLogin).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("session generation guards", () => {
+  beforeEach(() => {
+    clearSession();
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    clearSession();
+  });
+
+  it("discards a refresh response that belongs to a replaced session", async () => {
+    setSession({ access_token: OLD_TOKEN, refresh_token: "refresh-old" }, "admin");
+    const gate = deferred<Response>();
+    vi.mocked(fetch).mockReturnValue(gate.promise);
+
+    const refresh = refreshAccessToken();
+
+    // A different operator signs in before the rotation answers.
+    clearSession();
+    setSession({ access_token: NEW_TOKEN, refresh_token: "refresh-new" }, "finance");
+
+    gate.resolve(
+      jsonResponse({ data: { access_token: "stale-access", refresh_token: "stale-refresh" }, error: null }),
+    );
+
+    await expect(refresh).rejects.toMatchObject({ code: "SESSION_CHANGED" });
+    expect(getAccessToken()).toBe(NEW_TOKEN);
+    expect(getRefreshToken()).toBe("refresh-new");
+    expect(getSession().username).toBe("finance");
+  });
+
+  it("rejects a protected response that arrives after the session was replaced", async () => {
+    setSession({ access_token: OLD_TOKEN, refresh_token: "refresh-old" }, "admin");
+    const gate = deferred<Response>();
+    vi.mocked(fetch).mockReturnValue(gate.promise);
+
+    const pending = apiFetch("/contracts");
+
+    clearSession();
+    setSession({ access_token: NEW_TOKEN, refresh_token: "refresh-new" }, "finance");
+
+    gate.resolve(jsonResponse({ data: [{ id: "old-operator-contract" }], error: null }));
+
+    await expect(pending).rejects.toMatchObject({ code: "SESSION_CHANGED" });
+  });
+
+  it("does not let an old session's in-flight refresh block a newer session's rotation", async () => {
+    setSession({ access_token: OLD_TOKEN, refresh_token: "refresh-old" }, "admin");
+    const oldGate = deferred<Response>();
+    const newGate = deferred<Response>();
+    let refreshCalls = 0;
+
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (!String(input).endsWith("/auth/refresh")) {
+        return jsonResponse({ data: [], error: null });
+      }
+      refreshCalls += 1;
+      const body = JSON.parse(String(init?.body)) as { refresh_token: string };
+      return body.refresh_token === "refresh-old" ? oldGate.promise : newGate.promise;
+    });
+
+    const oldRefresh = refreshAccessToken();
+
+    clearSession();
+    setSession({ access_token: NEW_TOKEN, refresh_token: "refresh-new" }, "finance");
+    const newRefresh = refreshAccessToken();
+
+    expect(refreshCalls).toBe(2);
+
+    newGate.resolve(
+      jsonResponse({ data: { access_token: "newer-access", refresh_token: "newer-refresh" }, error: null }),
+    );
+    await expect(newRefresh).resolves.toBe("newer-access");
+    expect(getAccessToken()).toBe("newer-access");
+
+    oldGate.resolve(
+      jsonResponse({ data: { access_token: "stale-access", refresh_token: "stale-refresh" }, error: null }),
+    );
+    await expect(oldRefresh).rejects.toMatchObject({ code: "SESSION_CHANGED" });
+    expect(getAccessToken()).toBe("newer-access");
+    expect(getRefreshToken()).toBe("newer-refresh");
   });
 });

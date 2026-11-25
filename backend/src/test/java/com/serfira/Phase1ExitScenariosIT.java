@@ -493,7 +493,7 @@ class Phase1ExitScenariosIT {
 	}
 
 	private static BigDecimal decimal(JsonNode node, String field) {
-		return node.get(field).decimalValue();
+		return new BigDecimal(node.get(field).asText());
 	}
 
 	private FixedClock fixedClock() {

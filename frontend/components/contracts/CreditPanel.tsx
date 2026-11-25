@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useCredit } from "@/hooks/useContract";
+import { useCanReadCredit } from "@/hooks/useSession";
 import { formatDateTime } from "@/lib/format";
 
 /**
@@ -20,10 +21,17 @@ import { formatDateTime } from "@/lib/format";
  * <p>Read-only here: applying credit is a financial action with its own eligibility rules and lands
  * with T33. The balance and the application history come straight from `GET /contracts/{id}/credit`
  * so the audit trail is never reconstructed in the browser.
+ *
+ * <p>The endpoint is limited to `ADMIN_OPERASIONAL`/`FINANCE`, so the panel is not rendered and the
+ * query is not issued for `MANAJEMEN` (defence in depth: the tab is also hidden by the parent).
  */
 export function CreditPanel({ contractId }: { contractId: string }) {
-  const credit = useCredit(contractId);
+  const canRead = useCanReadCredit();
+  const credit = useCredit(contractId, canRead);
 
+  if (!canRead) {
+    return null;
+  }
   if (credit.isPending) {
     return <LoadingSpinner label="Memuat kredit nasabah…" />;
   }

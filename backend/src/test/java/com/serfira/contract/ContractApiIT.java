@@ -97,13 +97,13 @@ class ContractApiIT {
 		assertThat(draft.get("start_date").isNull()).isTrue();
 		// D6: a draft has no schedule, hence no receivable — reported honestly as null.
 		assertThat(draft.get("outstanding").isNull()).isTrue();
-		// Money travels as a plain decimal string, never scientific notation (wire contract).
+		// Money travels as an exact decimal string, never a JSON number or scientific notation (ADR-024).
 		assertThat(created.getResponse().getContentAsString())
-				.contains("\"asset_price\":20000000.00")
-				.contains("\"principal\":16000000.00")
-				.contains("\"down_payment\":4000000.00")
-				.contains("\"interest_rate\":0.0150")
-				.contains("\"penalty_rate_daily\":0.0010");
+				.contains("\"asset_price\":\"20000000.00\"")
+				.contains("\"principal\":\"16000000.00\"")
+				.contains("\"down_payment\":\"4000000.00\"")
+				.contains("\"interest_rate\":\"0.0150\"")
+				.contains("\"penalty_rate_daily\":\"0.0010\"");
 		// principal is computed server-side from asset_price - down_payment.
 		assertThat(decimal(draft, "asset_price")).isEqualByComparingTo("20000000.00");
 		assertThat(decimal(draft, "down_payment")).isEqualByComparingTo("4000000.00");
@@ -539,7 +539,7 @@ class ContractApiIT {
 	}
 
 	private static BigDecimal decimal(JsonNode node, String field) {
-		return node.get(field).decimalValue();
+		return new BigDecimal(node.get(field).asText());
 	}
 
 	private void truncateDomainTables() {

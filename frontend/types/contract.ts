@@ -1,6 +1,6 @@
 /** Wire types for the contract module (FE §2.2–§2.5), snake_case to match the API exactly. */
 
-export type Money = number | string;
+export type Money = string;
 
 export type ContractStatus = "DRAFT" | "ACTIVE" | "CLOSED" | "TERMINATED";
 export type InterestScheme = "FLAT" | "EFFECTIVE";

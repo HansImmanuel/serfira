@@ -14,6 +14,13 @@ interface Decimal {
 
 const DECIMAL_PATTERN = /^-?\d+(?:\.\d+)?$/;
 
+/**
+ * `NUMERIC(19,2)` in scale-2 units: 17 integer digits, so the largest accepted amount is
+ * `99999999999999999.99` (`10^19 - 1` units). Mirrors `DecimalBounds.requireMoneyDomain`, which the
+ * backend applies before any rescaling; a larger value would answer 400 `VALIDATION_ERROR`.
+ */
+const MAX_MONEY_UNITS = 10n ** 19n;
+
 function parse(value: string | number): Decimal | null {
   const text = typeof value === "number" ? String(value) : value.trim();
   if (!DECIMAL_PATTERN.test(text)) {
@@ -64,8 +71,9 @@ function decimalOf(value: string | number, label: string): Decimal {
 /**
  * Validates operator input for a money field and returns the API's scale-2 form.
  *
- * @returns the amount at scale 2, or null when the input is not a plain decimal or is finer than
- *          the 2 decimal places the server accepts (the input is never silently rounded)
+ * @returns the amount at scale 2, or null when the input is not a plain decimal, is finer than the
+ *          2 decimal places the server accepts (the input is never silently rounded), or exceeds
+ *          the `NUMERIC(19,2)` magnitude (17 integer digits)
  */
 export function normalizeMoney(value: string): string | null {
   const parsed = parse(value);
@@ -73,7 +81,14 @@ export function normalizeMoney(value: string): string | null {
     return null;
   }
   const units = rescale(parsed, 2);
-  return units === null ? null : formatUnits(units, 2);
+  if (units === null) {
+    return null;
+  }
+  const magnitude = units < 0n ? -units : units;
+  if (magnitude >= MAX_MONEY_UNITS) {
+    return null;
+  }
+  return formatUnits(units, 2);
 }
 
 /** Adds two scale-2 amounts exactly (used for recognised totals, never for allocation). */

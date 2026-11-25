@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
+import { AccessDenied } from "@/components/shared/AccessDenied";
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { MoneyDisplay } from "@/components/shared/MoneyDisplay";
@@ -18,6 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useStatement } from "@/hooks/useStatement";
+import { useCanReadStatement } from "@/hooks/useSession";
 import { formatDate } from "@/lib/format";
 
 /**
@@ -29,10 +31,32 @@ import { formatDate } from "@/lib/format";
  */
 export function StatementView({ contractId }: { contractId: string }) {
   const [page, setPage] = useState(0);
-  const statement = useStatement(contractId, page);
+  const canRead = useCanReadStatement();
+  const statement = useStatement(contractId, page, canRead);
 
   const rows = statement.data?.content ?? [];
   const totalPages = statement.data?.total_pages ?? 0;
+
+  if (!canRead) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <Button asChild variant="ghost" size="sm" className="-ml-2">
+            <Link href={`/contracts/${contractId}`}>
+              <ArrowLeft className="size-4" aria-hidden="true" />
+              Kembali ke kontrak
+            </Link>
+          </Button>
+          <h1 className="text-xl font-semibold tracking-tight">Rekening Koran</h1>
+        </div>
+        <AccessDenied
+          message="Rekening koran hanya tersedia untuk Admin Operasional dan Finance. Peran Anda tidak memiliki akses ke mutasi ledger kontrak."
+          backHref={`/contracts/${contractId}`}
+          backLabel="Kembali ke kontrak"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

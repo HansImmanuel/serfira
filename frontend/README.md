@@ -38,6 +38,18 @@ SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS=http://localhost:3000
 
 The dev/compose profiles already set it (ADR-023).
 
+### `NEXT_PUBLIC_API_BASE_URL`
+
+Next.js **inlines** `NEXT_PUBLIC_*` values at build time, so the origin baked into the bundle is the
+one present when `next build` ran — not the one present when `next start` runs. The rules:
+
+- Development (`npm run dev`) may omit the variable; it falls back to `http://localhost:8080`.
+- A **production build** must set an explicit absolute `http`/`https` origin. Without it `next build`
+  fails instead of shipping a client that points at localhost.
+- The value must have no credentials, query string or fragment; trailing slashes are stripped.
+- CI builds against the reserved placeholder `https://ci-build.invalid` because it has no deployed API.
+- Rebuild after changing it: editing `.env.local` alone does not change an existing production bundle.
+
 ## Scripts
 
 | Command | What it does |
@@ -79,16 +91,25 @@ frontend/
 - `lib/api.ts` is the only place that knows the `{data, error}` envelope. A 401 on a protected path rotates
   the token pair **once** and replays the request; concurrent 401s share one in-flight refresh because the
   refresh token is single-use. A failed refresh clears the session and reloads `/login`.
+- The session carries a **generation** that changes on login, logout and expiry (a token rotation does not).
+  Async work captures it, so a refresh or a response that belongs to a replaced session is discarded instead
+  of overwriting the newer operator's tokens or cache.
+- Logout clears tokens, the reactive snapshot and the Query cache synchronously, then fires the best-effort
+  revocation with `keepalive` and hard-navigates to `/login`; a failed revocation cannot leave a session
+  behind.
 - `/auth/login`, `/auth/refresh` and `/auth/logout` never carry an access token.
-- `roles` from the JWT decides which buttons are shown (UX only). The backend's role matrix is the
-  enforcement; a forced call still answers 403.
+- `roles` from the JWT decides which buttons and tabs are shown (UX only). The backend's role matrix is the
+  enforcement; a forced call still answers 403. Credit and the ledger statement are limited to
+  `ADMIN_OPERASIONAL`/`FINANCE`; `MANAJEMEN` sees contract detail and the schedule only.
 
 ## Money and dates
 
-Money is a scale-2 decimal string from the API and a scale-2 decimal string on the way back. Validation,
-comparison, rate conversion and the derived schedule totals use `lib/decimal.ts` (BigInt string
-arithmetic) — never `parseFloat`. Display formatting (`Intl`, `id-ID`, `Asia/Jakarta`) is isolated in
-`lib/format.ts`; a missing amount (DRAFT outstanding) renders as `–`.
+Money is an **exact decimal string** from the API (`"20000000.00"`, ADR-024) and a scale-2 decimal string on
+the way back. Validation, comparison, rate conversion and the derived schedule totals use `lib/decimal.ts`
+(BigInt string arithmetic) — never `parseFloat`. Display formatting (`lib/format.ts`) parses the string with
+`BigInt` and formats whole rupiah with `Intl` (`id-ID`, `Asia/Jakarta`), so no amount is ever routed through
+a binary float; a missing amount (DRAFT outstanding) renders as `–`. Operator input is bounded to the
+server's `NUMERIC(19,2)` domain (17 integer digits, scale 2).
 
 ## Tests
 
@@ -96,7 +117,11 @@ arithmetic) — never `parseFloat`. Display formatting (`Intl`, `id-ID`, `Asia/J
 npm test
 ```
 
-Covered: `apiFetch` envelope/error mapping, bearer rules and single-flight refresh + replay, refresh-failure
-logout, the in-memory session store, JWT claim decoding, money/date formatting and exact decimal helpers,
-the create-contract Zod schema and payload mapping, the per-mount `Idempotency-Key`, contract-list
-loading/empty/error states and DRAFT `–`, role gating, and the installment table's derived totals.
+Covered: `apiFetch` envelope/error mapping, bearer rules, single-flight refresh + replay, stale-session
+guards (a replaced session is never overwritten by an old refresh or response), refresh-failure logout,
+cache clearing on logout/login, the in-memory session store, JWT claim decoding, exact money/date formatting
+including values beyond `Number.MAX_SAFE_INTEGER`, exact decimal helpers and the `NUMERIC(19,2)` bound, the
+create-contract Zod schema and payload mapping (phone normalization, money magnitude), the per-mount
+`Idempotency-Key` with its insecure-context fallback, API base-URL validation, contract-list
+loading/empty/error states and DRAFT `–`, role gating for credit/statement, and the installment table's
+derived totals.

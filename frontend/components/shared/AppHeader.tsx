@@ -1,21 +1,25 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useSession } from "@/hooks/useSession";
 import { logout } from "@/lib/auth";
-import { LOGIN_PATH } from "@/lib/navigation";
+import { redirectToLogin } from "@/lib/navigation";
 
+/**
+ * Session header. Logout clears the local session synchronously (tokens, snapshot, Query cache)
+ * and then hard-navigates to `/login`, so no cached screen from the previous operator survives the
+ * route change; the refresh-token revocation is fired first and allowed to finish in the
+ * background (`keepalive`).
+ */
 export function AppHeader() {
   const session = useSession();
-  const router = useRouter();
 
-  async function handleLogout() {
-    await logout();
-    router.replace(LOGIN_PATH);
+  function handleLogout() {
+    void logout();
+    redirectToLogin();
   }
 
   return (
