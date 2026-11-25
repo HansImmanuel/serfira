@@ -176,4 +176,82 @@ describe("StatementView filters", () => {
       expect(lastPath()).toBe("/contracts/c1/statement?page=0&size=20&ref_type=BILLING&from=2026-12-01"),
     );
   });
+
+  describe("while the next filter or page is loading", () => {
+    const BILLING_ROW: StatementRow = {
+      ...ROW,
+      ref_type: "BILLING",
+      ref_id: "99999999-0000-4000-8000-000000000000",
+      description: "Penagihan bunga",
+    };
+
+    /** First request answers at once; every later one waits until `release` is called with its page. */
+    function deferAfterFirstRequest() {
+      let release: (page: PageResponse<StatementRow>) => void = () => {};
+      let calls = 0;
+      vi.mocked(apiFetch).mockImplementation((() => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve({ ...pageOf([PAYMENT_ROW]), total_elements: 60, total_pages: 3 });
+        }
+        return new Promise((resolve) => {
+          release = resolve as typeof release;
+        });
+      }) as never);
+      return (page: PageResponse<StatementRow>) => release(page);
+    }
+
+    it("hides the previous filter's rows behind an explicit loading state, then shows the matching ones", async () => {
+      const release = deferAfterFirstRequest();
+      renderWithQueryClient(<StatementView contractId="c1" />);
+      await screen.findByText("Pembayaran angsuran");
+
+      await chooseRefType("BILLING");
+
+      expect(await screen.findByText("Memuat rekening koran…")).toBeInTheDocument();
+      expect(screen.queryByText("Pembayaran angsuran")).not.toBeInTheDocument();
+      expect(screen.queryByText("60 baris", { exact: false })).not.toBeInTheDocument();
+
+      release({ ...pageOf([BILLING_ROW]), total_elements: 1 });
+
+      expect(await screen.findByText("Penagihan bunga")).toBeInTheDocument();
+      expect(screen.queryByText("Memuat rekening koran…")).not.toBeInTheDocument();
+      expect(screen.getByText(/1 baris/)).toBeInTheDocument();
+    });
+
+    it("hides the previous page's rows and disables paging until the requested page arrives", async () => {
+      const release = deferAfterFirstRequest();
+      const user = userEvent.setup();
+      renderWithQueryClient(<StatementView contractId="c1" />);
+      await screen.findByText("Pembayaran angsuran");
+
+      await user.click(screen.getByRole("button", { name: /Berikutnya/ }));
+
+      expect(await screen.findByText("Memuat rekening koran…")).toBeInTheDocument();
+      expect(screen.queryByText("Pembayaran angsuran")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Berikutnya/ })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /Sebelumnya/ })).toBeDisabled();
+
+      release({ content: [BILLING_ROW], page: 1, size: 20, total_elements: 60, total_pages: 3 });
+
+      expect(await screen.findByText("Penagihan bunga")).toBeInTheDocument();
+      expect(screen.getByText(/halaman 2 dari 3/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Sebelumnya/ })).toBeEnabled();
+      expect(screen.getByRole("button", { name: /Berikutnya/ })).toBeEnabled();
+    });
+
+    it("still resets to page zero and keeps the inverted-range guard while loading", async () => {
+      const release = deferAfterFirstRequest();
+      renderWithQueryClient(<StatementView contractId="c1" />);
+      await screen.findByText("Pembayaran angsuran");
+
+      fireEvent.change(screen.getByLabelText("Dari"), { target: { value: "2026-12-01" } });
+      fireEvent.change(screen.getByLabelText("Sampai"), { target: { value: "2026-11-01" } });
+      expect(await screen.findByText("Tanggal awal tidak boleh setelah tanggal akhir.")).toBeInTheDocument();
+      // The valid "from" alone was sent (page 0); the inverted pair never was.
+      expect(lastPath()).toBe("/contracts/c1/statement?page=0&size=20&from=2026-12-01");
+      release({ ...pageOf([BILLING_ROW]), total_elements: 1 });
+      expect(await screen.findByText("Penagihan bunga")).toBeInTheDocument();
+    });
+  });
 });

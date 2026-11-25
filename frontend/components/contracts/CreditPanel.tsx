@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/table";
 import { useCredit, useInstallments } from "@/hooks/useContract";
 import { useCanReadCredit, useCanWrite } from "@/hooks/useSession";
-import { compareMoney } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/format";
 import type { ContractStatus } from "@/types/contract";
 
@@ -41,19 +40,29 @@ export function CreditPanel({ contractId, contractStatus }: { contractId: string
   if (credit.isPending) {
     return <LoadingSpinner label="Memuat kredit nasabah…" />;
   }
-  if (credit.isError) {
+  const data = credit.data;
+  if (data === undefined) {
     return <ErrorAlert error={credit.error} title="Kredit tidak dapat dimuat" onRetry={() => void credit.refetch()} />;
   }
 
-  const applications = credit.data.applications;
-  const canApply =
-    canWrite && contractStatus === "ACTIVE" && compareMoney(credit.data.available_balance, "0.00") > 0;
+  const applications = data.applications;
+  // Role and status only: whether anything is left to apply is the dialog's own concern, so an outcome the
+  // operator has not read yet survives the balance dropping to zero after an apply that did commit.
+  const canApply = canWrite && contractStatus === "ACTIVE";
 
   return (
     <div className="space-y-4">
+      {credit.isError ? (
+        <ErrorAlert
+          error={credit.error}
+          title="Saldo kredit mungkin tidak terbaru"
+          onRetry={() => void credit.refetch()}
+        />
+      ) : null}
+
       {canApply ? (
         <div className="flex justify-end">
-          <ApplyCreditDialog contractId={contractId} availableBalance={credit.data.available_balance} />
+          <ApplyCreditDialog contractId={contractId} availableBalance={data.available_balance} />
         </div>
       ) : null}
 
@@ -61,13 +70,13 @@ export function CreditPanel({ contractId, contractStatus }: { contractId: string
         <div className="rounded-lg border p-4">
           <div className="text-xs text-muted-foreground">Total kredit</div>
           <div className="text-lg font-semibold">
-            <MoneyDisplay value={credit.data.total_credit} />
+            <MoneyDisplay value={data.total_credit} />
           </div>
         </div>
         <div className="rounded-lg border p-4">
           <div className="text-xs text-muted-foreground">Saldo tersedia</div>
           <div className="text-lg font-semibold">
-            <MoneyDisplay value={credit.data.available_balance} />
+            <MoneyDisplay value={data.available_balance} />
           </div>
         </div>
       </div>

@@ -7,7 +7,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return { ...actual, apiFetch: vi.fn() };
 });
 
-vi.mock("@/lib/idempotency", () => ({ newIdempotencyKey: vi.fn() }));
+vi.mock("@/lib/idempotency", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/idempotency")>();
+  return { ...actual, newIdempotencyKey: vi.fn() };
+});
 
 import { RecordPaymentForm } from "@/components/payments/RecordPaymentForm";
 import { ApiError, apiFetch } from "@/lib/api";
@@ -88,18 +91,24 @@ describe("RecordPaymentForm", () => {
     expect(sentKey(1)).toBe("key-1");
   });
 
-  it.each(["CONFLICT", "IDEMPOTENCY_KEY_EXPIRED"])(
-    "on %s shows the key-reuse message and a restart action instead of retrying",
-    async (code) => {
+  it.each([
+    ["CONFLICT", /Formulir ini sudah dipakai untuk pembayaran dengan isian berbeda/],
+    ["IDEMPOTENCY_KEY_EXPIRED", /Kunci formulir ini sudah tidak berlaku, dan pembayaran sebelumnya mungkin sudah tercatat/],
+  ])(
+    "on %s shows the matching key message and a restart action instead of retrying",
+    async (code, message) => {
       vi.mocked(apiFetch).mockRejectedValue(new ApiError(code, "Idempotency key conflict", 409));
       const { user, onRestart } = renderForm();
 
       await user.type(screen.getByLabelText("Jumlah Bayar"), "1500000");
       await user.click(screen.getByRole("button", { name: "Simpan Pembayaran" }));
 
-      expect(
-        await screen.findByText(/Formulir ini sudah dipakai untuk pembayaran dengan isian berbeda/),
-      ).toBeInTheDocument();
+      expect(await screen.findByText(message)).toBeInTheDocument();
+      expect(screen.getByText(/Periksa rekening koran kontrak lebih dulu/)).toBeInTheDocument();
+      // An expired key does not prove the body differed, so only CONFLICT may claim "different values".
+      if (code === "IDEMPOTENCY_KEY_EXPIRED") {
+        expect(screen.queryByText(/isian berbeda/)).not.toBeInTheDocument();
+      }
       expect(screen.getByRole("button", { name: "Simpan Pembayaran" })).toBeDisabled();
 
       await user.click(screen.getByRole("button", { name: "Mulai form baru" }));

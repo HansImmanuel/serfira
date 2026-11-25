@@ -1,6 +1,6 @@
 "use client";
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { apiFetch } from "@/lib/api";
 import type { PageResponse } from "@/types/api";
@@ -36,6 +36,10 @@ export function statementPath(id: string, page: number, filters: StatementFilter
  * Ledger-literal statement page (FE §2.7). Filtering and paging are the API's (`ref_type`, `from`,
  * `to`, `page`, `size`), never done in the browser.
  *
+ * <p>Previous results are deliberately not kept as placeholder data: this is a financial ledger, and rows
+ * from another filter or page must never stand in for the one being loaded. Each new key therefore renders
+ * as pending until its own response arrives.
+ *
  * <p>The key stays under `["contract", id]`, so a payment or credit application invalidates every
  * cached page and filter. `enabled` lets the caller suppress the request for a role the matcher
  * table denies; the page then renders an access-denied state instead of provoking a 403.
@@ -44,7 +48,6 @@ export function useStatement(id: string, page: number, filters: StatementFilters
   return useQuery({
     queryKey: ["contract", id, "statement", page, filters],
     queryFn: () => apiFetch<PageResponse<StatementRow>>(statementPath(id, page, filters)),
-    placeholderData: keepPreviousData,
     enabled: id.length > 0 && enabled,
   });
 }

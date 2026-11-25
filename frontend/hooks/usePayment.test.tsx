@@ -77,18 +77,33 @@ describe("useCreatePayment", () => {
     }
   });
 
-  it("does not invalidate anything when the payment is rejected", async () => {
-    vi.mocked(apiFetch).mockRejectedValue(new ApiError("CONTRACT_STATE_INVALID", "Kontrak tidak aktif", 409));
+  it.each([
+    ["a network error", () => new TypeError("Failed to fetch")],
+    ["a 5xx response", () => new ApiError("INTERNAL_ERROR", "Terjadi kesalahan", 500)],
+    ["a rejection", () => new ApiError("CONTRACT_STATE_INVALID", "Kontrak tidak aktif", 409)],
+  ])("still invalidates the contract prefix and the list after %s, since the payment may have committed", async (_name, makeError) => {
+    vi.mocked(apiFetch).mockRejectedValue(makeError());
     const { hook, queryClient } = setup();
 
     await act(async () => {
-      await expect(
-        hook.result.current.mutateAsync({ payload: PAYLOAD, idempotencyKey: "key-1" }),
-      ).rejects.toBeInstanceOf(ApiError);
+      await expect(hook.result.current.mutateAsync({ payload: PAYLOAD, idempotencyKey: "key-1" })).rejects.toThrow();
     });
 
     for (const key of SEEDED_KEYS) {
-      expect(queryClient.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(false);
+      expect(queryClient.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(true);
     }
+  });
+
+  it("keeps the same Idempotency-Key on a retry after an ambiguous failure and replays the stored payment", async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValueOnce(PAYMENT);
+    const { hook } = setup();
+
+    await act(async () => {
+      await expect(hook.result.current.mutateAsync({ payload: PAYLOAD, idempotencyKey: "key-1" })).rejects.toThrow();
+    });
+    await act(() => hook.result.current.mutateAsync({ payload: PAYLOAD, idempotencyKey: "key-1" }));
+
+    const keys = vi.mocked(apiFetch).mock.calls.map(([, init]) => init?.headers?.["Idempotency-Key"]);
+    expect(keys).toEqual(["key-1", "key-1"]);
   });
 });

@@ -247,7 +247,10 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 **Tabs:**
 1. **Jadwal Angsuran** — tabel installments (lihat §2.5).
 2. **Pembayaran** — list payments dengan status POSTED/VOIDED.
-3. **Kredit** — saldo available credit + history application.
+3. **Kredit** — saldo available credit + history application. "Terapkan Kredit" (ADMIN_OPERASIONAL, ACTIVE)
+   memakai satu `Idempotency-Key` per operasi apply: retry setelah respons hilang memakai key dan jumlah yang
+   sama (server me-replay), key tetap sama walau dialog ditutup/dibuka, dan key baru hanya dibuat setelah
+   sukses atau lewat "Mulai form baru" saat key terpakai (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`).
 4. **Ledger** — link ke statement.
 
 **Actions (ADMIN_OPERASIONAL only):**

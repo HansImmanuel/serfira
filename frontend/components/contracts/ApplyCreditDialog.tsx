@@ -4,6 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,9 +17,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useIdempotencyKey } from "@/hooks/useIdempotencyKey";
 import { useApplyCredit } from "@/hooks/useContract";
 import { compareMoney, normalizeMoney } from "@/lib/decimal";
 import { formatMoney } from "@/lib/format";
+import { isSpentKeyError } from "@/lib/idempotency";
 import type { ApplyCreditPayload, Money } from "@/types/contract";
 
 /**
@@ -44,49 +47,72 @@ export function validateCreditAmount(
 }
 
 /**
- * Apply customer credit (T33, Addendum §2.2): reuses the payment waterfall server-side against the
- * oldest due installment with recognized receivable (ADR-009). The browser only chooses how much.
+ * One logical credit-apply operation: its `Idempotency-Key`, the amount typed, the attempt's outcome and the
+ * dialog's open state all live here, and none of it is reset by closing the dialog.
+ *
+ * <p>That is deliberate (FE §1.4, ADR-017): an apply whose response was lost may still have committed, and
+ * closing then reopening the dialog must not turn the retry into a second, unrelated application. Only
+ * `ApplyCreditDialog` remounts this component — after a success, or when the operator explicitly starts a new
+ * form — and a remount is the only thing that mints a new key.
  */
-export function ApplyCreditDialog({ contractId, availableBalance }: { contractId: string; availableBalance: Money }) {
-  const [open, setOpen] = useState(false);
+function ApplyCreditOperation({
+  contractId,
+  availableBalance,
+  initiallyOpen,
+  onCompleted,
+  onRestart,
+}: {
+  contractId: string;
+  availableBalance: Money;
+  initiallyOpen: boolean;
+  onCompleted: () => void;
+  onRestart: () => void;
+}) {
+  const idempotencyKey = useIdempotencyKey();
+  // The ceiling the operator saw when this operation began. After an ambiguous failure the live balance
+  // may already have dropped (the apply committed), yet a retry of the same amount must still be allowed:
+  // the server replays it. The server re-checks the balance for any request it has not seen.
+  const [startingBalance] = useState(availableBalance);
+  const [open, setOpen] = useState(initiallyOpen);
   const [amount, setAmount] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
   const mutation = useApplyCredit(contractId);
+  const spentKeyError = mutation.isError && isSpentKeyError(mutation.error) ? mutation.error : null;
 
   function changeOpen(next: boolean) {
     if (!next && mutation.isPending) {
-      // Closing now would hide the outcome of an apply that has no Idempotency-Key to retry safely.
+      // Closing now would hide the outcome of an apply that is still in flight.
       return;
     }
     setOpen(next);
-    if (next) {
-      setAmount("");
-      setFieldError(null);
-      mutation.reset();
-    }
   }
 
   async function handleApply() {
-    const result = validateCreditAmount(amount, availableBalance);
+    const result = validateCreditAmount(amount, startingBalance);
     if ("error" in result) {
       setFieldError(result.error);
       return;
     }
     setFieldError(null);
     try {
-      const applied = await mutation.mutateAsync(result.payload);
+      const applied = await mutation.mutateAsync({ payload: result.payload, idempotencyKey });
       setOpen(false);
       toast.success(`Kredit diterapkan: ${formatMoney(applied.applied_amount)}.`);
+      onCompleted();
     } catch {
-      // The mutation error renders inside the dialog; keep it open so the operator can read it.
+      // The mutation error renders inside the dialog and stays until the next attempt; the key is kept.
     }
   }
 
+  const showTrigger = open || compareMoney(availableBalance, "0.00") > 0;
+
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">Terapkan Kredit</Button>
-      </DialogTrigger>
+      {showTrigger ? (
+        <DialogTrigger asChild>
+          <Button size="sm">Terapkan Kredit</Button>
+        </DialogTrigger>
+      ) : null}
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Terapkan kredit nasabah?</DialogTitle>
@@ -95,7 +121,30 @@ export function ApplyCreditDialog({ contractId, availableBalance }: { contractId
             bunga, lalu pokok. Hanya piutang yang sudah diakui yang dikurangi.
           </DialogDescription>
         </DialogHeader>
-        {mutation.isError ? <ErrorAlert error={mutation.error} title="Kredit tidak dapat diterapkan" /> : null}
+        {spentKeyError !== null ? (
+          <Alert variant="destructive">
+            <AlertTitle>Kredit tidak diterapkan</AlertTitle>
+            <AlertDescription>
+              <span>
+                Permintaan ini tidak dapat diulang dengan isian ini: kunci formulirnya sudah dipakai atau tidak
+                berlaku lagi, dan penerapan sebelumnya mungkin sudah tercatat. Periksa riwayat pemakaian kredit
+                lebih dulu agar kredit tidak diterapkan dua kali, lalu mulai form baru.
+              </span>
+              <span className="ml-2 font-mono text-xs opacity-70">{spentKeyError.code}</span>
+              <Button type="button" variant="outline" size="sm" className="mt-2" onClick={onRestart}>
+                Mulai form baru
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : mutation.isError ? (
+          <div className="space-y-2">
+            <ErrorAlert error={mutation.error} title="Kredit tidak dapat diterapkan" />
+            <p className="text-xs text-muted-foreground">
+              Jika hasilnya belum pasti, Anda dapat mengirim ulang dengan jumlah yang sama: permintaan yang sama
+              tidak akan menerapkan kredit dua kali.
+            </p>
+          </div>
+        ) : null}
         <div className="space-y-1.5">
           <Label htmlFor="credit-amount">Jumlah</Label>
           <Input
@@ -114,14 +163,37 @@ export function ApplyCreditDialog({ contractId, availableBalance }: { contractId
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)} disabled={mutation.isPending}>
+          <Button variant="outline" onClick={() => changeOpen(false)} disabled={mutation.isPending}>
             Batal
           </Button>
-          <Button onClick={handleApply} disabled={mutation.isPending}>
+          <Button onClick={handleApply} disabled={mutation.isPending || spentKeyError !== null}>
             {mutation.isPending ? "Menerapkan…" : "Terapkan"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Apply customer credit (T33, Addendum §2.2): reuses the payment waterfall server-side against the
+ * oldest due installment with recognized receivable (ADR-009). The browser only chooses how much.
+ *
+ * <p>The endpoint is retry-safe through an `Idempotency-Key` (TS §2.2, ADR-017): the same key and amount
+ * replay the stored result, a different amount under the same key is 409 `CONFLICT`. This wrapper stays
+ * mounted whatever the balance does, so an outcome the operator has not yet read is never unmounted away.
+ */
+export function ApplyCreditDialog({ contractId, availableBalance }: { contractId: string; availableBalance: Money }) {
+  const [operation, setOperation] = useState({ id: 0, initiallyOpen: false });
+
+  return (
+    <ApplyCreditOperation
+      key={operation.id}
+      contractId={contractId}
+      availableBalance={availableBalance}
+      initiallyOpen={operation.initiallyOpen}
+      onCompleted={() => setOperation((current) => ({ id: current.id + 1, initiallyOpen: false }))}
+      onRestart={() => setOperation((current) => ({ id: current.id + 1, initiallyOpen: true }))}
+    />
   );
 }

@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,7 +15,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return { ...actual, apiFetch: vi.fn() };
 });
 
-vi.mock("@/lib/idempotency", () => ({ newIdempotencyKey: vi.fn() }));
+vi.mock("@/lib/idempotency", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/idempotency")>();
+  return { ...actual, newIdempotencyKey: vi.fn() };
+});
 
 import { RecordPaymentView } from "@/components/payments/RecordPaymentView";
 import { RequireWrite } from "@/components/shared/RequireWrite";
@@ -194,14 +197,132 @@ describe("RecordPaymentView after the payment changes the contract", () => {
     expect(screen.queryByRole("button", { name: "Catat pembayaran lain" })).not.toBeInTheDocument();
   });
 
-  it("still shows the result when the contract refetch fails after posting", async () => {
+  it("offers another payment only once the refreshed contract is confirmed ACTIVE", async () => {
+    mockContractAfterPayment(() => contract("ACTIVE"));
+    await pay();
+
+    expect(await screen.findByText("Pembayaran tercatat")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Catat pembayaran lain" })).toBeInTheDocument();
+    expect(screen.queryByText("Status kontrak belum dapat dipastikan")).not.toBeInTheDocument();
+  });
+
+  it("still shows the result when the contract refetch fails after posting, with no follow-up action", async () => {
+    // The cache still holds the ACTIVE contract from before the payment; it must not be trusted.
     mockContractAfterPayment(() => {
       throw new ApiError("INTERNAL_ERROR", "Server error", 500);
     });
     await pay();
 
     expect(await screen.findByText("Pembayaran tercatat")).toBeInTheDocument();
+    expect(screen.getByText("PAY-202611-0001")).toBeInTheDocument();
     expect(screen.queryByText("Kontrak tidak dapat dimuat")).not.toBeInTheDocument();
+    expect(screen.getByText("Status kontrak belum dapat dipastikan")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Catat pembayaran lain" })).not.toBeInTheDocument();
+    for (const link of screen.getAllByRole("link", { name: "Kembali ke kontrak" })) {
+      expect(link).toHaveAttribute("href", "/contracts/c1");
+    }
+  });
+
+  it("gives no credit advice when the refetch failed, even if the payment left excess", async () => {
+    let paid = false;
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === "/payments") {
+        paid = true;
+        return {
+          ...PAYMENT,
+          excess_amount: "50000.00",
+          allocations: [{ installment_id: null, allocation_type: "EXCESS", amount: "50000.00" }],
+        } as never;
+      }
+      if (String(path).endsWith("/installments")) {
+        return [] as never;
+      }
+      if (paid) {
+        throw new ApiError("INTERNAL_ERROR", "Server error", 500);
+      }
+      return contract("ACTIVE") as never;
+    });
+    await pay();
+
+    expect(await screen.findByText(/disimpan sebagai kredit nasabah/)).toBeInTheDocument();
+    expect(screen.queryByText(/Terapkan dari tab Kredit/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Catat pembayaran lain" })).not.toBeInTheDocument();
+  });
+
+  it("gives no credit advice once the final payment has closed the contract", async () => {
+    let paid = false;
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === "/payments") {
+        paid = true;
+        return { ...PAYMENT, excess_amount: "50000.00" } as never;
+      }
+      if (String(path).endsWith("/installments")) {
+        return [] as never;
+      }
+      return (paid ? contract("CLOSED") : contract("ACTIVE")) as never;
+    });
+    await pay();
+
+    expect(await screen.findByText(/disimpan sebagai kredit nasabah/)).toBeInTheDocument();
+    expect(screen.queryByText(/Terapkan dari tab Kredit/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Status kontrak belum dapat dipastikan")).not.toBeInTheDocument();
+  });
+});
+
+describe("RecordPaymentView when a background contract refetch fails before posting", () => {
+  beforeEach(() => {
+    clearSession();
+    setSession({ access_token: accessTokenWithRoles(["ADMIN_OPERASIONAL"]), refresh_token: "r1" }, "admin");
+    vi.mocked(apiFetch).mockReset();
+    let issued = 0;
+    vi.mocked(newIdempotencyKey).mockImplementation(() => `key-${++issued}`);
+  });
+
+  it("keeps the form mounted, so a retry after a lost response reuses the same Idempotency-Key", async () => {
+    let contractFails = false;
+    let attempt = 0;
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === "/payments") {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new TypeError("Failed to fetch");
+        }
+        return PAYMENT as never;
+      }
+      if (String(path).endsWith("/installments")) {
+        return [] as never;
+      }
+      if (contractFails) {
+        throw new ApiError("INTERNAL_ERROR", "Server error", 500);
+      }
+      return contract("ACTIVE") as never;
+    });
+    const user = userEvent.setup();
+    const { queryClient } = renderWithQueryClient(<RecordPaymentView contractId="c1" />);
+
+    await user.type(await screen.findByLabelText("Jumlah Bayar"), "1500000");
+    await user.click(screen.getByRole("button", { name: "Simpan Pembayaran" }));
+    expect(await screen.findByText("Failed to fetch")).toBeInTheDocument();
+
+    contractFails = true;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["contract", "c1"] });
+    });
+
+    expect(await screen.findByText("Data kontrak mungkin tidak terbaru")).toBeInTheDocument();
+    expect(screen.getByLabelText("Jumlah Bayar")).toHaveValue("1500000");
+
+    await user.click(screen.getByRole("button", { name: "Simpan Pembayaran" }));
+    await screen.findByText("Pembayaran tercatat");
+    expect(paymentKeys()).toEqual(["key-1", "key-1"]);
+  });
+
+  it("shows the blocking error only when no contract was ever loaded", async () => {
+    vi.mocked(apiFetch).mockRejectedValue(new ApiError("INTERNAL_ERROR", "Server error", 500));
+    renderWithQueryClient(<RecordPaymentView contractId="c1" />);
+
+    expect(await screen.findByText("Kontrak tidak dapat dimuat")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Jumlah Bayar")).not.toBeInTheDocument();
   });
 });
 

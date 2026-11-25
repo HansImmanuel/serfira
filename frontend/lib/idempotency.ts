@@ -1,3 +1,5 @@
+import { ApiError } from "@/lib/api";
+
 /**
  * Idempotency-key generation (ADR-007, FE §1.4).
  *
@@ -26,4 +28,17 @@ function uuidV4FromRandomValues(): string {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * Codes that mean the key this form holds can no longer be used for the request in front of the operator:
+ * the key was already used for a different body (409 `CONFLICT`) or is past its retention window
+ * (`IDEMPOTENCY_KEY_EXPIRED`, ADR-017). Retrying with the same key cannot succeed, and silently minting a
+ * new one could repeat money movement if the first attempt did commit — so the form offers an explicit
+ * restart after the operator has checked the outcome.
+ */
+const SPENT_KEY_CODES: ReadonlySet<string> = new Set(["CONFLICT", "IDEMPOTENCY_KEY_EXPIRED"]);
+
+export function isSpentKeyError(error: unknown): error is ApiError {
+  return error instanceof ApiError && SPENT_KEY_CODES.has(error.code);
 }

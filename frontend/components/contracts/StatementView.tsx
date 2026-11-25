@@ -71,6 +71,8 @@ export function StatementView({ contractId }: { contractId: string }) {
   const rows = statement.data?.content ?? [];
   const totalPages = statement.data?.total_pages ?? 0;
   const rangeInvalid = isInvertedRange(inputs);
+  // The pager waits for the page in flight: a second request mid-load would only queue a confusing transition.
+  const loading = statement.isFetching;
 
   function updateFilters(change: Partial<StatementFilters>) {
     const next = { ...inputs, ...change };
@@ -242,14 +244,19 @@ export function StatementView({ contractId }: { contractId: string }) {
             : `${statement.data.total_elements} baris · halaman ${statement.data.page + 1} dari ${Math.max(totalPages, 1)}`}
         </span>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((current) => current - 1)}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page === 0 || loading}
+            onClick={() => setPage((current) => current - 1)}
+          >
             <ChevronLeft className="size-4" aria-hidden="true" />
             Sebelumnya
           </Button>
           <Button
             variant="outline"
             size="sm"
-            disabled={page + 1 >= totalPages}
+            disabled={page + 1 >= totalPages || loading}
             onClick={() => setPage((current) => current + 1)}
           >
             Berikutnya

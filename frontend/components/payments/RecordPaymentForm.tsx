@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { useIdempotencyKey } from "@/hooks/useIdempotencyKey";
 import { useCreatePayment } from "@/hooks/usePayment";
-import { ApiError } from "@/lib/api";
+import { isSpentKeyError } from "@/lib/idempotency";
 import {
   PAYMENT_CHANNEL_OPTIONS,
   emptyPaymentValues,
@@ -26,18 +26,6 @@ import {
   type PaymentValues,
 } from "@/lib/schemas/payment";
 import type { Payment } from "@/types/payment";
-
-/**
- * A spent key means this form's `Idempotency-Key` was already used for a different body (409
- * `CONFLICT`) or is past its retention window (`IDEMPOTENCY_KEY_EXPIRED`, ADR-017). Retrying with the
- * same key cannot succeed, and silently minting a new one could receive the money twice if the first
- * attempt did commit — so the operator restarts the form deliberately after checking the statement.
- */
-const SPENT_KEY_CODES = new Set(["CONFLICT", "IDEMPOTENCY_KEY_EXPIRED"]);
-
-function isSpentKey(error: unknown): boolean {
-  return error instanceof ApiError && SPENT_KEY_CODES.has(error.code);
-}
 
 function FieldError({ message }: { message: string | undefined }) {
   return message === undefined ? null : (
@@ -76,7 +64,9 @@ export function RecordPaymentForm({
     defaultValues: emptyPaymentValues,
   });
 
-  const keySpent = mutation.isError && isSpentKey(mutation.error);
+  // A spent key (ADR-017): the same key can no longer be used for this request, so restart is explicit.
+  const spentKeyError = mutation.isError && isSpentKeyError(mutation.error) ? mutation.error : null;
+  const keySpent = spentKeyError !== null;
 
   async function onSubmit(values: PaymentValues) {
     try {
@@ -97,8 +87,10 @@ export function RecordPaymentForm({
           <AlertTitle>Pembayaran tidak diproses</AlertTitle>
           <AlertDescription>
             <span>
-              Formulir ini sudah dipakai untuk pembayaran dengan isian berbeda. Periksa rekening koran kontrak
-              lebih dulu agar pembayaran tidak tercatat dua kali, lalu mulai form baru.
+              {spentKeyError?.code === "IDEMPOTENCY_KEY_EXPIRED"
+                ? "Kunci formulir ini sudah tidak berlaku, dan pembayaran sebelumnya mungkin sudah tercatat. "
+                : "Formulir ini sudah dipakai untuk pembayaran dengan isian berbeda. "}
+              Periksa rekening koran kontrak lebih dulu agar pembayaran tidak tercatat dua kali, lalu mulai form baru.
             </span>
             <Button type="button" variant="outline" size="sm" className="mt-2" onClick={onRestart}>
               Mulai form baru

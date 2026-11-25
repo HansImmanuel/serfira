@@ -42,17 +42,23 @@ export function useCredit(id: string, enabled = true) {
 
 /**
  * Applies available customer credit to the oldest due receivable (`ADMIN_OPERASIONAL` only, ADR-015).
- * The endpoint takes no `Idempotency-Key` by design, so the dialog's disabled button is the only
- * double-submit guard. The whole contract prefix — balance, installments and statement — plus the
- * contract list are invalidated once the call settles, success or not: a timed-out apply may still have
- * committed, and the dialog must validate the next attempt against the real balance.
+ * The caller owns the `Idempotency-Key` (one per logical apply operation, ADR-017): a retry after a lost
+ * response replays the stored result instead of applying credit twice. The whole contract prefix — balance,
+ * installments and statement — plus the contract list are invalidated once the call settles, success or
+ * not: an apply whose response was lost may still have committed, and no screen may keep the old balance.
  */
+export interface ApplyCreditCommand {
+  payload: ApplyCreditPayload;
+  idempotencyKey: string;
+}
+
 export function useApplyCredit(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: ApplyCreditPayload) =>
+    mutationFn: ({ payload, idempotencyKey }: ApplyCreditCommand) =>
       apiFetch<CreditApplicationResult>(`/contracts/${id}/credit/apply`, {
         method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify(payload),
       }),
     onSettled: async () => {

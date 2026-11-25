@@ -19,7 +19,7 @@ import { periodLabel } from "@/components/contracts/installmentLabels";
 import { PaymentResult } from "@/components/payments/PaymentResult";
 import { apiFetch } from "@/lib/api";
 import { formatDateTime, formatMoney } from "@/lib/format";
-import type { Installment } from "@/types/contract";
+import type { ContractStatus, Installment } from "@/types/contract";
 import type { Payment } from "@/types/payment";
 
 import { renderWithQueryClient } from "../../test/utils";
@@ -85,9 +85,16 @@ describe("PaymentResult", () => {
     vi.mocked(apiFetch).mockResolvedValue(INSTALLMENTS);
   });
 
-  function renderResult(payment: Payment = PAYMENT) {
+  function renderResult(payment: Payment = PAYMENT, contractStatus: ContractStatus | null = "ACTIVE") {
     const onRecordAnother = vi.fn();
-    renderWithQueryClient(<PaymentResult contractId="c1" payment={payment} onRecordAnother={onRecordAnother} />);
+    renderWithQueryClient(
+      <PaymentResult
+        contractId="c1"
+        payment={payment}
+        onRecordAnother={onRecordAnother}
+        contractStatus={contractStatus}
+      />,
+    );
     return { onRecordAnother, user: userEvent.setup() };
   }
 
@@ -131,13 +138,23 @@ describe("PaymentResult", () => {
     expect(onRecordAnother).toHaveBeenCalledTimes(1);
   });
 
-  it("drops the apply-credit advice and the record-another action once the contract is no longer active", () => {
-    renderWithQueryClient(
-      <PaymentResult contractId="c1" payment={PAYMENT} onRecordAnother={vi.fn()} contractActive={false} />,
-    );
+  it("drops the apply-credit advice and the record-another action once the contract is closed", () => {
+    renderResult(PAYMENT, "CLOSED");
 
     expect(screen.getByText(/disimpan sebagai kredit nasabah/)).toBeInTheDocument();
     expect(screen.queryByText(/Terapkan dari tab Kredit/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Catat pembayaran lain" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Status kontrak belum dapat dipastikan")).not.toBeInTheDocument();
+  });
+
+  it("offers neither follow-up action while the contract status is unknown, and says why", () => {
+    renderResult(PAYMENT, null);
+
+    expect(screen.getByText("PAY-202611-0007")).toBeInTheDocument();
+    expect(screen.getByText("Status kontrak belum dapat dipastikan")).toBeInTheDocument();
+    expect(screen.getByText(/disimpan sebagai kredit nasabah/)).toBeInTheDocument();
+    expect(screen.queryByText(/Terapkan dari tab Kredit/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Catat pembayaran lain" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Kembali ke kontrak" })).toBeInTheDocument();
   });
 });

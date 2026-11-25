@@ -138,4 +138,8 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
       - Remediasi review akhir: hasil pembayaran tetap tampil walau pembayaran itu menutup kontrak
         (maturity), saldo kredit dimuat ulang setelah apply gagal, dialog kredit tidak bisa ditutup saat
         request berjalan, dan filter ref type tetap berlaku saat rentang tanggal terbalik
+      - Remediasi review kedua (PR #24): `POST /contracts/{id}/credit/apply` kini wajib `Idempotency-Key`
+        (ADR-017 addendum; replay, 409 `CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`), dialog kredit memakai satu key
+        per operasi, invalidasi pembayaran di `onSettled`, rekening koran tidak menampilkan baris lama saat
+        memuat, hasil pembayaran tidak menawarkan aksi bila status kontrak belum terkonfirmasi
 - [ ] T34 — G5: demo script, seed data, README close-out

@@ -20,6 +20,7 @@ import { useInstallments } from "@/hooks/useContract";
 import { compareMoney } from "@/lib/decimal";
 import { formatDateTime, formatMoney } from "@/lib/format";
 import { PAYMENT_CHANNEL_OPTIONS } from "@/lib/schemas/payment";
+import type { ContractStatus } from "@/types/contract";
 import type { AllocationType, Payment } from "@/types/payment";
 
 const ALLOCATION_LABELS: Record<AllocationType, string> = {
@@ -39,22 +40,26 @@ function channelLabel(channel: Payment["channel"]): string {
  * `excess_amount` is customer credit that is never applied automatically (PRD P-4), so it is flagged.
  * A replayed request returns the same payment, so this view is identical for a retry.
  *
- * <p>`contractActive` is false when the payment itself closed the contract (maturity): no further
- * payment can be recorded and credit can no longer be applied from the Kredit tab, so neither is offered.
+ * <p>`contractStatus` is the contract's *confirmed* status after the payment, or `null` when it could not be
+ * confirmed (the refetch failed or is still running, so cached data may predate the payment). Only an
+ * ACTIVE contract takes another payment or has credit applied from the Kredit tab; a CLOSED one (the payment
+ * matured it) offers neither, and an unknown one offers neither until the operator has checked the contract.
  */
 export function PaymentResult({
   contractId,
   payment,
   onRecordAnother,
-  contractActive = true,
+  contractStatus,
 }: {
   contractId: string;
   payment: Payment;
   onRecordAnother: () => void;
-  contractActive?: boolean;
+  contractStatus: ContractStatus | null;
 }) {
   const installments = useInstallments(contractId);
   const hasExcess = compareMoney(payment.excess_amount, "0.00") > 0;
+  const contractActive = contractStatus === "ACTIVE";
+  const statusUnknown = contractStatus === null;
 
   return (
     <div className="space-y-4">
@@ -88,6 +93,16 @@ export function PaymentResult({
           </dl>
         </CardContent>
       </Card>
+
+      {statusUnknown ? (
+        <Alert>
+          <AlertTitle>Status kontrak belum dapat dipastikan</AlertTitle>
+          <AlertDescription>
+            Pembayaran sudah tercatat, tetapi status kontrak terbaru tidak dapat dimuat. Buka halaman kontrak untuk
+            memeriksa status dan saldo sebelum mencatat pembayaran lain atau menerapkan kredit.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {hasExcess ? (
         <Alert>

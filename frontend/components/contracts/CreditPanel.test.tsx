@@ -7,10 +7,16 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return { ...actual, apiFetch: vi.fn() };
 });
 
+vi.mock("@/lib/idempotency", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/idempotency")>();
+  return { ...actual, newIdempotencyKey: vi.fn() };
+});
+
 import { validateCreditAmount } from "@/components/contracts/ApplyCreditDialog";
 import { CreditPanel } from "@/components/contracts/CreditPanel";
 import { ApiError, apiFetch } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
+import { newIdempotencyKey } from "@/lib/idempotency";
 import { clearSession, setSession } from "@/lib/session";
 import type { ContractStatus, CreditBalance, Installment } from "@/types/contract";
 
@@ -51,7 +57,7 @@ function signInAs(roles: string[]) {
   setSession({ access_token: accessTokenWithRoles(roles), refresh_token: "refresh-1" }, "operator");
 }
 
-function mockApi(available: string, apply: () => Promise<unknown> = async () => ({})) {
+function mockApi(available: string | (() => string), apply: () => Promise<unknown> = async () => ({})) {
   vi.mocked(apiFetch).mockImplementation(async (path) => {
     if (String(path).endsWith("/credit/apply")) {
       return (await apply()) as never;
@@ -59,8 +65,16 @@ function mockApi(available: string, apply: () => Promise<unknown> = async () => 
     if (String(path).endsWith("/installments")) {
       return [INSTALLMENT] as never;
     }
-    return credit(available) as never;
+    return credit(typeof available === "function" ? available() : available) as never;
   });
+}
+
+function applyCalls() {
+  return vi.mocked(apiFetch).mock.calls.filter(([path]) => String(path).endsWith("/credit/apply"));
+}
+
+function sentKey(callIndex: number): string | undefined {
+  return applyCalls()[callIndex]?.[1]?.headers?.["Idempotency-Key"];
 }
 
 function creditReads(): number {
@@ -99,6 +113,8 @@ describe("CreditPanel apply action", () => {
   beforeEach(() => {
     clearSession();
     vi.mocked(apiFetch).mockReset();
+    let issued = 0;
+    vi.mocked(newIdempotencyKey).mockImplementation(() => `key-${++issued}`);
   });
 
   it("offers Terapkan Kredit to ADMIN_OPERASIONAL on an ACTIVE contract with a positive balance", async () => {
@@ -136,7 +152,7 @@ describe("CreditPanel apply action", () => {
     expect(screen.queryByRole("button", { name: "Terapkan Kredit" })).not.toBeInTheDocument();
   });
 
-  it("applies the full balance with an empty body and no Idempotency-Key, then reloads the credit", async () => {
+  it("applies the full balance with an empty body and an Idempotency-Key, then reloads the credit", async () => {
     signInAs(["ADMIN_OPERASIONAL"]);
     mockApi("250000.00", async () => ({ applied_amount: "250000.00", available_balance: "0.00", applications: [] }));
     const user = userEvent.setup();
@@ -147,7 +163,11 @@ describe("CreditPanel apply action", () => {
     await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
 
     await vi.waitFor(() => expect(creditReads()).toBe(2));
-    expect(apiFetch).toHaveBeenCalledWith("/contracts/c1/credit/apply", { method: "POST", body: "{}" });
+    expect(apiFetch).toHaveBeenCalledWith("/contracts/c1/credit/apply", {
+      method: "POST",
+      headers: { "Idempotency-Key": "key-1" },
+      body: "{}",
+    });
     await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
@@ -220,5 +240,176 @@ describe("CreditPanel apply action", () => {
     await user.keyboard("{Escape}");
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+describe("CreditPanel apply retry safety", () => {
+  beforeEach(() => {
+    clearSession();
+    vi.mocked(apiFetch).mockReset();
+    let issued = 0;
+    vi.mocked(newIdempotencyKey).mockImplementation(() => `key-${++issued}`);
+  });
+
+  async function openDialog(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: "Terapkan Kredit" }));
+    return screen.findByRole("dialog");
+  }
+
+  function failOnceThenSucceed() {
+    let attempt = 0;
+    return async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new TypeError("Failed to fetch");
+      }
+      return { applied_amount: "100000.00", available_balance: "150000.00", applications: [] };
+    };
+  }
+
+  it("retries a lost response with the same key and amount, so the server can replay it", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", failOnceThenSucceed());
+    const user = userEvent.setup();
+    renderPanel();
+
+    const dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "100000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    expect(await within(dialog).findByText("Failed to fetch")).toBeInTheDocument();
+    expect(within(dialog).getByText(/tidak akan menerapkan kredit dua kali/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(applyCalls()).toHaveLength(2);
+    expect(sentKey(0)).toBe("key-1");
+    expect(sentKey(1)).toBe("key-1");
+    expect(applyCalls()[0][1]?.body).toBe(applyCalls()[1][1]?.body);
+  });
+
+  it("keeps the key and the failed outcome when the dialog is closed and reopened", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", failOnceThenSucceed());
+    const user = userEvent.setup();
+    renderPanel();
+
+    let dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "100000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await within(dialog).findByText("Failed to fetch");
+    await user.click(within(dialog).getByRole("button", { name: "Batal" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    dialog = await openDialog(user);
+    expect(within(dialog).getByText("Failed to fetch")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Jumlah")).toHaveValue("100000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(applyCalls()).toHaveLength(2));
+
+    expect(sentKey(1)).toBe("key-1");
+  });
+
+  it("uses a new key for a genuinely new apply after a success", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", async () => ({ applied_amount: "250000.00", available_balance: "0.00", applications: [] }));
+    const user = userEvent.setup();
+    renderPanel();
+
+    let dialog = await openDialog(user);
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    dialog = await openDialog(user);
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(applyCalls()).toHaveLength(2));
+
+    expect(sentKey(0)).toBe("key-1");
+    expect(sentKey(1)).toBe("key-2");
+  });
+
+  it("blocks resubmitting under a spent key and mints a new one only through Mulai form baru", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    let attempt = 0;
+    mockApi("250000.00", async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new ApiError("CONFLICT", "Idempotency-Key was already used for a different request", 409);
+      }
+      return { applied_amount: "50000.00", available_balance: "200000.00", applications: [] };
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    const dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "100000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+
+    expect(await within(dialog).findByText(/penerapan sebelumnya mungkin sudah tercatat/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Terapkan" })).toBeDisabled();
+    expect(applyCalls()).toHaveLength(1);
+
+    await user.click(within(dialog).getByRole("button", { name: "Mulai form baru" }));
+    const fresh = await screen.findByRole("dialog");
+    expect(within(fresh).queryByText(/penerapan sebelumnya mungkin sudah tercatat/)).not.toBeInTheDocument();
+    expect(within(fresh).getByLabelText("Jumlah")).toHaveValue("");
+    await user.type(within(fresh).getByLabelText("Jumlah"), "50000");
+    await user.click(within(fresh).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(applyCalls()).toHaveLength(2));
+
+    expect(sentKey(0)).toBe("key-1");
+    expect(sentKey(1)).toBe("key-2");
+  });
+
+  it("keeps the dialog and its error when the reloaded balance is zero after an apply that did commit", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    let committed = false;
+    mockApi(
+      () => (committed ? "0.00" : "250000.00"),
+      async () => {
+        committed = true;
+        throw new TypeError("Failed to fetch");
+      },
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    const dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "250000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+
+    await vi.waitFor(() => expect(creditReads()).toBe(2));
+    expect(await within(screen.getByRole("dialog")).findByText("Failed to fetch")).toBeInTheDocument();
+    // The retry of the same amount is still allowed against the balance the operation started with.
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(applyCalls()).toHaveLength(2));
+    expect(sentKey(1)).toBe("key-1");
+  });
+
+  it("keeps the dialog mounted when reloading the credit fails after an apply", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    let creditCalls = 0;
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (String(path).endsWith("/credit/apply")) {
+        throw new TypeError("Failed to fetch");
+      }
+      if (String(path).endsWith("/installments")) {
+        return [INSTALLMENT] as never;
+      }
+      creditCalls += 1;
+      if (creditCalls > 1) {
+        throw new ApiError("INTERNAL_ERROR", "Server error", 500);
+      }
+      return credit("250000.00") as never;
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    const dialog = await openDialog(user);
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+
+    expect(await within(screen.getByRole("dialog")).findByText("Failed to fetch")).toBeInTheDocument();
+    expect(await screen.findByText("Saldo kredit mungkin tidak terbaru")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Terapkan" })).toBeEnabled();
   });
 });

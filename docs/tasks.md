@@ -413,8 +413,8 @@ Pembayaran" for `ADMIN_OPERASIONAL` on ACTIVE. `useStatement` takes `{refType, f
 query (`statementPath`); `StatementView` adds Dari/Sampai/Ref type/Reset, resets to page 0 on a filter change,
 and blocks an inverted range without a request; the ref column shows `ref_type` + a short `ref_id`.
 `ApplyCreditDialog` (`ADMIN_OPERASIONAL`, ACTIVE, balance > 0) sends `{}` for a blank amount (apply all) or a
-validated amount ≤ the balance, with no `Idempotency-Key` (by design); `CreditPanel` labels applications by
-period. Test setup gained jsdom no-op pointer-capture/scroll polyfills so Radix Select can be driven in tests.
+validated amount ≤ the balance, under a per-operation `Idempotency-Key` (backend now requires it, ADR-017 addendum); `CreditPanel` labels
+applications by period. Test setup gained jsdom no-op pointer-capture/scroll polyfills so Radix Select can be driven in tests.
 The installment table itself is T32's and is reused unchanged.
 Verification: `npm run lint` (0 problems), `npm run typecheck`, `npm test` = **172 tests / 23 files / 0
 failed**, `NEXT_PUBLIC_API_BASE_URL=https://ci-build.invalid npm run build` (lists
@@ -434,6 +434,25 @@ the table always matches the visible select. Each fix has a regression test that
 lint, typecheck, `npm test` = **178 tests / 23 files / 0 failed**, build; re-checked in the browser by paying a
 1-month test contract to completion (result shown, contract CLOSED).
 
+Second review remediation (2026-11-25, PR #24, CodeRabbit plus an independent review; every finding was
+verified against the code and specs first). (1) **Credit apply was not retry-safe (P1)**: TS §2.2 requires an
+`Idempotency-Key` on credit application but T14 shipped none, so a committed apply with a lost response could be
+applied again. The backend now wraps the apply in `IdempotencyService` inside its single transaction (claim,
+credit consumption, installment resolution, journal), with replay, 409 `CONFLICT` for a different body, 409
+`IDEMPOTENCY_KEY_EXPIRED` and a required header (ADR-017 addendum; the retention-window limitation is
+recorded there). The dialog keeps one key per logical operation across close/reopen, retries with the same key,
+mints a new one only after a success or an explicit "Mulai form baru", and stays mounted (with its error) when
+the refreshed balance reaches zero or the credit reload fails. (2) **Payment cache** is invalidated on settle,
+so an ambiguous failure refreshes every screen; the retry still reuses its key. (3) **Statement** no longer
+keeps the previous page as placeholder data: a new filter or page shows the loading state, never stale rows,
+and the pager is disabled while a request is in flight. (4) **Payment result** treats the contract status as
+known only when the last refetch succeeded and finished; otherwise it offers no further payment or credit
+advice and says the status is unconfirmed. Also fixed: a failed background contract refetch no longer
+unmounts the payment form (and so its key) while a contract is cached, and an expired payment key no longer
+claims the form was used with different values. Verified: lint, typecheck, `npm test` = **196 tests / 23
+files / 0 failed**, build; backend `./gradlew check` = 121 suites / 939 tests / 0 failed (7 new credit-apply idempotency tests). CI for PR #24 could not run (GitHub billing), so it is not
+evidence either way.
+
 **Goal:** Complete the day-to-day servicing screens: record a payment, read the schedule, read the
 statement and inspect customer credit.
 
@@ -447,8 +466,7 @@ statement and inspect customer credit.
 - Statement page (FE §2.7) from `GET /contracts/{id}/statement`: ledger-literal debit/credit, ref type,
   reversal flag, date-range and ref-type filters; no running balance.
 - Credit tab from `GET /contracts/{id}/credit`: available balance and application history; the
-  apply-credit action is `ADMIN_OPERASIONAL` only (`POST …/credit/apply`, no `Idempotency-Key` by
-  design).
+  apply-credit action is `ADMIN_OPERASIONAL` only (`POST …/credit/apply`, `Idempotency-Key` required since the T33 review).
 - Cache invalidation after a payment so the schedule, detail and statement never show stale values.
 
 **Business Rules.** 06_FRONTEND_SPEC §2.5–§2.7; ADR-013 A-8 (the statement is ledger-literal, with no
