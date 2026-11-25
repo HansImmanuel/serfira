@@ -3,7 +3,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/lib/api";
-import type { CreateContractPayload, Contract, CreditBalance, Installment } from "@/types/contract";
+import type {
+  ApplyCreditPayload,
+  CreateContractPayload,
+  Contract,
+  CreditApplicationResult,
+  CreditBalance,
+  Installment,
+} from "@/types/contract";
 
 const contractKey = (id: string) => ["contract", id] as const;
 
@@ -30,6 +37,36 @@ export function useCredit(id: string, enabled = true) {
     queryKey: [...contractKey(id), "credit"],
     queryFn: () => apiFetch<CreditBalance>(`/contracts/${id}/credit`),
     enabled: id.length > 0 && enabled,
+  });
+}
+
+/**
+ * Applies available customer credit to the oldest due receivable (`ADMIN_OPERASIONAL` only, ADR-015).
+ * The caller owns the `Idempotency-Key` (one per logical apply operation, ADR-017): a retry after a lost
+ * response replays the stored result instead of applying credit twice. The whole contract prefix — balance,
+ * installments and statement — plus the contract list are invalidated once the call settles, success or
+ * not: an apply whose response was lost may still have committed, and no screen may keep the old balance.
+ */
+export interface ApplyCreditCommand {
+  payload: ApplyCreditPayload;
+  idempotencyKey: string;
+}
+
+export function useApplyCredit(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ payload, idempotencyKey }: ApplyCreditCommand) =>
+      apiFetch<CreditApplicationResult>(`/contracts/${id}/credit/apply`, {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(payload),
+      }),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: contractKey(id) }),
+        queryClient.invalidateQueries({ queryKey: ["contracts"] }),
+      ]);
+    },
   });
 }
 

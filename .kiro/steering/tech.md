@@ -61,7 +61,7 @@ Health: `/actuator/health`. The app fails fast without `SERFIRA_SECURITY_PII_ENC
 
 - Base path `/api/v1/...`. Every response uses the `ApiResponse<T>` envelope `{ "data": ..., "error": null }`.
 - JSON wire names are snake_case (global Jackson `SNAKE_CASE`). Java fields stay camelCase.
-- Retryable mutations require an `Idempotency-Key` header, handled by `shared.idempotency.IdempotencyService`. Exactly five endpoints do: `POST /contracts`, `POST /payments`, `POST /payments/{id}/void`, `POST /settlements`, `POST /contracts/{id}/write-off`. `POST /contracts/{id}/activate` is idempotent by state instead, and `POST /settlements/quote`, `POST /penalty-adjustments`, `POST /contracts/{id}/credit/apply` take no header.
+- Retryable mutations require an `Idempotency-Key` header, handled by `shared.idempotency.IdempotencyService`. Exactly six endpoints do: `POST /contracts`, `POST /payments`, `POST /payments/{id}/void`, `POST /settlements`, `POST /contracts/{id}/write-off`, `POST /contracts/{id}/credit/apply`. `POST /contracts/{id}/activate` is idempotent by state instead, and `POST /settlements/quote`, `POST /penalty-adjustments` take no header.
 - Pagination: `page`, `size`, `sort` (snake_case sort tokens). Page envelope is `PageResponse`.
 - Error codes live in `shared.error.ErrorCode`. Throw `SerfiraException` subclasses (`BadRequestException`, `NotFoundException`, `ConflictException`); `GlobalExceptionHandler` maps them.
 - Document controllers with springdoc `@Operation` / `@ApiResponses`, listing every error code.

@@ -217,7 +217,7 @@ with `POST /api/v1/auth/logout` (idempotent). Five consecutive failed logins loc
 | `GET`  | `/api/v1/contracts/{id}/statement`    | Ledger statement for the contract                                  |
 | `POST` | `/api/v1/payments`                    | Receive, allocate, and post a payment (`Idempotency-Key` required) |
 | `POST` | `/api/v1/payments/{id}/void`          | Void a posted payment by reversal (`Idempotency-Key` required)     |
-| `POST` | `/api/v1/contracts/{id}/credit/apply` | Apply available customer credit to recognized receivable           |
+| `POST` | `/api/v1/contracts/{id}/credit/apply` | Apply available customer credit (`Idempotency-Key` required)      |
 | `GET`  | `/api/v1/contracts/{id}/credit`       | Customer credit balance and application history                    |
 | `POST` | `/api/v1/penalty-adjustments`         | Waive or reduce accrued penalty                                    |
 | `POST` | `/api/v1/settlements/quote`           | Price an early-settlement quote (immutable, TTL)                   |

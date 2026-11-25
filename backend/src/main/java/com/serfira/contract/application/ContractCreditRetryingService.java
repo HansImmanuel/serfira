@@ -25,6 +25,10 @@ import java.util.UUID;
  * so each attempt opens its own transaction and sees the state the losing attempt left behind, never a
  * stale view. A failed attempt rolls back its application rows and status flips together.
  *
+ * <p>Each attempt takes the {@code Idempotency-Key} claim inside its own transaction
+ * ({@code IdempotencyService} is {@code Propagation.MANDATORY}), so a failed attempt rolls its claim back
+ * with everything else and never consumes the key (ADR-017).
+ *
  * <p>Only an optimistic-lock failure is retryable here — unlike the payment path there is no idempotency
  * or accrual uniqueness constraint to classify — so a tiny local predicate is clearer than importing
  * {@code payment}'s classifier (which {@code contract} may not do anyway, 02_TECH_SPEC.md §1). A
@@ -48,11 +52,11 @@ public class ContractCreditRetryingService {
 		this.sleeper = sleeper;
 	}
 
-	public CreditApplicationResponse apply(UUID contractId, BigDecimal requestedAmount) {
+	public CreditApplicationResponse apply(UUID contractId, String idempotencyKey, BigDecimal requestedAmount) {
 		RuntimeException lastFailure = null;
 		for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 			try {
-				return commands.apply(contractId, requestedAmount);
+				return commands.apply(contractId, idempotencyKey, requestedAmount);
 			} catch (RuntimeException failure) {
 				if (!isOptimisticLockConflict(failure)) {
 					throw failure;

@@ -27,8 +27,11 @@ import com.serfira.penalty.application.EffectivePenaltyPort;
 import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.error.BadRequestException;
-import com.serfira.shared.error.ConflictException;
+import com.serfira.shared.error.CreditExceedsBalanceException;
 import com.serfira.shared.error.CreditNotApplicableException;
+import com.serfira.shared.idempotency.CanonicalRequestJson;
+import com.serfira.shared.idempotency.IdempotencyService;
+import com.serfira.shared.idempotency.IdempotentResult;
 import com.serfira.shared.money.DecimalBounds;
 import com.serfira.shared.observability.LogContext;
 
@@ -76,6 +79,9 @@ public class ContractCreditCommandService {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(ContractCreditCommandService.class);
 
+	/** Endpoint scope of the idempotency claim (TS §2.5: keys are endpoint-scoped). */
+	static final String APPLY_CREDIT_ENDPOINT = "POST /api/v1/contracts/{id}/credit/apply";
+
 	private static final int MONEY_SCALE = 2;
 	private static final BigDecimal ZERO_MONEY = BigDecimal.ZERO.setScale(MONEY_SCALE);
 	private static final String LOG_MODULE = "contract";
@@ -86,86 +92,117 @@ public class ContractCreditCommandService {
 	private final ContractCreditApplicationRepository applications;
 	private final InstallmentReceivablePort receivables;
 	private final EffectivePenaltyPort effectivePenalty;
+	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
 	private final Clock clock;
 
 	public ContractCreditCommandService(ContractRepository contracts, InstallmentRepository installments,
 			ContractCreditRepository credits, ContractCreditApplicationRepository applications,
 			InstallmentReceivablePort receivables, EffectivePenaltyPort effectivePenalty,
-			LedgerPostingService ledger, Clock clock) {
+			IdempotencyService idempotency, LedgerPostingService ledger, Clock clock) {
 		this.contracts = contracts;
 		this.installments = installments;
 		this.credits = credits;
 		this.applications = applications;
 		this.receivables = receivables;
 		this.effectivePenalty = effectivePenalty;
+		this.idempotency = idempotency;
 		this.ledger = ledger;
 		this.clock = clock;
 	}
 
 	/**
-	 * Applies available credit to the contract.
+	 * Applies available credit to the contract. An identical retry (same {@code Idempotency-Key}, contract
+	 * and amount) replays the stored response without consuming credit or posting a second journal entry; a
+	 * different request under the same key is 409 {@code CONFLICT}, a spent key is 409
+	 * {@code IDEMPOTENCY_KEY_EXPIRED} (ADR-017). The claim is taken inside this transaction, so a rejected
+	 * apply rolls it back and the key stays usable for a corrected retry.
 	 *
 	 * @param contractId      contract whose credit to apply
+	 * @param idempotencyKey  the client's {@code Idempotency-Key}
 	 * @param requestedAmount amount to apply, or {@code null} to apply the full available balance
 	 * @return what was applied and the balance afterwards
 	 * @throws ContractNotFoundException     if no contract has that id (404)
 	 * @throws ContractStateException        if the contract is not ACTIVE (409)
-	 * @throws BadRequestException           if a supplied amount is not positive scale-2 money (400)
-	 * @throws ConflictException             if a supplied amount exceeds the available balance (409)
+	 * @throws BadRequestException           if a supplied amount is not positive scale-2 money, or the key is missing (400)
+	 * @throws CreditExceedsBalanceException if a supplied amount exceeds the available balance (409)
 	 * @throws CreditNotApplicableException  if there is no available credit, or nothing it can reduce (409)
 	 */
 	@Transactional
-	public CreditApplicationResponse apply(UUID contractId, BigDecimal requestedAmount) {
+	public CreditApplicationResponse apply(UUID contractId, String idempotencyKey, BigDecimal requestedAmount) {
 		try (LogContext ignored = LogContext.forModule(LOG_MODULE).withContract(contractId)) {
-		
-			Contract contract = contracts.findById(contractId)
-				.orElseThrow(() -> new ContractNotFoundException(contractId));
 
-
-			if (!contract.isActive()) {
-				throw new ContractStateException("contract " + contract.getContractNo() + " is " + contract.getStatus()
-						+ " and cannot have credit applied; only an ACTIVE contract can");
-			}
-
-			List<ContractCredit> availableCredits =
-					credits.findByContractIdAndStatusOrderByCreatedAtAsc(contractId, ContractCreditStatus.AVAILABLE);
-			Map<UUID, BigDecimal> balanceByCredit = availableBalances(availableCredits);
-			BigDecimal availableBalance = sum(balanceByCredit.values());
-			if (availableBalance.signum() == 0) {
-				throw new CreditNotApplicableException(
-						"contract " + contract.getContractNo() + " has no available credit to apply");
-			}
-
-			BigDecimal amountToApply = resolveRequestedAmount(requestedAmount, availableBalance,
-					contract.getContractNo());
-
-			List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
-			CreditAllocationResult allocation = CreditApplicationEngine.allocate(amountToApply, clock.today(),
-					toAllocationInputs(contractId, schedule));
-			if (allocation.appliedTotal().signum() == 0) {
-				throw new CreditNotApplicableException("contract " + contract.getContractNo()
-						+ " has no due installment with recognized receivable to apply credit against");
-			}
-
-			OffsetDateTime appliedAt = clock.now();
-			List<ContractCreditApplication> created =
-					consumeCredits(availableCredits, balanceByCredit, allocation, appliedAt);
-			applications.flush();
-
-			receivables.applyPaymentResolution(contractId, resolvedByInstallment(allocation), appliedAt);
-
-			UUID refId = created.get(0).getId();
-			ledger.post(LedgerPosting.of(LedgerRefType.CREDIT_APPLICATION, refId, appliedAt,
-					"Credit application for contract " + contract.getContractNo(),
-					journalLines(contractId, allocation)));
-
-			BigDecimal balanceAfter = availableBalance.subtract(allocation.appliedTotal());
-			LOGGER.info("Applied credit {} to contract {} ({} application(s), balance {} -> {})",
-					allocation.appliedTotal(), contract.getContractNo(), created.size(), availableBalance, balanceAfter);
-			return new CreditApplicationResponse(allocation.appliedTotal(), balanceAfter, toHistory(created));
+			String key = idempotencyKey == null ? null : idempotencyKey.trim();
+			IdempotentResult<CreditApplicationResponse> result = idempotency.execute(
+					APPLY_CREDIT_ENDPOINT, key, canonicalize(contractId, requestedAmount),
+					CreditApplicationResponse.class, () -> applyCredit(contractId, requestedAmount));
+			return result.response();
 
 		}
+	}
+
+	/**
+	 * The mutation itself, inside the idempotency claim and the caller's transaction (validate → allocate
+	 * → consume credit → resolve installments → post journal → commit).
+	 */
+	private CreditApplicationResponse applyCredit(UUID contractId, BigDecimal requestedAmount) {
+		Contract contract = contracts.findById(contractId)
+			.orElseThrow(() -> new ContractNotFoundException(contractId));
+
+
+		if (!contract.isActive()) {
+			throw new ContractStateException("contract " + contract.getContractNo() + " is " + contract.getStatus()
+					+ " and cannot have credit applied; only an ACTIVE contract can");
+		}
+
+		List<ContractCredit> availableCredits =
+				credits.findByContractIdAndStatusOrderByCreatedAtAsc(contractId, ContractCreditStatus.AVAILABLE);
+		Map<UUID, BigDecimal> balanceByCredit = availableBalances(availableCredits);
+		BigDecimal availableBalance = sum(balanceByCredit.values());
+		if (availableBalance.signum() == 0) {
+			throw new CreditNotApplicableException(
+					"contract " + contract.getContractNo() + " has no available credit to apply");
+		}
+
+		BigDecimal amountToApply = resolveRequestedAmount(requestedAmount, availableBalance,
+				contract.getContractNo());
+
+		List<Installment> schedule = installments.findByContractIdOrderByPeriodNo(contractId);
+		CreditAllocationResult allocation = CreditApplicationEngine.allocate(amountToApply, clock.today(),
+				toAllocationInputs(contractId, schedule));
+		if (allocation.appliedTotal().signum() == 0) {
+			throw new CreditNotApplicableException("contract " + contract.getContractNo()
+					+ " has no due installment with recognized receivable to apply credit against");
+		}
+
+		OffsetDateTime appliedAt = clock.now();
+		List<ContractCreditApplication> created =
+				consumeCredits(availableCredits, balanceByCredit, allocation, appliedAt);
+		applications.flush();
+
+		receivables.applyPaymentResolution(contractId, resolvedByInstallment(allocation), appliedAt);
+
+		UUID refId = created.get(0).getId();
+		ledger.post(LedgerPosting.of(LedgerRefType.CREDIT_APPLICATION, refId, appliedAt,
+				"Credit application for contract " + contract.getContractNo(),
+				journalLines(contractId, allocation)));
+
+		BigDecimal balanceAfter = availableBalance.subtract(allocation.appliedTotal());
+		LOGGER.info("Applied credit {} to contract {} ({} application(s), balance {} -> {})",
+				allocation.appliedTotal(), contract.getContractNo(), created.size(), availableBalance, balanceAfter);
+		return new CreditApplicationResponse(allocation.appliedTotal(), balanceAfter, toHistory(created));
+	}
+
+	/**
+	 * Canonical request for the idempotency fingerprint: the contract and the requested amount at scale 2,
+	 * or {@code null} when the caller asked for the full balance. An omitted amount and an explicit amount
+	 * equal to today's balance are different requests, so replaying one under the other's key is a conflict.
+	 */
+	private static String canonicalize(UUID contractId, BigDecimal requestedAmount) {
+		Map<String, String> fields = CanonicalRequestJson.fields();
+		fields.put("contract_id", contractId == null ? null : contractId.toString());
+		fields.put("amount", CanonicalRequestJson.money(requestedAmount));
+		return CanonicalRequestJson.render(fields);
 	}
 
 	/**
@@ -186,7 +223,7 @@ public class ContractCreditCommandService {
 		}
 		BigDecimal normalized = requestedAmount.setScale(MONEY_SCALE, RoundingMode.UNNECESSARY);
 		if (normalized.compareTo(availableBalance) > 0) {
-			throw new ConflictException("amount " + normalized + " exceeds the available credit balance "
+			throw new CreditExceedsBalanceException("amount " + normalized + " exceeds the available credit balance "
 					+ availableBalance + " of contract " + contractNo);
 		}
 		return normalized;

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink, Wallet } from "lucide-react";
 
 import { ActivateContractButton } from "@/components/contracts/ActivateContractButton";
 import { ContractStatusBadge } from "@/components/contracts/ContractStatusBadge";
@@ -76,6 +76,14 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
               <Link href={`/contracts/${detail.id}/statement`}>
                 <ExternalLink className="size-4" aria-hidden="true" />
                 Rekening koran
+              </Link>
+            </Button>
+          ) : null}
+          {detail.status === "ACTIVE" && canWrite ? (
+            <Button asChild size="sm">
+              <Link href={`/contracts/${detail.id}/payments/new`}>
+                <Wallet className="size-4" aria-hidden="true" />
+                Catat Pembayaran
               </Link>
             </Button>
           ) : null}
@@ -180,7 +188,7 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
 
         {canReadCredit ? (
           <TabsContent value="credit">
-            <CreditPanel contractId={detail.id} />
+            <CreditPanel contractId={detail.id} contractStatus={detail.status} />
           </TabsContent>
         ) : null}
 

@@ -117,3 +117,51 @@ describe("ContractDetailView role gating", () => {
     expect(apiFetch).toHaveBeenCalledWith(`/contracts/${CONTRACT.id}/credit`);
   });
 });
+
+describe("ContractDetailView payment entry point", () => {
+  beforeEach(() => {
+    clearSession();
+    vi.mocked(apiFetch).mockReset();
+  });
+
+  function mockContract(status: Contract["status"]) {
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (String(path).endsWith("/installments")) {
+        return [] as never;
+      }
+      return { ...CONTRACT, status } as never;
+    });
+  }
+
+  it('shows "Catat Pembayaran" to ADMIN_OPERASIONAL on an ACTIVE contract', async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockContract("ACTIVE");
+
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+
+    expect(await screen.findByRole("link", { name: /Catat Pembayaran/ })).toHaveAttribute(
+      "href",
+      `/contracts/${CONTRACT.id}/payments/new`,
+    );
+  });
+
+  it("hides it from FINANCE", async () => {
+    signInAs(["FINANCE"]);
+    mockContract("ACTIVE");
+
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+
+    expect(await screen.findByText("MF-202611-0001")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Catat Pembayaran/ })).not.toBeInTheDocument();
+  });
+
+  it("hides it on a DRAFT contract", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockContract("DRAFT");
+
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+
+    expect(await screen.findByText("MF-202611-0001")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Catat Pembayaran/ })).not.toBeInTheDocument();
+  });
+});

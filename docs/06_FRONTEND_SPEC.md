@@ -247,7 +247,10 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 **Tabs:**
 1. **Jadwal Angsuran** — tabel installments (lihat §2.5).
 2. **Pembayaran** — list payments dengan status POSTED/VOIDED.
-3. **Kredit** — saldo available credit + history application.
+3. **Kredit** — saldo available credit + history application. "Terapkan Kredit" (ADMIN_OPERASIONAL, ACTIVE)
+   memakai satu `Idempotency-Key` per operasi apply: retry setelah respons hilang memakai key dan jumlah yang
+   sama (server me-replay), key tetap sama walau dialog ditutup/dibuka, dan key baru hanya dibuat setelah
+   sukses atau lewat "Mulai form baru" saat key terpakai (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`).
 4. **Ledger** — link ke statement.
 
 **Actions (ADMIN_OPERASIONAL only):**
@@ -296,10 +299,16 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 |---|---|---|
 | Jumlah Bayar | text (desimal) | > 0, maksimum 17 digit integer dan skala ≤ 2 (`NUMERIC(19,2)`) |
 | Channel | select (CASH/BANK_TRANSFER/VA_STUB/EWALLET_STUB) | |
-| Tanggal Bayar | datetime-local | max = now (tidak boleh future) |
-| Catatan | text | optional |
+
+**Tanpa input tanggal dan catatan (keputusan T33, 2026-11-25):** `PaymentRequest` hanya menerima
+`contract_id`, `amount`, dan `channel`. Waktu bayar selalu jam server (TS §2.0) dan tabel `payment` tidak punya
+kolom catatan, jadi form tidak menampilkan "Tanggal Bayar" maupun "Catatan". Tampilan sukses menunjukkan
+`paid_at` dari respons server.
 
 **Idempotency-Key:** UUID di-generate saat halaman mount, di-pass sebagai header `Idempotency-Key`.
+Retry setelah gagal memakai key yang sama. Jika key ditolak sebagai sudah terpakai (409 `CONFLICT` atau
+`IDEMPOTENCY_KEY_EXPIRED`), form tidak membuat key baru secara diam-diam: operator diminta memeriksa rekening
+koran lalu memilih "Mulai form baru", yang me-mount ulang form dengan key baru.
 
 **Submit:** `POST /payments` → tampilkan sukses + alokasi breakdown → link kembali ke contract detail.
 
@@ -320,13 +329,14 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 | Debit | `debit` — nilai `journal_line` literal untuk baris itu, bukan agregat |
 | Kredit | `credit` — nilai `journal_line` literal untuk baris itu, bukan agregat |
 | Reversal | flag bila `reversal_of_id IS NOT NULL` |
-| Kontrak Ref | link ke payment/settlement |
+| Kontrak Ref | `ref_id` singkat (8 karakter, id lengkap di tooltip). Link ke payment/settlement menyusul di T39, karena belum ada halaman/endpoint detail payment |
 
 Tidak ada kolom running balance pada Phase 1: baris melintasi akun yang berbeda arti (`PIUTANG_*`, `KAS`,
 `PENDAPATAN_*`, `TITIPAN_NASABAH`), dan sebuah saldo tunggal berjalan lintas akun tidak mewakili apa pun yang
 berguna. Agregat outstanding yang berarti tersedia lewat laporan aging (§2.9).
 
-**Filter:** date range, ref_type.
+**Filter:** date range, ref_type — dikirim ke API (`from`/`to` inklusif, `ref_type`), tidak difilter di
+browser. Rentang dengan tanggal awal setelah tanggal akhir ditolak di form tanpa request.
 
 ---
 
