@@ -490,6 +490,9 @@ describe("CreditPanel apply retry safety", () => {
 
     dialog = await openDialog(user);
     expect(within(dialog).getByText("Failed to fetch")).toBeInTheDocument();
+    // Retrying the unresolved operation is not a new application, so a closed contract does not block it.
+    expect(within(dialog).queryByText(/tidak lagi berstatus ACTIVE/)).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Terapkan" })).toBeEnabled();
     await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
     await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
@@ -532,5 +535,57 @@ describe("CreditPanel apply retry safety", () => {
     setStatus(view, "CLOSED");
 
     expect(screen.queryByRole("button", { name: "Terapkan Kredit" })).not.toBeInTheDocument();
+  });
+
+  it("cannot submit a fresh application once the contract is no longer ACTIVE, and says why", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", async () => ({ applied_amount: "250000.00", available_balance: "0.00", applications: [] }));
+    const user = userEvent.setup();
+    const view = renderWithQueryClient(<CreditPanel contractId="c1" contractStatus="ACTIVE" />);
+
+    const dialog = await openDialog(user);
+    expect(within(dialog).getByRole("button", { name: "Terapkan" })).toBeEnabled();
+
+    setStatus(view, "CLOSED");
+
+    expect(await within(screen.getByRole("dialog")).findByText(/tidak lagi berstatus ACTIVE/)).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Terapkan" })).toBeDisabled();
+    expect(applyCalls()).toHaveLength(0);
+  });
+
+  it("keeps submission disabled after Mulai form baru on a contract that is no longer ACTIVE", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", async () => {
+      throw new ApiError("CONFLICT", "Idempotency-Key was already used for a different request", 409);
+    });
+    const user = userEvent.setup();
+    const view = renderWithQueryClient(<CreditPanel contractId="c1" contractStatus="ACTIVE" />);
+
+    const dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "100000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await within(dialog).findByText(/penerapan sebelumnya mungkin sudah tercatat/);
+    setStatus(view, "CLOSED");
+
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Mulai form baru" }));
+
+    const fresh = await screen.findByRole("dialog");
+    expect(within(fresh).getByLabelText("Jumlah")).toHaveValue("");
+    expect(await within(fresh).findByText(/tidak lagi berstatus ACTIVE/)).toBeInTheDocument();
+    expect(within(fresh).getByRole("button", { name: "Terapkan" })).toBeDisabled();
+    await user.type(within(fresh).getByLabelText("Jumlah"), "50000");
+    await user.click(within(fresh).getByRole("button", { name: "Terapkan" }));
+    expect(applyCalls()).toHaveLength(1);
+  });
+
+  it("shows no start-blocked notice while the contract is ACTIVE", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00");
+    const user = userEvent.setup();
+    renderPanel();
+
+    const dialog = await openDialog(user);
+
+    expect(within(dialog).queryByText(/tidak lagi berstatus ACTIVE/)).not.toBeInTheDocument();
   });
 });

@@ -89,6 +89,11 @@ function ApplyCreditOperation({
   // An unresolved operation stays recoverable whatever else changed: the balance may be zero or the contract
   // closed by the very apply whose response was lost, and a retry then replays the stored result.
   const unresolved = outcomeUnknown || spentKeyError !== null;
+  // A brand-new application needs an ACTIVE contract. Re-sending an operation whose outcome is unknown does
+  // not: it carries its original key, so the server replays the stored result (or rejects it truthfully), and
+  // blocking it would strand an apply that may already have closed the contract. A spent key never submits.
+  const canSubmit = (canStartNew || outcomeUnknown) && spentKeyError === null;
+  const startBlocked = !canStartNew && !outcomeUnknown;
 
   function changeOpen(next: boolean) {
     if (!next && mutation.isPending) {
@@ -99,6 +104,10 @@ function ApplyCreditOperation({
   }
 
   async function handleApply() {
+    if (!canSubmit) {
+      // Defence in depth: the button is disabled in these states, but the rule must not depend on it.
+      return;
+    }
     const result = validateCreditAmount(amount, outcomeUnknown ? startingBalance : availableBalance);
     if ("error" in result) {
       setFieldError(result.error);
@@ -132,6 +141,14 @@ function ApplyCreditOperation({
             bunga, lalu pokok. Hanya piutang yang sudah diakui yang dikurangi.
           </DialogDescription>
         </DialogHeader>
+        {startBlocked ? (
+          <Alert>
+            <AlertTitle>Kredit tidak dapat diterapkan</AlertTitle>
+            <AlertDescription>
+              Kontrak ini tidak lagi berstatus ACTIVE, sehingga penerapan kredit baru tidak dapat dimulai.
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {spentKeyError !== null ? (
           <Alert variant="destructive">
             <AlertTitle>Kredit tidak diterapkan</AlertTitle>
@@ -177,7 +194,7 @@ function ApplyCreditOperation({
           <Button variant="outline" onClick={() => changeOpen(false)} disabled={mutation.isPending}>
             Batal
           </Button>
-          <Button onClick={handleApply} disabled={mutation.isPending || spentKeyError !== null}>
+          <Button onClick={handleApply} disabled={mutation.isPending || !canSubmit}>
             {mutation.isPending ? "Menerapkan…" : "Terapkan"}
           </Button>
         </DialogFooter>

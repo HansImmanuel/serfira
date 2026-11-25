@@ -453,7 +453,7 @@ claims the form was used with different values. Follow-up on the same PR: the ba
 own code (`CREDIT_EXCEEDS_BALANCE`) so the UI no longer mistakes it for a spent key and the key stays usable;
 after a definite 4xx the live balance is the ceiling again; and an unresolved apply (outcome unknown or key
 spent) stays recoverable even when the apply closed the contract or emptied the balance, because the dialog is
-gated by role only and `canStartNew` gates just a new application. Verified: lint, typecheck, `npm test` = **200 tests / 23
+gated by role only and `canStartNew` gates just a new application (a fresh form on a non-ACTIVE contract cannot submit and says why; a retry of an unresolved operation can). Verified: lint, typecheck, `npm test` = **203 tests / 23
 files / 0 failed**, build; backend `./gradlew check` = 121 suites / 939 tests / 0 failed (7 new credit-apply idempotency tests). CI for PR #24 could not run (GitHub billing), so it is not
 evidence either way.
 
