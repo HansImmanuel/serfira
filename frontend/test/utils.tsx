@@ -2,12 +2,20 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
 
-/** Renders a component with a fresh QueryClient whose queries never retry (keeps failure tests fast). */
-export function renderWithQueryClient(ui: ReactElement) {
-  const queryClient = new QueryClient({
+/** A QueryClient whose queries never retry (keeps failure tests fast). */
+export function createTestQueryClient(): QueryClient {
+  return new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
+/**
+ * Renders a component inside a QueryClientProvider. Pass a client to seed or inspect the cache;
+ * the client used is returned alongside the render result.
+ */
+export function renderWithQueryClient(ui: ReactElement, queryClient: QueryClient = createTestQueryClient()) {
+  const result = render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+  return { ...result, queryClient };
 }
 
 function base64url(json: string): string {
