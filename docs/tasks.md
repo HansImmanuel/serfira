@@ -386,7 +386,7 @@ covered by OWASP Dependency-Check; `npm audit` is a candidate follow-up, not par
 
 ### T33 — G3: payment, installments, statement and credit (5 pts)
 
-Status: TODO
+Status: IN PROGRESS
 Estimate: 5 pts
 
 **Goal:** Complete the day-to-day servicing screens: record a payment, read the schedule, read the
