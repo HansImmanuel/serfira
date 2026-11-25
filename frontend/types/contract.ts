@@ -89,13 +89,27 @@ export interface CreditBalance {
   applications: CreditApplication[];
 }
 
+/** `journal_entry.ref_type` vocabulary (`LedgerRefType` on the backend), in the backend's order. */
+export const LEDGER_REF_TYPES = [
+  "CONTRACT_ACTIVATION",
+  "PAYMENT",
+  "BILLING",
+  "PENALTY_ACCRUAL",
+  "PENALTY_WAIVER",
+  "CREDIT_APPLICATION",
+  "SETTLEMENT",
+  "WRITE_OFF",
+] as const;
+
+export type LedgerRefType = (typeof LEDGER_REF_TYPES)[number];
+
 /** A posted journal line (ADR-013 A-8): ledger-literal, never a running balance. */
 export interface StatementRow {
   entry_date: string;
   account_code: string;
   account_name: string;
   description: string | null;
-  ref_type: string;
+  ref_type: LedgerRefType;
   ref_id: string;
   debit: Money;
   credit: Money;
