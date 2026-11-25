@@ -1,5 +1,7 @@
 "use client";
 
+import { ApplyCreditDialog } from "@/components/contracts/ApplyCreditDialog";
+import { periodLabel } from "@/components/contracts/installmentLabels";
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { MoneyDisplay } from "@/components/shared/MoneyDisplay";
@@ -11,23 +13,27 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useCredit } from "@/hooks/useContract";
-import { useCanReadCredit } from "@/hooks/useSession";
+import { useCredit, useInstallments } from "@/hooks/useContract";
+import { useCanReadCredit, useCanWrite } from "@/hooks/useSession";
+import { compareMoney } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/format";
+import type { ContractStatus } from "@/types/contract";
 
 /**
  * Customer credit from excess payments (FE §2.4 Kredit tab).
  *
- * <p>Read-only here: applying credit is a financial action with its own eligibility rules and lands
- * with T33. The balance and the application history come straight from `GET /contracts/{id}/credit`
- * so the audit trail is never reconstructed in the browser.
+ * <p>The balance and the application history come straight from `GET /contracts/{id}/credit` so the
+ * audit trail is never reconstructed in the browser. `ADMIN_OPERASIONAL` may apply available credit
+ * on an ACTIVE contract (the API answers 409 for any other status); the button is UX only.
  *
  * <p>The endpoint is limited to `ADMIN_OPERASIONAL`/`FINANCE`, so the panel is not rendered and the
  * query is not issued for `MANAJEMEN` (defence in depth: the tab is also hidden by the parent).
  */
-export function CreditPanel({ contractId }: { contractId: string }) {
+export function CreditPanel({ contractId, contractStatus }: { contractId: string; contractStatus: ContractStatus }) {
   const canRead = useCanReadCredit();
+  const canWrite = useCanWrite();
   const credit = useCredit(contractId, canRead);
+  const installments = useInstallments(contractId, canRead && contractStatus !== "DRAFT");
 
   if (!canRead) {
     return null;
@@ -40,9 +46,17 @@ export function CreditPanel({ contractId }: { contractId: string }) {
   }
 
   const applications = credit.data.applications;
+  const canApply =
+    canWrite && contractStatus === "ACTIVE" && compareMoney(credit.data.available_balance, "0.00") > 0;
 
   return (
     <div className="space-y-4">
+      {canApply ? (
+        <div className="flex justify-end">
+          <ApplyCreditDialog contractId={contractId} availableBalance={credit.data.available_balance} />
+        </div>
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="rounded-lg border p-4">
           <div className="text-xs text-muted-foreground">Total kredit</div>
@@ -78,7 +92,7 @@ export function CreditPanel({ contractId }: { contractId: string }) {
               applications.map((application) => (
                 <TableRow key={application.application_id}>
                   <TableCell>{formatDateTime(application.applied_at)}</TableCell>
-                  <TableCell className="font-mono text-xs">{application.installment_id}</TableCell>
+                  <TableCell>{periodLabel(installments.data, application.installment_id)}</TableCell>
                   <TableCell className="text-right">
                     <MoneyDisplay value={application.amount} />
                   </TableCell>

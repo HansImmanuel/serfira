@@ -89,6 +89,20 @@ export interface CreditBalance {
   applications: CreditApplication[];
 }
 
+/**
+ * `POST /contracts/{id}/credit/apply` body: `amount` applies part of the available balance; omitting it
+ * applies all of it (Addendum §2.2). There is no `Idempotency-Key` on this endpoint by design.
+ */
+export interface ApplyCreditPayload {
+  amount?: string;
+}
+
+export interface CreditApplicationResult {
+  applied_amount: Money;
+  available_balance: Money;
+  applications: CreditApplication[];
+}
+
 /** `journal_entry.ref_type` vocabulary (`LedgerRefType` on the backend), in the backend's order. */
 export const LEDGER_REF_TYPES = [
   "CONTRACT_ACTIVATION",

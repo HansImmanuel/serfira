@@ -3,7 +3,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/lib/api";
-import type { CreateContractPayload, Contract, CreditBalance, Installment } from "@/types/contract";
+import type {
+  ApplyCreditPayload,
+  CreateContractPayload,
+  Contract,
+  CreditApplicationResult,
+  CreditBalance,
+  Installment,
+} from "@/types/contract";
 
 const contractKey = (id: string) => ["contract", id] as const;
 
@@ -30,6 +37,29 @@ export function useCredit(id: string, enabled = true) {
     queryKey: [...contractKey(id), "credit"],
     queryFn: () => apiFetch<CreditBalance>(`/contracts/${id}/credit`),
     enabled: id.length > 0 && enabled,
+  });
+}
+
+/**
+ * Applies available customer credit to the oldest due receivable (`ADMIN_OPERASIONAL` only, ADR-015).
+ * The endpoint takes no `Idempotency-Key` by design, so the dialog's disabled button is the only
+ * double-submit guard. Success invalidates the whole contract prefix — balance, installments and
+ * statement all move — plus the contract list.
+ */
+export function useApplyCredit(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ApplyCreditPayload) =>
+      apiFetch<CreditApplicationResult>(`/contracts/${id}/credit/apply`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: contractKey(id) }),
+        queryClient.invalidateQueries({ queryKey: ["contracts"] }),
+      ]);
+    },
   });
 }
 

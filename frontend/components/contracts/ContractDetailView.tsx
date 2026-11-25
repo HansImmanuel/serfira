@@ -188,7 +188,7 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
 
         {canReadCredit ? (
           <TabsContent value="credit">
-            <CreditPanel contractId={detail.id} />
+            <CreditPanel contractId={detail.id} contractStatus={detail.status} />
           </TabsContent>
         ) : null}
 
