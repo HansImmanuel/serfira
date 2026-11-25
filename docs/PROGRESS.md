@@ -133,6 +133,9 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
       "Mulai form baru"; tampilan sukses menunjukkan alokasi per angsuran dan peringatan kelebihan sebagai
       kredit; tombol "Catat Pembayaran" (ADMIN, ACTIVE); filter rekening koran `ref_type`/`from`/`to` di API;
       "Terapkan Kredit" (ADMIN, ACTIVE, saldo > 0); invalidasi prefix `["contract", id]` setelah setiap tulis.
-      Verifikasi: 172 test / 23 file, lint/typecheck/build hijau; backend `./gradlew check` 121 suite / 932
+      Verifikasi: 178 test / 23 file, lint/typecheck/build hijau; backend `./gradlew check` 121 suite / 932
       test; uji manual di browser terhadap stack Compose (branch `t33-payment-statement-credit`)
+      - Remediasi review akhir: hasil pembayaran tetap tampil walau pembayaran itu menutup kontrak
+        (maturity), saldo kredit dimuat ulang setelah apply gagal, dialog kredit tidak bisa ditutup saat
+        request berjalan, dan filter ref type tetap berlaku saat rentang tanggal terbalik
 - [ ] T34 — G5: demo script, seed data, README close-out

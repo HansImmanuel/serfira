@@ -189,4 +189,36 @@ describe("CreditPanel apply action", () => {
 
     expect(await screen.findByText("Angsuran ke-3")).toBeInTheDocument();
   });
+
+  it("reloads the credit balance after a failed apply, which may still have committed", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole("button", { name: "Terapkan Kredit" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+
+    expect(await within(dialog).findByText("Failed to fetch")).toBeInTheDocument();
+    await vi.waitFor(() => expect(creditReads()).toBe(2));
+  });
+
+  it("keeps the dialog open while the apply is pending", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockApi("250000.00", () => new Promise(() => {}));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole("button", { name: "Terapkan Kredit" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await within(dialog).findByRole("button", { name: "Menerapkan…" });
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
 });

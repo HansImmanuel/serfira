@@ -26,7 +26,7 @@ contract lifecycle and the servicing screens (payment, statement filters, credit
 `main` was merged in) = **121 suites / 932 tests / 0 failed** (T35 baseline 120/926, plus
 `BigDecimalStringModuleTest`, plus the PR #22 CORS review tests); unchanged by T33 (no backend file
 touched). Frontend `npm test` (2026-11-25, branch `t33-payment-statement-credit`) =
-**172 tests / 23 files / 0 failed** (T32 baseline 108 / 17), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the
+**178 tests / 23 files / 0 failed** (T32 baseline 108 / 17), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the
 production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). CI on `main` is red
 for a GitHub billing reason, not a test failure.
 
@@ -423,6 +423,16 @@ the browser against the Compose stack as `admin`: created and activated a test c
 date, posted an overpayment → allocation to periods 1–2 (penalty → interest → principal) plus EXCESS with the
 warning; schedule, header outstanding and statement refreshed without a reload; apply-credit with nothing due
 showed `CREDIT_NOT_APPLICABLE` inline; the statement `ref_type=PAYMENT` filter reached the API.
+Review remediation (2026-11-25, final whole-branch review): (1) **a payment that closed the contract hid its
+own result** — the refetched CLOSED status was checked before the posted payment, so a maturity-closing
+payment showed "only ACTIVE contracts"; `RecordPaymentView` now renders the result first, regardless of the
+later contract state or a failed refetch, and `PaymentResult` drops "Catat pembayaran lain" and the
+apply-credit advice once the contract is no longer ACTIVE. (2) Credit apply now invalidates on settle, so a
+failed (possibly committed) apply reloads the balance before the next attempt, and (3) the dialog cannot be
+closed while the apply is pending. (4) A ref-type change still applies while the date range is inverted, so
+the table always matches the visible select. Each fix has a regression test that failed first. Verified:
+lint, typecheck, `npm test` = **178 tests / 23 files / 0 failed**, build; re-checked in the browser by paying a
+1-month test contract to completion (result shown, contract CLOSED).
 
 **Goal:** Complete the day-to-day servicing screens: record a payment, read the schedule, read the
 statement and inspect customer credit.

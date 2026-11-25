@@ -154,6 +154,57 @@ describe("RecordPaymentView", () => {
   });
 });
 
+describe("RecordPaymentView after the payment changes the contract", () => {
+  beforeEach(() => {
+    clearSession();
+    setSession({ access_token: accessTokenWithRoles(["ADMIN_OPERASIONAL"]), refresh_token: "r1" }, "admin");
+    vi.mocked(apiFetch).mockReset();
+    let issued = 0;
+    vi.mocked(newIdempotencyKey).mockImplementation(() => `key-${++issued}`);
+  });
+
+  function mockContractAfterPayment(afterPayment: () => Contract) {
+    let paid = false;
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === "/payments") {
+        paid = true;
+        return PAYMENT as never;
+      }
+      if (String(path).endsWith("/installments")) {
+        return [] as never;
+      }
+      return (paid ? afterPayment() : contract("ACTIVE")) as never;
+    });
+  }
+
+  async function pay() {
+    const user = userEvent.setup();
+    renderWithQueryClient(<RecordPaymentView contractId="c1" />);
+    await user.type(await screen.findByLabelText("Jumlah Bayar"), "1500000");
+    await user.click(screen.getByRole("button", { name: "Simpan Pembayaran" }));
+  }
+
+  it("still shows the result when the final payment closes the contract", async () => {
+    mockContractAfterPayment(() => contract("CLOSED"));
+    await pay();
+
+    expect(await screen.findByText("Pembayaran tercatat")).toBeInTheDocument();
+    expect(screen.getByText("PAY-202611-0001")).toBeInTheDocument();
+    expect(screen.queryByText("Pembayaran hanya dapat dicatat untuk kontrak berstatus ACTIVE.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Catat pembayaran lain" })).not.toBeInTheDocument();
+  });
+
+  it("still shows the result when the contract refetch fails after posting", async () => {
+    mockContractAfterPayment(() => {
+      throw new ApiError("INTERNAL_ERROR", "Server error", 500);
+    });
+    await pay();
+
+    expect(await screen.findByText("Pembayaran tercatat")).toBeInTheDocument();
+    expect(screen.queryByText("Kontrak tidak dapat dimuat")).not.toBeInTheDocument();
+  });
+});
+
 describe("RequireWrite message", () => {
   beforeEach(() => {
     clearSession();

@@ -38,15 +38,20 @@ function channelLabel(channel: Payment["channel"]): string {
  * applied them (ADR-009), rendered as returned — the browser never recomputes allocation. A positive
  * `excess_amount` is customer credit that is never applied automatically (PRD P-4), so it is flagged.
  * A replayed request returns the same payment, so this view is identical for a retry.
+ *
+ * <p>`contractActive` is false when the payment itself closed the contract (maturity): no further
+ * payment can be recorded and credit can no longer be applied from the Kredit tab, so neither is offered.
  */
 export function PaymentResult({
   contractId,
   payment,
   onRecordAnother,
+  contractActive = true,
 }: {
   contractId: string;
   payment: Payment;
   onRecordAnother: () => void;
+  contractActive?: boolean;
 }) {
   const installments = useInstallments(contractId);
   const hasExcess = compareMoney(payment.excess_amount, "0.00") > 0;
@@ -88,7 +93,8 @@ export function PaymentResult({
         <Alert>
           <AlertTitle>Ada kelebihan pembayaran</AlertTitle>
           <AlertDescription>
-            {`Kelebihan ${formatMoney(payment.excess_amount)} disimpan sebagai kredit nasabah dan tidak dipakai otomatis. Terapkan dari tab Kredit.`}
+            {`Kelebihan ${formatMoney(payment.excess_amount)} disimpan sebagai kredit nasabah dan tidak dipakai otomatis.`}
+            {contractActive ? " Terapkan dari tab Kredit." : null}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -120,9 +126,11 @@ export function PaymentResult({
         <Button asChild>
           <Link href={`/contracts/${contractId}`}>Kembali ke kontrak</Link>
         </Button>
-        <Button variant="outline" onClick={onRecordAnother}>
-          Catat pembayaran lain
-        </Button>
+        {contractActive ? (
+          <Button variant="outline" onClick={onRecordAnother}>
+            Catat pembayaran lain
+          </Button>
+        ) : null}
       </div>
     </div>
   );

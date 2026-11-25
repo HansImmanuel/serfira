@@ -19,6 +19,10 @@ import type { Payment } from "@/types/payment";
  * Payment screen (FE §2.6) for one contract. Only an ACTIVE contract accepts money (the API answers
  * 409 `CONTRACT_STATE_INVALID` otherwise), so any other status gets an explanation and no form.
  *
+ * <p>Once a payment is posted its result stays on screen whatever the contract refetch says next: a
+ * final payment closes the contract (maturity), and a failed background refetch must not replace the
+ * outcome of money that was received.
+ *
  * <p>`formInstance` is the form's React key: bumping it remounts `RecordPaymentForm`, which is the only
  * way a new `Idempotency-Key` is minted — after a posted payment ("Catat pembayaran lain") or when the
  * operator deliberately restarts a form whose key is spent.
@@ -31,6 +35,28 @@ export function RecordPaymentView({ contractId }: { contractId: string }) {
   function startNewForm() {
     setPosted(null);
     setFormInstance((current) => current + 1);
+  }
+
+  if (posted !== null) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <Button asChild variant="ghost" size="sm" className="-ml-2">
+            <Link href={`/contracts/${contractId}`}>
+              <ArrowLeft className="size-4" aria-hidden="true" />
+              Kembali ke kontrak
+            </Link>
+          </Button>
+          <h1 className="text-xl font-semibold tracking-tight">Catat Pembayaran</h1>
+        </div>
+        <PaymentResult
+          contractId={contractId}
+          payment={posted}
+          onRecordAnother={startNewForm}
+          contractActive={contract.data === undefined || contract.data.status === "ACTIVE"}
+        />
+      </div>
+    );
   }
 
   if (contract.isPending) {
@@ -68,8 +94,6 @@ export function RecordPaymentView({ contractId }: { contractId: string }) {
         <Alert>
           <AlertDescription>Pembayaran hanya dapat dicatat untuk kontrak berstatus ACTIVE.</AlertDescription>
         </Alert>
-      ) : posted !== null ? (
-        <PaymentResult contractId={contractId} payment={posted} onRecordAnother={startNewForm} />
       ) : (
         <RecordPaymentForm
           key={formInstance}

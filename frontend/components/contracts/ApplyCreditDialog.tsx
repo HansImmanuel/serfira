@@ -54,6 +54,10 @@ export function ApplyCreditDialog({ contractId, availableBalance }: { contractId
   const mutation = useApplyCredit(contractId);
 
   function changeOpen(next: boolean) {
+    if (!next && mutation.isPending) {
+      // Closing now would hide the outcome of an apply that has no Idempotency-Key to retry safely.
+      return;
+    }
     setOpen(next);
     if (next) {
       setAmount("");

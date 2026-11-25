@@ -130,4 +130,14 @@ describe("PaymentResult", () => {
     await user.click(screen.getByRole("button", { name: "Catat pembayaran lain" }));
     expect(onRecordAnother).toHaveBeenCalledTimes(1);
   });
+
+  it("drops the apply-credit advice and the record-another action once the contract is no longer active", () => {
+    renderWithQueryClient(
+      <PaymentResult contractId="c1" payment={PAYMENT} onRecordAnother={vi.fn()} contractActive={false} />,
+    );
+
+    expect(screen.getByText(/disimpan sebagai kredit nasabah/)).toBeInTheDocument();
+    expect(screen.queryByText(/Terapkan dari tab Kredit/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Catat pembayaran lain" })).not.toBeInTheDocument();
+  });
 });

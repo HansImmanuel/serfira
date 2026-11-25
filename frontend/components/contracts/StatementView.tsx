@@ -78,6 +78,10 @@ export function StatementView({ contractId }: { contractId: string }) {
     if (!isInvertedRange(next)) {
       setApplied(next);
       setPage(0);
+    } else if (next.refType !== applied.refType) {
+      // The dates wait for a valid range; the ref type is independent and must match what the select shows.
+      setApplied({ ...applied, refType: next.refType });
+      setPage(0);
     }
   }
 

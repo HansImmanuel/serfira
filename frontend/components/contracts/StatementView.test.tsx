@@ -163,4 +163,17 @@ describe("StatementView filters", () => {
     expect(shortId).toHaveAttribute("title", PAYMENT_ROW.ref_id);
     expect(screen.getByText("PAYMENT", { selector: "span" })).toBeInTheDocument();
   });
+
+  it("still applies a ref type change while the date range is inverted", async () => {
+    renderWithQueryClient(<StatementView contractId="c1" />);
+    await screen.findByText("Pembayaran angsuran");
+
+    fireEvent.change(screen.getByLabelText("Dari"), { target: { value: "2026-12-01" } });
+    fireEvent.change(screen.getByLabelText("Sampai"), { target: { value: "2026-11-01" } });
+    await chooseRefType("BILLING");
+
+    await vi.waitFor(() =>
+      expect(lastPath()).toBe("/contracts/c1/statement?page=0&size=20&ref_type=BILLING&from=2026-12-01"),
+    );
+  });
 });

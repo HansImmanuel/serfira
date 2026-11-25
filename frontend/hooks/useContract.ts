@@ -43,8 +43,9 @@ export function useCredit(id: string, enabled = true) {
 /**
  * Applies available customer credit to the oldest due receivable (`ADMIN_OPERASIONAL` only, ADR-015).
  * The endpoint takes no `Idempotency-Key` by design, so the dialog's disabled button is the only
- * double-submit guard. Success invalidates the whole contract prefix — balance, installments and
- * statement all move — plus the contract list.
+ * double-submit guard. The whole contract prefix — balance, installments and statement — plus the
+ * contract list are invalidated once the call settles, success or not: a timed-out apply may still have
+ * committed, and the dialog must validate the next attempt against the real balance.
  */
 export function useApplyCredit(id: string) {
   const queryClient = useQueryClient();
@@ -54,7 +55,7 @@ export function useApplyCredit(id: string) {
         method: "POST",
         body: JSON.stringify(payload),
       }),
-    onSuccess: async () => {
+    onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: contractKey(id) }),
         queryClient.invalidateQueries({ queryKey: ["contracts"] }),
