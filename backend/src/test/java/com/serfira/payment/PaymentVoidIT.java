@@ -248,6 +248,7 @@ class PaymentVoidIT {
 		postedPayment("bill-periods", "50000.00");
 		MvcResult apply = mockMvc.perform(post("/api/v1/contracts/" + contractId + "/credit/apply")
 						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", "void-it-apply-1")
 						.contentType(MediaType.APPLICATION_JSON).content("{\"amount\":1000000.00}"))
 				.andReturn();
 		assertThat(apply.getResponse().getStatus()).isEqualTo(200);
@@ -285,6 +286,7 @@ class PaymentVoidIT {
 		// 3. Apply 300,000 of the credit to installment 1's remaining recognized receivable.
 		MvcResult apply = mockMvc.perform(post("/api/v1/contracts/" + contractId + "/credit/apply")
 						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", "void-it-apply-2")
 						.contentType(MediaType.APPLICATION_JSON).content("{\"amount\":300000.00}"))
 				.andReturn();
 		assertThat(apply.getResponse().getStatus()).isEqualTo(200);

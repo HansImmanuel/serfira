@@ -27,10 +27,17 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -304,6 +311,7 @@ class ContractCreditIT {
 	void applyingToAnUnknownContractIsNotFound() throws Exception {
 		MvcResult result = mockMvc.perform(post("/api/v1/contracts/" + UUID.randomUUID() + "/credit/apply")
 						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", "unknown-contract-apply")
 						.contentType(MediaType.APPLICATION_JSON).content("{}"))
 				.andReturn();
 
@@ -312,6 +320,155 @@ class ContractCreditIT {
 	}
 
 	// --- helpers ---------------------------------------------------------------------------------------
+
+	@Test
+	void aMissingIdempotencyKeyIsAValidationErrorAndAppliesNothing() throws Exception {
+		seedAppliableCredit();
+
+		MvcResult result = mockMvc.perform(post("/api/v1/contracts/" + contractId + "/credit/apply")
+						.header("Authorization", "Bearer " + adminToken)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"amount\":1000000.00}"))
+				.andReturn();
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(400);
+		assertThat(errorCode(result)).isEqualTo("VALIDATION_ERROR");
+		assertThat(count("contract_credit_application")).isZero();
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isZero();
+		assertThat(availableBalance()).isEqualByComparingTo("2000000.00");
+	}
+
+	@Test
+	void aRetryAfterALostResponseReplaysAndAppliesTheCreditExactlyOnce() throws Exception {
+		seedAppliableCredit();
+
+		// The first call commits, but the caller never sees its response (the exchange is simply dropped).
+		MvcResult lost = applyCredit("apply-lost-response", "{\"amount\":1000000.00}");
+		assertThat(lost.getResponse().getStatus()).isEqualTo(200);
+		long applicationsAfterFirst = count("contract_credit_application");
+		BigDecimal paidAfterFirst = paidAmountOf(1).add(paidAmountOf(2));
+		assertThat(availableBalance()).isEqualByComparingTo("1000000.00");
+
+		// The operator retries with the same key and body: the stored response comes back, nothing is redone.
+		MvcResult retry = applyCredit("apply-lost-response", "{\"amount\":1000000.00}");
+
+		assertThat(retry.getResponse().getStatus()).isEqualTo(200);
+		assertThat(data(retry).get("applied_amount").asText()).isEqualTo(data(lost).get("applied_amount").asText());
+		assertThat(data(retry).get("applications").get(0).get("application_id").asText())
+				.isEqualTo(data(lost).get("applications").get(0).get("application_id").asText());
+		assertThat(count("contract_credit_application")).isEqualTo(applicationsAfterFirst);
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isEqualTo(1L);
+		assertThat(paidAmountOf(1).add(paidAmountOf(2))).isEqualByComparingTo(paidAfterFirst);
+		assertThat(availableBalance()).isEqualByComparingTo("1000000.00");
+		assertThat(applyClaims()).isEqualTo(1L);
+		assertBalancedCreditJournal(latestEntry("CREDIT_APPLICATION"));
+	}
+
+	@Test
+	void aDifferentRequestUnderTheSameKeyConflictsAndAppliesNothingMore() throws Exception {
+		seedAppliableCredit();
+		assertThat(applyCredit("shared-apply-key", "{\"amount\":1000000.00}").getResponse().getStatus())
+				.isEqualTo(200);
+		long applications = count("contract_credit_application");
+
+		MvcResult otherAmount = applyCredit("shared-apply-key", "{\"amount\":500000.00}");
+		// Omitting the amount ("apply everything") is a different request from naming today's balance.
+		MvcResult fullBalance = applyCredit("shared-apply-key", "{}");
+
+		assertThat(otherAmount.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(otherAmount)).isEqualTo("CONFLICT");
+		assertThat(fullBalance.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(fullBalance)).isEqualTo("CONFLICT");
+		assertThat(count("contract_credit_application")).isEqualTo(applications);
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isEqualTo(1L);
+		assertThat(availableBalance()).isEqualByComparingTo("1000000.00");
+	}
+
+	@Test
+	void aNewKeyAfterASuccessfulApplyIsAGenuinelyNewApplication() throws Exception {
+		seedAppliableCredit();
+		MvcResult first = applyCredit("first-operation", "{\"amount\":1000000.00}");
+		MvcResult second = applyCredit("second-operation", "{\"amount\":1000000.00}");
+
+		assertThat(first.getResponse().getStatus()).isEqualTo(200);
+		assertThat(second.getResponse().getStatus()).isEqualTo(200);
+		assertThat(data(second).get("applications").get(0).get("application_id").asText())
+				.isNotEqualTo(data(first).get("applications").get(0).get("application_id").asText());
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isEqualTo(2L);
+		assertThat(availableBalance()).isEqualByComparingTo("0.00");
+		assertThat(applyClaims()).isEqualTo(2L);
+	}
+
+	@Test
+	void aRejectedApplyRollsBackItsClaimSoTheKeyCanBeRetriedWithACorrectedAmount() throws Exception {
+		seedAppliableCredit();
+
+		MvcResult tooMuch = applyCredit("corrected-retry", "{\"amount\":9000000.00}");
+		assertThat(tooMuch.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(tooMuch)).isEqualTo("CONFLICT");
+		assertThat(applyClaims()).isZero();
+
+		MvcResult corrected = applyCredit("corrected-retry", "{\"amount\":1000000.00}");
+
+		assertThat(corrected.getResponse().getStatus()).isEqualTo(200);
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isEqualTo(1L);
+		assertThat(applyClaims()).isEqualTo(1L);
+	}
+
+	@Test
+	void racingRequestsWithOneKeyApplyTheCreditOnce() throws Exception {
+		seedAppliableCredit();
+		CountDownLatch startTogether = new CountDownLatch(1);
+		ExecutorService pool = Executors.newFixedThreadPool(3);
+		List<String> statuses = new ArrayList<>();
+		List<String> applicationIds = new ArrayList<>();
+		try {
+			List<Future<MvcResult>> futures = new ArrayList<>();
+			for (int attempt = 0; attempt < 3; attempt++) {
+				futures.add(pool.submit(() -> {
+					startTogether.await(5, TimeUnit.SECONDS);
+					return applyCredit("racing-apply-key", "{\"amount\":1000000.00}");
+				}));
+			}
+			startTogether.countDown();
+			for (Future<MvcResult> future : futures) {
+				MvcResult result = future.get(60, TimeUnit.SECONDS);
+				statuses.add(String.valueOf(result.getResponse().getStatus()));
+				if (result.getResponse().getStatus() == 200) {
+					applicationIds.add(data(result).get("applications").get(0).get("application_id").asText());
+				}
+			}
+		} finally {
+			pool.shutdownNow();
+		}
+
+		// A loser blocks on the claim until the winner commits, then replays: one application, one journal.
+		assertThat(applicationIds).isNotEmpty();
+		assertThat(applicationIds).containsOnly(applicationIds.get(0));
+		assertThat(statuses).allMatch(status -> status.equals("200") || status.equals("409"));
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isEqualTo(1L);
+		assertThat(applyClaims()).isEqualTo(1L);
+		assertThat(availableBalance()).isEqualByComparingTo("1000000.00");
+		assertBalancedCreditJournal(latestEntry("CREDIT_APPLICATION"));
+	}
+
+	@Test
+	void reusingTheKeyPastRetentionIsRejectedAsExpiredAndAppliesNothingMore() throws Exception {
+		seedAppliableCredit();
+		assertThat(applyCredit("expiring-apply-key", "{\"amount\":1000000.00}").getResponse().getStatus())
+				.isEqualTo(200);
+
+		// ADR-017: past the 7-day window the key is spent, whatever the body.
+		fixedClock().advanceBy(Duration.ofDays(8));
+		MvcResult sameBody = applyCredit("expiring-apply-key", "{\"amount\":1000000.00}");
+		MvcResult otherBody = applyCredit("expiring-apply-key", "{\"amount\":500000.00}");
+
+		assertThat(sameBody.getResponse().getStatus()).isEqualTo(409);
+		assertThat(errorCode(sameBody)).isEqualTo("IDEMPOTENCY_KEY_EXPIRED");
+		assertThat(errorCode(otherBody)).isEqualTo("IDEMPOTENCY_KEY_EXPIRED");
+		assertThat(journalEntryCount("CREDIT_APPLICATION")).isEqualTo(1L);
+		assertThat(availableBalance()).isEqualByComparingTo("1000000.00");
+	}
 
 	private MvcResult pay(String idempotencyKey, String amount) throws Exception {
 		return mockMvc.perform(post("/api/v1/payments")
@@ -323,12 +480,38 @@ class ContractCreditIT {
 				.andReturn();
 	}
 
+	/** Applies credit under a fresh key, i.e. as a genuinely new operation. */
 	private MvcResult applyCredit(String jsonBody) throws Exception {
+		return applyCredit("credit-" + UUID.randomUUID(), jsonBody);
+	}
+
+	private MvcResult applyCredit(String idempotencyKey, String jsonBody) throws Exception {
 		return mockMvc.perform(post("/api/v1/contracts/" + contractId + "/credit/apply")
 						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", idempotencyKey)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content(jsonBody))
 				.andReturn();
+	}
+
+	/**
+	 * Books a 2,000,000 credit early (nothing due, so nothing resolved), then moves to a date where periods
+	 * 1 and 2 are due and billed, leaving plenty of recognized receivable for the credit to be applied to.
+	 */
+	private void seedAppliableCredit() throws Exception {
+		fixedClock().setDate(LocalDate.of(2026, 1, 15));
+		assertThat(pay("make-credit", "2000000.00").getResponse().getStatus()).isEqualTo(201);
+		fixedClock().setDate(LocalDate.of(2026, 3, 31));
+		assertThat(pay("bill-two-periods", "50000.00").getResponse().getStatus()).isEqualTo(201);
+	}
+
+	private BigDecimal availableBalance() throws Exception {
+		return new BigDecimal(data(getCredit(adminToken)).get("available_balance").asText());
+	}
+
+	private long applyClaims() {
+		return jdbc.queryForObject("select count(*) from idempotency_keys where endpoint = ?", Long.class,
+				"POST /api/v1/contracts/{id}/credit/apply");
 	}
 
 	private MvcResult getCredit(String token) throws Exception {

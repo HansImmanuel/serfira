@@ -5,6 +5,7 @@ import com.serfira.contract.application.ContractCreditRetryingService;
 import com.serfira.shared.api.ApiResponse;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -59,12 +61,17 @@ public class ContractCreditController {
 					unrecognized interest is never credited. One balanced journal entry is posted per call
 					(Dr TITIPAN_NASABAH / Cr PIUTANG_DENDA|PIUTANG_BUNGA|PIUTANG_POKOK, ref_type=CREDIT_APPLICATION),
 					installment paid_amount rises, and a contract_credit_application row is recorded. A credit is
-					flipped AVAILABLE -> APPLIED only when its balance reaches 0. Allowed role: ADMIN_OPERASIONAL.""")
+					flipped AVAILABLE -> APPLIED only when its balance reaches 0.
+					Retry-safe (ADR-017, TS §2.2): the required `Idempotency-Key` claim, the credit consumption,
+					the installment resolution and the journal entry commit in one transaction, so repeating the
+					request with the same key and body replays the stored response instead of applying credit a
+					second time. Allowed role: ADMIN_OPERASIONAL.""")
 	@ApiResponses({
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
 					description = "Credit applied; returns the amount applied, balance after, and the applications made"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400",
-					description = "VALIDATION_ERROR - amount not positive or finer than scale 2"),
+					description = "VALIDATION_ERROR - amount not positive or finer than scale 2, or missing "
+							+ "Idempotency-Key"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "401",
 					description = UNAUTHORIZED_DESCRIPTION),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403",
@@ -73,15 +80,19 @@ public class ContractCreditController {
 					description = "CONTRACT_NOT_FOUND - no such contract"),
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409",
 					description = "CONTRACT_STATE_INVALID - contract is not ACTIVE; "
-							+ "CONFLICT - requested amount exceeds the available balance; "
+							+ "CONFLICT - requested amount exceeds the available balance, or the Idempotency-Key was "
+							+ "already used for a different request; "
+							+ "IDEMPOTENCY_KEY_EXPIRED - the Idempotency-Key is spent (mint a fresh key); "
 							+ "CREDIT_NOT_APPLICABLE - no available credit, or no due installment with recognized "
 							+ "receivable to apply against; "
 							+ "CONCURRENT_MODIFICATION - a concurrent job/payment conflict persisted across retries")
 	})
 	public ApiResponse<CreditApplicationResponse> apply(
 			@PathVariable UUID id,
+			@Parameter(description = "Endpoint-scoped retry key (TS §2.2/§2.5)", required = true)
+			@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
 			@Valid @RequestBody(required = false) ApplyCreditRequest request) {
-		return ApiResponse.ok(commands.apply(id, request == null ? null : request.amount()));
+		return ApiResponse.ok(commands.apply(id, idempotencyKey, request == null ? null : request.amount()));
 	}
 
 	@GetMapping("/{id}/credit")

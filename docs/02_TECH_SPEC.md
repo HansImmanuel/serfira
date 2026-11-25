@@ -272,6 +272,16 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
   menghapus baris `idempotency_keys`, backstop permanen (`uq_contract_idempotency`, `uq_payment_idempotency`)
   mengembalikan kode yang sama. `PaymentConflictClassifier` tidak me-retry `uq_payment_idempotency` (hanya
   `uk_penalty_accrual` dan optimistic-lock yang retryable).
+- **Implementasi credit application (T33 review, ADR-017):** `POST /api/v1/contracts/{id}/credit/apply` mewajibkan
+  `Idempotency-Key` (400 `VALIDATION_ERROR` bila hilang), endpoint scope `POST /api/v1/contracts/{id}/credit/apply`,
+  canonical JSON = `contract_id` + `amount` (skala 2, `null` bila body kosong/"terapkan seluruh saldo"; amount
+  eksplisit sama dengan saldo adalah request berbeda dari body kosong). Claim, konsumsi `contract_credit`,
+  resolusi installment, dan jurnal `CREDIT_APPLICATION` berada dalam satu transaksi `@Transactional`, jadi apply yang
+  ditolak me-rollback claim dan key tetap bisa dipakai untuk retry yang dikoreksi; retry identik mengembalikan
+  `response_json` tersimpan tanpa baris aplikasi atau jurnal kedua; body berbeda → 409 `CONFLICT`; key lewat retention
+  → 409 `IDEMPOTENCY_KEY_EXPIRED`. Berbeda dari payment/contract, endpoint ini **tidak** punya backstop bisnis
+  permanen (satu apply menghasilkan N baris aplikasi), sehingga setelah cleanup T18 menghapus baris claim, key yang
+  dipakai ulang tidak lagi terdeteksi; jaminan retry-safe berlaku selama window retention (default 7 hari).
 - **Implementasi C3 (ADR-010):** `POST /api/v1/payments` memakai endpoint scope `POST /api/v1/payments` dengan
   canonical JSON dari field request (amount dinormalkan ke skala 2). Claim berjalan di dalam `@Transactional`
   application service, jadi kegagalan operasi me-rollback claim dan retry dengan key yang sama tetap sah

@@ -121,6 +121,24 @@ ADR-007 decision 9 and leaves decisions 1–8 unchanged.
   both hot write paths for a case that cannot occur until T18 exists; it is deliberately **not** done
   here and is left for T18 to decide if uniformity is wanted. (Flagged by the PR bot review, 2026-10-02.)
 
+### Addendum: credit application takes the key (T33 review, 2026-11-25)
+
+TS §2.2 always listed credit application among the endpoints that **must** take an `Idempotency-Key`, but T14
+shipped `POST /contracts/{id}/credit/apply` without one and the steering notes recorded that as "by design". The
+T33 UI exposed the gap: an apply whose response is lost cannot be told apart from one that never ran, and a second
+submit then applies the credit again. The endpoint now follows this ADR like the write-off: `IdempotencyService`
+wraps the apply inside its transaction (claim, `contract_credit_application` rows, credit status, installment
+resolution and the `CREDIT_APPLICATION` journal commit or roll back together), replay returns the stored response,
+a different body is 409 `CONFLICT`, a spent key is 409 `IDEMPOTENCY_KEY_EXPIRED`, and a missing key is 400.
+
+**Known limitation.** Unlike `uq_contract_idempotency` / `uq_payment_idempotency`, there is no permanent business-row
+backstop: one apply creates one row per funded installment, so no single column can carry the key without a new
+table. After the T18 cleanup deletes the claim row (past retention) a reused key would no longer be recognised and
+would run as a new apply. The guarantee is therefore "exactly once within the retention window", which covers the
+real failure mode (a retry seconds or minutes after a lost response); the frontend mints a fresh key per logical
+operation and never reuses one across sessions. A permanent backstop would need a `credit_apply_request` table and
+is deliberately not added here.
+
 ### Resolution of the open T18 item (2026-10-11, Sprint 6 planning)
 
 The pre-business-logic permanent-key probe is **declined**. The varied-but-truthful 409 codes
