@@ -505,7 +505,7 @@ use the business zone, not the browser's.
 
 ### T34 — G5: demo script, seed data and README close-out (2 pts)
 
-Status: TODO
+Status: IN PROGRESS
 Estimate: 2 pts
 
 **Goal:** Make the system demonstrable from a clean checkout in one repeatable sequence.
