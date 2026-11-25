@@ -17,16 +17,17 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `1113172` (Sprint 7 plan committed). **Sprint 6b is COMPLETE**; **Sprint 7 is in
-progress** — T35 DONE on branch `t35-cors-adr-023` (PR #22 open) and T32 DONE on branch `t32-nextjs-shell`
-(stacked on T35, PR pending); T33/T34 still TODO. Backend Phases 1–2 are implemented and merged; the
-`frontend/` app shell, login and contract lifecycle journey are implemented.
+**Snapshot:** `main` @ `cff44de` (PR #22, T35 CORS boundary, merged). **Sprint 6b is COMPLETE**; **Sprint 7
+is in progress** — T35 DONE and merged, T32 DONE on branch `t32-nextjs-shell` (PR #23 pending, `main` merged
+back in); T33/T34 still TODO. Backend Phases 1–2 are implemented and merged; the `frontend/` app shell, login
+and contract lifecycle journey are implemented.
 
-**Verified test counts:** backend full local `./gradlew check` (2026-11-25, branch `t32-nextjs-shell`) =
-**121 suites / 929 tests / 0 failed** (T35 baseline 120/926 plus `BigDecimalStringModuleTest`). Frontend
-`npm test` (2026-11-25) = **108 tests / 17 files / 0 failed**, plus green `npm run lint`,
-`npm run typecheck` and `npm run build` (the production build refuses to fall back to localhost without
-`NEXT_PUBLIC_API_BASE_URL`). CI on `main` is red for a GitHub billing reason, not a test failure.
+**Verified test counts:** backend full local `./gradlew check` (2026-11-25, branch `t32-nextjs-shell`, after
+`main` was merged in) = **121 suites / 932 tests / 0 failed** (T35 baseline 120/926, plus
+`BigDecimalStringModuleTest`, plus the PR #22 CORS review tests). Frontend `npm test` (2026-11-25) =
+**108 tests / 17 files / 0 failed**, plus green `npm run lint`, `npm run typecheck` and `npm run build` (the
+production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). CI on `main` is red
+for a GitHub billing reason, not a test failure.
 
 **Implemented (verified in source):**
 
@@ -164,8 +165,9 @@ Implementation note (2026-11-19, branch `t35-cors-adr-023`): CORS lives in
 first DSL call, so an untokened preflight is answered by the `CorsFilter` instead of falling through to
 `denyAll()`. `AllowedOrigins` validates the comma-separated property once at startup and rejects
 wildcards, blank entries, paths, queries, fragments, user info, out-of-range and default ports, and
-non-canonical case; the message names the offending entry. `allowCredentials=false`, methods `GET,POST`,
-allowed headers `Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id`, exposed `X-Request-Id`,
+non-canonical spelling (including non-canonical IPv6); the message names the offending entry.
+`allowCredentials=false`, methods `GET,POST`, allowed headers
+`Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id`, exposed `X-Request-Id`,
 max age 1800 s. Main properties ship an explicit empty default; Compose and the test profile set
 `http://localhost:3000`. ADR-023 records the boundary (direct calls, in-memory tokens, roles as UX only,
 no `/me`, unverified decode) and the Next.js 16.4.6 pin with its OSV check. One behaviour the review
@@ -174,6 +176,19 @@ the fixed body `Invalid CORS request` *before* authentication, not with the endp
 `AllowedOriginsTest` (8), `CorsIT` (6), `CorsDeniedByDefaultIT` (1). Verified with
 `./gradlew test --tests "*Cors*" --tests "*AllowedOriginsTest"` and then the full `./gradlew test` =
 **120 suites / 926 tests / 0 failed**; `EndpointRoleMatrixIT` unchanged and green.
+
+Review remediation (2026-11-21, PR #22): Compose now uses the unset-only default
+`${SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS-http://localhost:3000}`, so an explicitly empty value is
+preserved and denies every browser origin instead of silently falling back to localhost (ADR-023 D4).
+Verified with `docker compose config`: unset renders `http://localhost:3000`; an empty env-file value
+renders `""` (the old `:-` form rendered localhost for the same input). `AllowedOrigins` now re-serializes
+IPv6 literals the way a browser does and rejects non-canonical spellings (`[0:0:0:0:0:0:0:1]`, uppercase
+or leading-zero hex, a `::` run that is not the first longest, embedded dotted IPv4, zone ids) without DNS;
+`[::1]` and `[::ffff:7f00:1]` stay accepted. `AllowedOriginsTest` grew 8 -> 11. The review suggestion to
+put a localhost default in the main properties was not applied: ADR-023 D4 and this task's risk note
+require the empty default, Compose and the test profile carry the dev origin, and the README documents the
+`bootRun` variable. Verified: focused CORS suite 18 tests / 0 failed, full `./gradlew test` = **120 suites
+/ 929 tests / 0 failed**, `./gradlew check` green.
 
 **Goal:** Let the browser application on its own origin call the API without opening the API to arbitrary
 origins, and record the browser-client security boundary before frontend code exists.
@@ -269,8 +284,9 @@ dependency scanning stays a deferred follow-up as the task records.
 
 Verification: `npm ci`, `npm run lint` (0 problems), `npm run typecheck`, `npm test` (**79 tests / 12
 files**, 2026-11-20) and `npm run build` (8 routes) pass; backend `./gradlew test --rerun-tasks` remains
-**120 suites / 926 tests / 0 failed**. Branch is based on `t35-cors-adr-023` because T35 is its dependency
-and PR #22 is still open; both PRs must merge in order.
+**120 suites / 926 tests / 0 failed**. The branch was based on `t35-cors-adr-023` because T35 was its
+dependency; T35 has since merged as PR #22 (`cff44de`), and `main` is merged back into this branch to clear
+PR #23's conflicts.
 
 Review remediation note (2026-11-25, same branch, PR #23): the nine Qodo findings were verified against the
 frontend, the backend matcher table and the specs; all nine were valid and are fixed here.
@@ -295,8 +311,9 @@ non-digits, `0`→`62`) before the 9–15 digit check.
 and otherwise an RFC 4122 v4 value from `getRandomValues()`, never `Math.random()`.
 Verification: `npm ci`, `npm run lint`, `npm run typecheck`, `npm test` (**17 files / 108 tests**, 2026-11-25)
 and `npm run build` pass; the build exits 1 with the documented message when the env var is absent. Backend
-`./gradlew check` = **121 suites / 929 tests / 0 failed** (2026-11-25). ADR-024, `02_TECH_SPEC.md` §2.2,
-`06_FRONTEND_SPEC.md` §3.1/§4 and the frontend README document the wire format, session and build rules.
+`./gradlew check` = **121 suites / 932 tests / 0 failed** (2026-11-25, after `main` was merged in; 929 before
+the merge). ADR-024, `02_TECH_SPEC.md` §2.2, `06_FRONTEND_SPEC.md` §3.1/§4 and the frontend README document
+the wire format, session and build rules.
 
 **Goal:** Stand up the Next.js application and deliver the first complete operator journey: sign in, see
 the contract book, create a DRAFT contract, open its detail and activate it.

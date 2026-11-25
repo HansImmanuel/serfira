@@ -36,6 +36,53 @@ class AllowedOriginsTest {
 	}
 
 	@Test
+	void acceptsBrowserCanonicalIpv6Origins() {
+		assertThat(AllowedOrigins.parse(
+				"http://[::]:3000,https://[2001:db8::1],http://[::ffff:7f00:1]:3000"))
+				.containsExactly(
+						"http://[::]:3000", "https://[2001:db8::1]", "http://[::ffff:7f00:1]:3000");
+	}
+
+	@Test
+	void rejectsNonCanonicalIpv6Representations() {
+		// A browser serializes the loopback as [::1]; the uncompressed spelling never appears in Origin.
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[0:0:0:0:0:0:0:1]:3000"))
+				.withMessageContaining("canonical");
+		// Leading zeroes and uppercase hex are normalized away by the URL parser.
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[2001:0db8::1]:3000"))
+				.withMessageContaining("canonical");
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[2001:DB8::1]:3000"))
+				.withMessageContaining("canonical");
+		// Only the longest zero run is compressed, and the first one wins on a tie.
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[1:0:0:2:0:0:0:3]:3000"))
+				.withMessageContaining("canonical");
+		// Browsers serialize an IPv4-mapped address as hex pieces, never as a dotted quad.
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[::ffff:192.0.2.1]:3000"))
+				.withMessageContaining("canonical");
+	}
+
+	@Test
+	void rejectsMalformedIpv6Literals() {
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[1::2::3]:3000"))
+				.withMessageContaining("http://[1::2::3]:3000");
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[12345::1]:3000"))
+				.withMessageContaining("http://[12345::1]:3000");
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[1:2:3:4:5:6:7]:3000"))
+				.withMessageContaining("http://[1:2:3:4:5:6:7]:3000");
+		assertThatIllegalStateException()
+				.isThrownBy(() -> AllowedOrigins.parse("http://[fe80::1%25eth0]:3000"))
+				.withMessageContaining("http://[fe80::1%25eth0]:3000");
+	}
+
+	@Test
 	void rejectsWildcards() {
 		assertThatIllegalStateException()
 				.isThrownBy(() -> AllowedOrigins.parse("*"))

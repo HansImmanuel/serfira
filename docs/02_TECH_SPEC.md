@@ -328,8 +328,9 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
 - **Browser boundary (T35, ADR-023).** Browser memanggil API **langsung** (tanpa BFF/proxy). CORS
   didefinisikan sekali di `ResourceServerSecurityConfiguration`: origin persis dari
   `serfira.security.cors.allowed-origins` (default kosong = tidak ada origin; divalidasi saat startup,
-  wildcard ditolak), method `GET,POST`, header `Authorization`/`Content-Type`/`Idempotency-Key`/
-  `X-Request-Id`, `X-Request-Id` di-expose, `allowCredentials=false`, preflight cache 30 menit. Preflight
+  wildcard dan penulisan non-kanonik termasuk IPv6 non-kanonik ditolak), method `GET,POST`, header
+  `Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id`, `X-Request-Id` di-expose,
+  `allowCredentials=false`, preflight cache 30 menit. Preflight
   dijawab sebelum matriks otorisasi; origin non-allowlist ditolak 403 tanpa header CORS. CORS bukan
   mekanisme otorisasi — matriks peran tetap penegaknya.
 - **Dev-key production guard (T21b, ADR-022 D13).** Saat profil `prod`/`production` aktif (termasuk lewat

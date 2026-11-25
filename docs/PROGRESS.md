@@ -110,7 +110,9 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
       header `Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id` (expose `X-Request-Id`),
       default kosong = tidak ada origin, Compose/test memakai `http://localhost:3000`; ADR-023 mencatat
       boundary browser (token di memory, role hanya UX, tanpa `/me`) dan pin Next.js 16.4.6 + cek OSV
-      (branch `t35-cors-adr-023`)
+      (branch `t35-cors-adr-023`). Review PR #22 (2026-11-21): Compose memakai default hanya saat variabel
+      unset sehingga nilai kosong eksplisit tetap menolak semua origin, dan origin IPv6 divalidasi ke
+      bentuk kanonik browser.
 - [x] T32 — G2: app shell, login, contract list/detail/create/activate. Scaffold Next.js 16.4.6 (App
       Router, Tailwind v4 + shadcn/ui, TanStack Query, RHF + Zod, Vitest + RTL), Node 24.16.0 via
       `.nvmrc`; token hanya di memori + refresh single-flight dan replay sekali; `/login`, shell
@@ -124,6 +126,6 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
         Kredit/Ledger untuk `MANAJEMEN`, uang/rate sebagai string desimal eksak (ADR-024) dengan batas
         `NUMERIC(19,2)` pada input, build produksi wajib `NEXT_PUBLIC_API_BASE_URL`, normalisasi telepon
         `0`→`62`, dan fallback `Idempotency-Key` dari `getRandomValues`. Verifikasi: 108 test / 17 file,
-        lint/typecheck/build hijau; backend `./gradlew check` 121 suite / 929 test
+        lint/typecheck/build hijau; backend `./gradlew check` 121 suite / 932 test (setelah `main` di-merge)
 - [ ] T33 — G3: payment, installments, statement, credit
 - [ ] T34 — G5: demo script, seed data, README close-out
