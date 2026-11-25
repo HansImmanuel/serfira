@@ -116,9 +116,9 @@ class SettlementQuoteIT {
 
 		UUID quoteId = UUID.fromString(data.get("quote_id").asText());
 		assertThat(data.get("status").asText()).isEqualTo("QUOTED");
-		assertThat(data.get("accrued_interest").decimalValue()).isEqualByComparingTo("0.00");
-		assertThat(data.get("penalty_outstanding").decimalValue()).isEqualByComparingTo("0.00");
-		assertThat(data.get("credit_used").decimalValue()).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(data.get("accrued_interest").asText())).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(data.get("penalty_outstanding").asText())).isEqualByComparingTo("0.00");
+		assertThat(new BigDecimal(data.get("credit_used").asText())).isEqualByComparingTo("0.00");
 
 		// D6 identities hold on the persisted row.
 		Map<String, Object> row = jdbc.queryForMap("select * from settlement_quote where id = ?", quoteId);

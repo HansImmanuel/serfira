@@ -200,7 +200,7 @@ Jika suatu saat di-split microservice, seam sudah siap di interface antar-module
   { "data": null, "error": { "code": "PAYMENT_NOT_FOUND", "message": "..." } }
   ```
 - Pagination: `page`, `size`, `sort`. **B5:** token `sort` memakai nama field wire (snake_case): `created_at` (default, `desc`), `contract_no`, `status`; token lain ditolak `400 VALIDATION_ERROR`. Envelope halaman: `content`, `page`, `size`, `total_elements`, `total_pages`.
-- Penamaan JSON di wire adalah **snake_case** (`spring.jackson.property-naming-strategy=SNAKE_CASE`, ADR-006) agar konsisten dengan dokumen ini dan frontend spec. Nilai uang dikirim sebagai desimal biasa (`20000000.00`), bukan notasi ilmiah.
+- Penamaan JSON di wire adalah **snake_case** (`spring.jackson.property-naming-strategy=SNAKE_CASE`, ADR-006) agar konsisten dengan dokumen ini dan frontend spec. Nilai uang dan rate dikirim sebagai **string desimal eksak** (`"20000000.00"`, `"0.0150"`), bukan JSON number: `NUMERIC(19,2)` mengizinkan 17 digit integer, melebihi presisi `double` JavaScript, sehingga number akan dibulatkan saat `JSON.parse` (ADR-024). Serialisasi memakai `toPlainString()` (tanpa notasi ilmiah) dan berlaku untuk semua `BigDecimal`; counter integer tetap JSON number. Dokumen OpenAPI mendeklarasikannya `type: string, format: decimal`. Deserialisasi tetap menerima number maupun string.
 - Error codes enum per-module.
 
 ### 2.3 Konkurensi & Transaksi

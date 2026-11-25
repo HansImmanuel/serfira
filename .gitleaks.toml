@@ -52,3 +52,11 @@ paths = [
 	'''^backend/src/main/java/com/serfira/shared/security/DevKeyProductionGuardConfiguration\.java$'''
 ]
 regexes = ['''^(0123456789abcdef0123456789abcdef|abcdef0123456789abcdef0123456789|c2VyZmlyYS1kZXYtb25seS1qd3Qtc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm|MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=|YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODk=)$''']
+
+# 5. Frontend build outputs and installed packages. `frontend/node_modules/`, `.next/`, `coverage/` and
+#    `out/` are git-ignored and never present in the CI secrets job (nothing installs there); they only
+#    appear when a developer runs the scan locally after `npm ci` / `npm run build`. Same reasoning as (1):
+#    they are generated copies, not source, and any tracked frontend file is still scanned in full.
+[[rules.allowlists]]
+description = "Frontend generated output and installed packages, not source (git-ignored)"
+paths = ['''^frontend/(node_modules|\.next|coverage|out)/''']

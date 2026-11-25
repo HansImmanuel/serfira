@@ -111,6 +111,11 @@ that release. The version is pinned exactly, the OSV check is repeated when T32 
 future major upgrade repeats it and records the result here. A new HIGH/CRITICAL advisory means moving to
 the patched release (or the documented backport line), not staying on the pinned one.
 
+**Re-checked on 2026-11-20 (T32 scaffold):** `next@latest` is still **16.4.6**, and OSV.dev returns **zero
+advisories of any severity** for both `16.4.6` and `latest`. Node is pinned to **24.16.0** in
+`frontend/.nvmrc` (and CI reads that file); `engines.node` is `>=22.0.0` because the shadcn CLI's `cn`
+package requires Node 22+, which is still above the Next.js 16 floor of 20.9.0.
+
 ---
 
 ## Consequences

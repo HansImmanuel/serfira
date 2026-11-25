@@ -29,6 +29,46 @@ jobs:
         working-directory: backend
         run: ./gradlew check --no-daemon
 
+  # Frontend gate (T32): lint, types, unit/component tests and a production build. It owns no database and
+  # no Java toolchain, so it stays a separate job — a broken Next.js build must never look like a failing
+  # backend test. `npm ci` uses the committed lockfile; Node comes from `frontend/.nvmrc` (one pin for
+  # local, CI and docs).
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the committed dependency tree
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Typecheck (route types + tsc)
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Unit and component tests
+        working-directory: frontend
+        run: npm run test
+
+      - name: Production build
+        working-directory: frontend
+        # `NEXT_PUBLIC_*` is inlined at build time and a production build refuses to fall back to
+        # localhost. CI has no real API origin, so it builds against the reserved `.invalid` TLD.
+        env:
+          NEXT_PUBLIC_API_BASE_URL: https://ci-build.invalid
+        run: npm run build
+
   # Secret scan (T27, steering 60-security). Two explicit gitleaks invocations over the checkout, both run
   # from the repository root so `.gitleaks.toml` is the configuration in force:
   #  * `git` scans every commit reachable from HEAD — a secret is a leak even after a later commit deleted it;

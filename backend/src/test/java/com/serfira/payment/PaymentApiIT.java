@@ -156,10 +156,10 @@ class PaymentApiIT {
 		assertThat(decimal(payment.get("allocations").get(1), "amount")).isEqualByComparingTo(PERIOD_PRINCIPAL);
 		assertThat(payment.get("allocations").get(0).get("installment_id").asText())
 				.isEqualTo(installmentId(1).toString());
-		// Money travels as plain decimal strings, never scientific notation (wire contract).
+		// Money travels as exact decimal strings, never JSON numbers or scientific notation (ADR-024).
 		assertThat(result.getResponse().getContentAsString())
-				.contains("\"amount\":1573333.33")
-				.contains("\"excess_amount\":0.00")
+				.contains("\"amount\":\"1573333.33\"")
+				.contains("\"excess_amount\":\"0.00\"")
 				.contains("\"allocation_type\":\"INTEREST\"");
 
 		// The installment is resolved through the contract module, not by the payment module.
@@ -716,7 +716,7 @@ class PaymentApiIT {
 	}
 
 	private static BigDecimal decimal(JsonNode node, String field) {
-		return node.get(field).decimalValue();
+		return new BigDecimal(node.get(field).asText());
 	}
 
 	private static BigDecimal decimalOf(Map<String, Object> row, String column) {

@@ -78,6 +78,16 @@ frontend/
     └── api.ts                  ← ApiResponse<T> envelope type
 ```
 
+> **Status T32 (2026-11-20):** the shell, login, contract list/create/detail/activate and a minimal
+> statement page are implemented. Beyond the tree above, the delivered layout adds `app/providers.tsx`
+> (QueryClient + toaster), `components/auth/LoginForm.tsx`,
+> `components/contracts/{ContractListView,CreateContractForm,ContractDetailView,ActivateContractButton,CreditPanel,StatementView}.tsx`,
+> `components/shared/{AppHeader,AppSidebar,AuthGuard,RequireWrite}.tsx`,
+> `lib/{session,jwt,decimal,format,navigation}.ts` plus `lib/schemas/`, and
+> `hooks/{useContracts,useSession,useStatement,useIdempotencyKey}.ts`, with tests beside each unit and a
+> `test/` helper directory. `payments/`, `reports/`, `types/payment.ts` and `hooks/usePayment.ts` remain
+> T33/T37/T39.
+
 ### 1.3 API Client Pattern
 ```typescript
 // lib/api.ts
@@ -209,12 +219,12 @@ refresh kedua dengan token lama ditolak 401.
 | Brand, Model | text | required |
 | No. Seri | text | optional |
 | No. Plat | text | optional |
-| Harga Asset | number | > 0 |
-| Uang Muka (DP) | number | >= 0, < asset_price |
+| Harga Asset | text (desimal) | > 0, maksimum 17 digit integer dan skala ≤ 2 (`NUMERIC(19,2)`) |
+| Uang Muka (DP) | text (desimal) | >= 0, < asset_price, domain yang sama |
 | Plafon (auto-calc) | readonly | = asset_price - down_payment |
 | Tenor (bulan) | number | > 0, integer |
 | Skema Bunga | select (FLAT/EFFECTIVE) | required |
-| Suku Bunga (% per bulan) | number | >= 0 |
+| Suku Bunga (% per bulan) | text (desimal) | >= 0, maksimum 2 desimal |
 | Tanggal Mulai | date picker | required |
 
 **Klarifikasi B5 (ADR-006):** field "Tanggal Mulai" dipetakan ke `planned_start_date`
@@ -284,7 +294,7 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 **Fields:**
 | Field | Input | Keterangan |
 |---|---|---|
-| Jumlah Bayar | number | > 0 |
+| Jumlah Bayar | text (desimal) | > 0, maksimum 17 digit integer dan skala ≤ 2 (`NUMERIC(19,2)`) |
 | Channel | select (CASH/BANK_TRANSFER/VA_STUB/EWALLET_STUB) | |
 | Tanggal Bayar | datetime-local | max = now (tidak boleh future) |
 | Catatan | text | optional |
@@ -364,12 +374,23 @@ Hanya kontrak `ACTIVE` yang tampil. **Summary baris total** di atas tabel.
 ## 3. Konvensi Teknis
 
 ### 3.1 Money Formatting
+
+Uang dan rate datang sebagai **string desimal eksak** dari API (`"20000000.00"`, ADR-024), bukan JSON number.
+Jangan pernah melewatkannya ke `Number`/`parseFloat`: `NUMERIC(19,2)` punya 17 digit integer, di atas presisi
+`double`. Validasi, penjumlahan, dan konversi rate memakai `lib/decimal.ts` (BigInt); tampilan memakai
+`lib/format.ts`:
+
 ```typescript
-// components/shared/MoneyDisplay.tsx
-const formatMoney = (amount: number) =>
-  new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amount);
-// Output: "Rp 1.573.333"
+// components/shared/MoneyDisplay.tsx → lib/format.ts
+formatMoney("1573333.00"); // "Rp 1.573.333"
+formatMoney(null); // "–" (DRAFT outstanding)
 ```
+
+`formatMoney` mem-parse string menjadi `BigInt` rupiah utuh (pembulatan half away from zero) lalu memformat
+dengan `Intl`; tidak ada float di jalur mana pun, dan digit di atas `Number.MAX_SAFE_INTEGER` tetap utuh.
+
+Input operator divalidasi ke domain `NUMERIC(19,2)` (maksimum 17 digit integer, skala ≤ 2) sebelum dikirim;
+nilai yang lebih besar atau lebih halus ditolak sebagai error field, tidak dibulatkan diam-diam.
 
 ### 3.2 Date Formatting
 ```typescript
@@ -415,6 +436,20 @@ tidak ada BFF, `app/api/` proxy, atau route handler perantara. Ini keputusan Spr
 (token di memory, tanpa cookie), satu kontrak error envelope, dan tidak ada lapisan yang bisa menyimpang
 dari API. Detail CORS (origin allowlist, header, tanpa credentials) dan konsekuensi keamanannya dicatat di
 **ADR-023** (T35); endpoint auth tidak pernah membawa access token (ADR-022 D7).
+
+`NEXT_PUBLIC_*` **di-inline saat build**, jadi origin yang masuk ke bundle adalah nilai saat `next build`
+berjalan, bukan saat `next start`. Aturannya:
+
+- Development (`npm run dev`) boleh tidak mengisi variabel ini; fallback-nya `http://localhost:8080`.
+- **Production build wajib** mengisi origin absolut `http`/`https`. Tanpa itu `next build` gagal, alih-alih
+  diam-diam mengirim client yang menunjuk ke localhost.
+- Nilai tidak boleh mengandung credentials, query string, atau fragment; trailing slash dibuang.
+- CI memakai placeholder reserved `https://ci-build.invalid` karena tidak punya API ter-deploy.
+- Ubah nilai berarti build ulang; mengedit `.env.local` tidak mengubah bundle yang sudah jadi.
+
+Uang dan rate adalah **string desimal eksak** di wire (`"20000000.00"`, ADR-024); frontend tidak pernah
+mem-parse-nya lewat `Number`/`parseFloat`. Format tampilan (`Rp`, `id-ID`, tanpa desimal) dihitung dengan
+BigInt di `lib/format.ts`, dan input operator dibatasi ke domain `NUMERIC(19,2)` sebelum dikirim.
 
 ---
 

@@ -147,12 +147,13 @@ PostgreSQL 16, so Docker must be running). CI runs the same task on every push a
 
 ### Security and CI gates
 
-CI runs four gate jobs — plus a notice job that only appears on fork-originated PRs — so a scanner or boot
+CI runs five gate jobs — plus a notice job that only appears on fork-originated PRs — so a scanner or boot
 failure is never mistaken for a test failure:
 
 | Job                       | What it does                                                                                          |
 | ------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `test`                    | `./gradlew check` — unit tests + Testcontainers integration tests                                      |
+| `frontend`                | `npm ci` → lint → typecheck → unit/component tests → production build (Node from `frontend/.nvmrc`)    |
 | `secrets`                 | pinned gitleaks CLI: full commit history (`gitleaks git`) and working tree (`gitleaks dir`), both with `.gitleaks.toml` |
 | `dependencies`            | OWASP Dependency-Check on the real dependency tree; fails on High or Critical (CVSS ≥ 7.0)             |
 | `dependencies-fork-notice` | fork PRs only: states that the keyed dependency gate was **skipped**, never that it passed             |
@@ -274,7 +275,7 @@ itself as their credential.
 | ------------ | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | 1 — MVP      | Contracts, FLAT/EFFECTIVE schedules, payments and allocation, ledger, penalty and aging job, RBAC, aging report, statement | Done                                   |
 | 2            | Early settlement, customer credit, payment void/reversal, penalty waiver, consistency check, write-off, login              | Built                                  |
-| 3            | Next.js dashboard, reporting, outbox event publisher, export                                                               | Planned                                |
+| 3            | Next.js dashboard (shell/login/contract lifecycle built; payments, reports, outbox, export pending), reporting, outbox event publisher, export | In progress                            |
 | 4 (optional) | Restructuring, payment gateway stub, maker-checker, microservice split demo                                                | Optional                               |
 
 Out of scope by design: loan origination (credit scoring, credit bureau checks, e-KYC), funding and
@@ -293,7 +294,7 @@ The specifications are the source of truth and are written in Bahasa Indonesia.
 | [Domain Model](docs/03_DOMAIN_MODEL.md)                        | Entities, states, invariants                                 |
 | [Gaps Addendum](docs/04_GAPS_ADDENDUM.md)                      | Resolved gaps: auth, audit, configuration                    |
 | [Sprint Plan](docs/05_SPRINT_PLAN.md) · [Tasks](docs/tasks.md) | Delivery plan and backlog                                    |
-| [Frontend Spec](docs/06_FRONTEND_SPEC.md)                      | Planned dashboard                                            |
+| [Frontend Spec](docs/06_FRONTEND_SPEC.md)                      | Next.js dashboard structure, screens, conventions            |
 | [ADRs](docs/adr/)                                              | Architecture decisions                                       |
 
 ## Repository layout
@@ -301,5 +302,5 @@ The specifications are the source of truth and are written in Bahasa Indonesia.
 ```
 backend/    Spring Boot application (modules above), Flyway migrations, tests
 docs/       Specifications, ADRs, progress log
-frontend/   (planned) Next.js dashboard
+frontend/   Next.js 16 dashboard (see frontend/README.md)
 ```
