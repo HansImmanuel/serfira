@@ -183,9 +183,14 @@ async function contractB(api, token, today, tag) {
   ok(`B: payment ${payment.payment_no} 4769959.90 → ${describeAllocations(payment)}`);
 
   const replay = await pay(api, token, contract.id, "4769959.90", "BANK_TRANSFER", idempotencyKey);
+  // "Saldo tidak dobel" (PRD scenario 6): installment 2 is not due yet, so a second application would land
+  // as customer credit (ADR-009), never on the schedule. The credit balance is what must stay at zero.
+  const credit = await api.request("GET", `${API}/contracts/${contract.id}/credit`, { token });
+  check(toCents(credit.available_balance) === 0n && toCents(credit.total_credit) === 0n,
+    `B retry created no customer credit (available ${credit.available_balance}, total ${credit.total_credit})`);
   check(replay.payment.id === payment.id && replay.payment.payment_no === payment.payment_no,
     `B retry with the same Idempotency-Key replays ${payment.payment_no} (got ${replay.payment.payment_no})`);
-  ok(`B: retry with the same Idempotency-Key replays ${payment.payment_no}, no second payment`);
+  ok(`B: retry with the same Idempotency-Key replays ${payment.payment_no}; no second payment, credit stays 0.00`);
 
   const after = await installments(api, token, contract.id);
   check(after[0].status === "PAID", `B installment 1 PAID (got ${after[0].status})`);
@@ -216,9 +221,13 @@ async function contractA(api, token, today, tag) {
   });
 
   const { payment } = await pay(api, token, contract.id, "2000000.00", "CASH");
-  const [firstLine] = payment.allocations;
-  check(firstLine.allocation_type === "PENALTY" && firstLine.installment_id === schedule[0].id,
-    `A allocation starts with PENALTY on installment 1 (got ${firstLine.allocation_type})`);
+  // Oldest due installment first, and inside it penalty → interest → principal (ADR-009).
+  const firstInstallmentOrder = payment.allocations
+    .filter((line) => line.installment_id === schedule[0].id)
+    .map((line) => line.allocation_type)
+    .join(",");
+  check(payment.allocations[0].installment_id === schedule[0].id && firstInstallmentOrder === "PENALTY,INTEREST,PRINCIPAL",
+    `A pays installment 1 first as PENALTY,INTEREST,PRINCIPAL (got ${firstInstallmentOrder})`);
   ok(`A: payment ${payment.payment_no} 2000000.00 → ${describeAllocations(payment)}`);
 
   const after = await installments(api, token, contract.id);

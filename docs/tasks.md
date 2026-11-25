@@ -30,8 +30,8 @@ lifecycle and the servicing screens (payment, statement filters, credit apply) a
 (2026-11-25, branch `t34-demo-script`) = **203 tests / 23 files / 0 failed** (T33 close 178; PR #24's
 review fixes added the rest), plus green `npm run lint` and `npm run typecheck`; `npm run build` was green
 at T33 (the production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo
-helpers `node --test "scripts/demo/*.test.mjs"` = **15 tests / 0 failed**; `node scripts/demo.mjs --reset`
-exits 0 on a fresh stack and on repeated runs. CI on `main` is red
+helpers `node --test "scripts/demo/*.test.mjs"` = **17 tests / 0 failed**; `node scripts/demo.mjs --reset`
+exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
 for a GitHub billing reason, not a test failure.
 
 **Implemented (verified in source):**
@@ -535,18 +535,19 @@ reset:** `--reset` runs `docker compose down -v`; without it the script never de
 Implementation note (2026-11-25, branch `t34-demo-script`; plan
 `docs/superpowers/plans/2026-11-25-t34-demo-script.md`): `scripts/demo/lib.mjs` holds the helpers (Jakarta
 business date, month-end-clamped date math, BigInt-cent money, the `{data, error}` client with a
-`DemoError` that carries method/path/status/raw body, and health polling), with 15 `node:test` tests.
+`DemoError` that carries method/path/status/raw body, per-request and per-attempt timeouts so a hung server
+still fails, and health polling), with 17 `node:test` tests.
 `scripts/demo.mjs` runs: health → admin login → Contract B (EFFECTIVE golden schedule; an on-time
 4,769,959.90 payment allocates interest 1,125,000.00 + principal 3,644,959.90 with no penalty;
-same-key replay returns the same `payment_no`) → Contract A (FLAT golden schedule; a 2,000,000.00 payment
-allocates penalty first, installment 1 `PAID`, installment 2 `PARTIALLY_PAID`, installment 3 `PENDING`) →
+same-key replay returns the same `payment_no` and leaves the customer credit at zero) → Contract A (FLAT golden schedule; a 2,000,000.00 payment
+pays installment 1 as penalty → interest → principal, installment 1 `PAID`, installment 2 `PARTIALLY_PAID`, installment 3 `PENDING`) →
 the statement, paged and summarized per `ref_type` with Σ debit = Σ credit → aging → role split (finance:
 statement 200, payment 403; manager: aging 200, statement 403). No new seed rows and no backend or
 frontend source change. CI `compose-smoke` runs the helper tests and the script. Both READMEs document the
 demo, the demo users and the known limitations. Verification: `node scripts/demo.mjs --reset` exit 0 on a
 fresh volume; two further plain runs against the same database exit 0 with new contract numbers; the browser
 follow-along matches (Jadwal: installment 1 `PAID`, installment 2 `PARTIALLY_PAID` with Rp 1.214.320 owed);
-backend 121 suites / 939 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 203 tests / 23 files, lint and typecheck green; demo helpers 15/15. Observation: the
+backend 121 suites / 939 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 203 tests / 23 files, lint and typecheck green; demo helpers 17/17. Observation: the
 Jadwal "Denda" column shows the *remaining* penalty (ADR-019), so a paid late installment shows Denda Rp 0 and
 Terbayar above Total Tagihan. This is pre-existing T32/T33 UX, documented under frontend Known limitations.
 

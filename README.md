@@ -154,7 +154,7 @@ and the response body.
 | Step | What it proves |
 | --- | --- |
 | Log in as `admin` | Seeded demo user, Argon2id login, bearer token (ADR-022) |
-| Contract B: EFFECTIVE, Rp 150 M over 36 months, started one month ago | Schedule matches the golden values (installment 1 = 4,769,959.90); an on-time payment pays interest then principal with no penalty (PRD scenario 1); the same `Idempotency-Key` replays the same payment (scenario 6) |
+| Contract B: EFFECTIVE, Rp 150 M over 36 months, started one month ago | Schedule matches the golden values (installment 1 = 4,769,959.90); an on-time payment pays interest then principal with no penalty (PRD scenario 1); the same `Idempotency-Key` replays the same payment and creates no customer credit (scenario 6) |
 | Contract A: FLAT, Rp 16 M over 12 months, started 70 days ago | Penalty accrues lazily and is paid first, then interest, then principal (scenario 2); the remainder leaves installment 2 `PARTIALLY_PAID` (scenario 3) |
 | Statement and aging | Ledger-literal statement with activation, billing, penalty and payment rows, Σ debit = Σ credit; aging totals |
 | `finance` and `manager` | Statement 200 / payment 403 for finance; aging 200 / statement 403 for manager (ADR-015) |

@@ -524,7 +524,7 @@ Semua migration harus diterapkan via Flyway; tidak ada perubahan schema manual.
 
 ## 18. Demo Seed Data Specification
 
-Seed data ini harus tersedia setelah `docker-compose up` agar demo script (G5) bisa dijalankan ulang tanpa setup manual. Dua kontrak demonstrasi dengan karakteristik berbeda.
+Data demo harus bisa dibuat ulang dari stack `docker compose up` yang bersih, tanpa setup manual: user demo (§18.3) di-seed, dan dua kontrak demonstrasi dengan karakteristik berbeda dibuat oleh demo script (G5) lewat API.
 
 > **Keputusan T34 (2026-11-25).** Hanya user demo (§18.3) yang di-seed. Kontrak A dan B dibuat lewat API oleh `scripts/demo.mjs`, tidak lewat SQL (ADR-004). State "pre-seeded" berisi riwayat pembayaran (angsuran 1 dibayar tepat waktu di bulan Februari, angsuran 2 telat 5 hari, dst.) tidak bisa dibuat lewat API: `paid_at` selalu jam server (TS §2.0), dan aktivasi menolak `start_date` yang lebih dari satu tahun ke belakang, sehingga tanggal tetap `2026-01-31` tidak berlaku lagi setelah Januari 2027. Karena itu term kontrak dan golden values di bawah tetap dipakai, tetapi `planned_start_date` dihitung relatif terhadap hari ini (Asia/Jakarta) dan pembayaran dilakukan hari ini. Customer dipakai ulang di setiap run (NIK + telepon tetap), sedangkan aset memakai `serial_no` unik per run tanpa plat, sehingga script bisa dijalankan ulang tanpa `DUPLICATE_CONTRACT`. Lihat `docs/tasks.md` § T34.
 
@@ -552,7 +552,7 @@ Seed data ini harus tersedia setelah `docker-compose up` agar demo script (G5) b
 - angsuranBunga = 2.880.000 / 12 = 240.000
 - angsuranTotal = 1.573.333,33/bulan (last installment adjust)
 
-### 18.2 Kontrak Demo B — EFFECTIVE, Skenario Settlement
+### 18.2 Kontrak Demo B — EFFECTIVE, Skenario Bayar Tepat Waktu (settlement: T39)
 
 | Field | Value |
 |---|---|

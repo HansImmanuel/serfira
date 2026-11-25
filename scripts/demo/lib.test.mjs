@@ -146,6 +146,30 @@ test("request throws DemoError when a 200 body is not JSON", async () => {
   await assert.rejects(api.request("GET", "/x"), (err) => err instanceof DemoError && err.body === "not json");
 });
 
+/** A fetch that never answers, like an accepted connection on a hung server; it only honours its abort signal. */
+const hangingFetch = (url, init) =>
+  new Promise((resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(init.signal.reason));
+  });
+
+test("request fails with a DemoError when the server never answers", async () => {
+  const api = createApiClient({ baseUrl: "http://api.test", fetchImpl: hangingFetch, timeoutMs: 50 });
+
+  await assert.rejects(api.request("GET", "/x"), (err) => {
+    assert.ok(err instanceof DemoError);
+    assert.equal(err.path, "/x");
+    assert.match(err.message, /no response within 50 ms/);
+    return true;
+  });
+});
+
+test("waitForHealth gives up at the deadline when every attempt hangs", async () => {
+  await assert.rejects(
+    waitForHealth({ baseUrl: "http://api.test", fetchImpl: hangingFetch, timeoutMs: 120, intervalMs: 10, attemptTimeoutMs: 30 }),
+    (err) => err instanceof DemoError && err.path === "/actuator/health",
+  );
+});
+
 test("waitForHealth tolerates connection errors until UP", async () => {
   const { impl, calls } = fakeFetch(
     new TypeError("fetch failed"),

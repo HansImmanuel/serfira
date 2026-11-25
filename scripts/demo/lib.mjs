@@ -93,7 +93,7 @@ export function runTag(now = new Date()) {
  * A thin client for the {data, error} envelope. Returns {@code data} when the status is the expected
  * 2xx; for an expected non-2xx (a role check) returns {status, error}. Anything else is a DemoError.
  */
-export function createApiClient({ baseUrl, fetchImpl = fetch }) {
+export function createApiClient({ baseUrl, fetchImpl = fetch, timeoutMs = 60_000 }) {
   const base = baseUrl.replace(/\/+$/, "");
 
   async function request(method, path, { token, body, idempotencyKey, expectStatus = 200 } = {}) {
@@ -104,12 +104,21 @@ export function createApiClient({ baseUrl, fetchImpl = fetch }) {
     if (idempotencyKey) {
       headers["Idempotency-Key"] = idempotencyKey;
     }
-    const response = await fetchImpl(`${base}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
+    // A server that accepts the connection but never answers must still end the demo with an error.
+    let response;
+    let text;
+    try {
+      response = await fetchImpl(`${base}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      text = await response.text();
+    } catch (err) {
+      const reason = err?.name === "TimeoutError" ? `no response within ${timeoutMs} ms` : (err?.cause?.message ?? err?.message);
+      throw new DemoError(`${method} ${path}: ${reason}`, { method, path, body: String(reason) });
+    }
     const fail = (reason) =>
       new DemoError(`${method} ${path}: ${reason} (HTTP ${response.status})\n${text}`, {
         method,
@@ -145,6 +154,7 @@ export async function waitForHealth({
   fetchImpl = fetch,
   timeoutMs = 300_000,
   intervalMs = 5_000,
+  attemptTimeoutMs = 10_000,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
 }) {
@@ -154,7 +164,7 @@ export async function waitForHealth({
   let lastProblem = "no attempt made";
   for (;;) {
     try {
-      const response = await fetchImpl(url, { method: "GET" });
+      const response = await fetchImpl(url, { method: "GET", signal: AbortSignal.timeout(attemptTimeoutMs) });
       const text = await response.text();
       if (response.ok && JSON.parse(text)?.status === "UP") {
         return;

@@ -144,14 +144,14 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
         memuat, hasil pembayaran tidak menawarkan aksi bila status kontrak belum terkonfirmasi
 - [x] T34 — G5: demo script, seed data, README close-out. `scripts/demo.mjs` (Node tanpa dependency)
       menjalankan alur operator lewat API: login `admin` → kontrak B (EFFECTIVE, golden schedule §18.2,
-      bayar tepat waktu tanpa denda, replay `Idempotency-Key` yang sama → `payment_no` sama) → kontrak A
+      bayar tepat waktu tanpa denda, replay `Idempotency-Key` yang sama → `payment_no` sama, kredit tetap 0) → kontrak A
       (FLAT, golden schedule §18.1, bayar Rp 2.000.000 → denda dulu, angsuran 1 PAID, angsuran 2
       PARTIALLY_PAID) → rekening koran (Σ debit = Σ credit) → aging → pemisahan role finance/manager.
       Tanggal relatif terhadap hari ini (keputusan 2026-11-25; §18 diamandemen) karena `paid_at` selalu
       jam server; customer dipakai ulang dan `serial_no` aset unik per run sehingga aman dijalankan ulang;
       `--reset` (opt-in) menghapus volume. Job CI `compose-smoke` menjalankan helper test dan script ini.
       README root + frontend: bagian demo, user demo, dan keterbatasan yang diketahui. Verifikasi: demo
-      exit 0 dari volume kosong dan saat dijalankan ulang, alur browser cocok, helper 15/15, frontend 203
+      exit 0 dari volume kosong dan saat dijalankan ulang, alur browser cocok, helper 17/17, frontend 203
       test / 23 file, backend 121 suite / 939 test (branch `t34-demo-script`)
 
 **Sprint 7 selesai.** Alur operator utama berjalan di browser dan dapat diulang lewat `node scripts/demo.mjs`.
