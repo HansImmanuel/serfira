@@ -127,5 +127,12 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
         `NUMERIC(19,2)` pada input, build produksi wajib `NEXT_PUBLIC_API_BASE_URL`, normalisasi telepon
         `0`→`62`, dan fallback `Idempotency-Key` dari `getRandomValues`. Verifikasi: 108 test / 17 file,
         lint/typecheck/build hijau; backend `./gradlew check` 121 suite / 932 test (setelah `main` di-merge)
-- [ ] T33 — G3: payment, installments, statement, credit
+- [x] T33 — G3: payment, installments, statement, credit. `/contracts/[id]/payments/new` (jumlah + channel
+      saja; `paid_at` dari server, tanpa catatan — keputusan 2026-11-25), satu `Idempotency-Key` per mount
+      dipakai ulang saat retry, key yang sudah terpakai (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`) meminta
+      "Mulai form baru"; tampilan sukses menunjukkan alokasi per angsuran dan peringatan kelebihan sebagai
+      kredit; tombol "Catat Pembayaran" (ADMIN, ACTIVE); filter rekening koran `ref_type`/`from`/`to` di API;
+      "Terapkan Kredit" (ADMIN, ACTIVE, saldo > 0); invalidasi prefix `["contract", id]` setelah setiap tulis.
+      Verifikasi: 172 test / 23 file, lint/typecheck/build hijau; backend `./gradlew check` 121 suite / 932
+      test; uji manual di browser terhadap stack Compose (branch `t33-payment-statement-credit`)
 - [ ] T34 — G5: demo script, seed data, README close-out

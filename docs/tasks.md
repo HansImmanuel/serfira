@@ -17,15 +17,16 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `cff44de` (PR #22, T35 CORS boundary, merged). **Sprint 6b is COMPLETE**; **Sprint 7
-is in progress** — T35 DONE and merged, T32 DONE on branch `t32-nextjs-shell` (PR #23 pending, `main` merged
-back in); T33/T34 still TODO. Backend Phases 1–2 are implemented and merged; the `frontend/` app shell, login
-and contract lifecycle journey are implemented.
+**Snapshot:** `main` @ `3a66c98` (PR #23, T32 Next.js shell, merged). **Sprint 6b is COMPLETE**; **Sprint 7
+is in progress** — T35 and T32 DONE and merged, T33 DONE on branch `t33-payment-statement-credit` (PR
+pending); T34 still TODO. Backend Phases 1–2 are implemented and merged; the `frontend/` app shell, login,
+contract lifecycle and the servicing screens (payment, statement filters, credit apply) are implemented.
 
 **Verified test counts:** backend full local `./gradlew check` (2026-11-25, branch `t32-nextjs-shell`, after
 `main` was merged in) = **121 suites / 932 tests / 0 failed** (T35 baseline 120/926, plus
-`BigDecimalStringModuleTest`, plus the PR #22 CORS review tests). Frontend `npm test` (2026-11-25) =
-**108 tests / 17 files / 0 failed**, plus green `npm run lint`, `npm run typecheck` and `npm run build` (the
+`BigDecimalStringModuleTest`, plus the PR #22 CORS review tests); unchanged by T33 (no backend file
+touched). Frontend `npm test` (2026-11-25, branch `t33-payment-statement-credit`) =
+**172 tests / 23 files / 0 failed** (T32 baseline 108 / 17), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the
 production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). CI on `main` is red
 for a GitHub billing reason, not a test failure.
 
@@ -54,7 +55,9 @@ for a GitHub billing reason, not a test failure.
   create, detail with Jadwal/Kredit/Ledger tabs, activation, and a minimal statement page. Money and rates
   are exact decimal strings (ADR-024) formatted with BigInt, never a float. Authorization stays server-side;
   the JWT `roles` only drives which buttons/tabs render, and credit/statement are hidden from `MANAJEMEN`
-  (the API still answers 403).
+  (the API still answers 403). T33 adds `/contracts/[id]/payments/new` (amount + channel; the server's
+  `paid_at`; allocation and excess-credit result), statement `ref_type`/`from`/`to` filters sent to the
+  API, and credit apply from the Kredit tab; every write invalidates the `["contract", id]` query prefix.
 - PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
   search (ADR-004); rotation is **T28a/T28b** (Sprint 8).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
@@ -109,6 +112,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T21b  | Auth stateful half: refresh rotation, idempotent logout, brute-force lockout, dev-key prod guard, X-14/A-14 closed  | ADR-022 D10–D13, `t21b-refresh-lockout`                 |
 | T27   | CI & runtime gates: OWASP Dependency-Check (CVSS ≥ 7.0), gitleaks (history incl. merge diffs + tree), Compose smoke | CR-15, `t27-ci-runtime-gates`                           |
 | T35   | Browser-client CORS boundary: exact-origin allowlist + startup validation, `CorsFilter` before the matrix, ADR-023 | ADR-023, `t35-cors-adr-023`                             |
+| T33   | Frontend G3: payment form + allocation result, statement filters, credit apply; no `paid_at`/note input     | 06_FRONTEND_SPEC §2.6–§2.7, `t33-payment-statement-credit` |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -136,8 +140,8 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 **Scope (13 pts):**
 
 - T35 — Browser-client CORS boundary + ADR-023 (1 pt) — **DONE**
-- T32 — G2: app shell, login, contract list/detail/create/activate (5 pts)
-- T33 — G3: payment form, installment table, statement, credit tab (5 pts)
+- T32 — G2: app shell, login, contract list/detail/create/activate (5 pts) — **DONE**
+- T33 — G3: payment form, installment table, statement, credit tab (5 pts) — **DONE**
 - T34 — G5: demo script, seed data, README close-out (2 pts)
 
 **Exit:** login works against the real backend; a DRAFT contract can be created, activated, paid and read
@@ -386,8 +390,39 @@ covered by OWASP Dependency-Check; `npm audit` is a candidate follow-up, not par
 
 ### T33 — G3: payment, installments, statement and credit (5 pts)
 
-Status: IN PROGRESS
+Status: DONE
 Estimate: 5 pts
+Decision (2026-11-25): the scope below and FE §2.6 list a "Tanggal Bayar" (paid-at, max now) and a
+"Catatan" (note) input, but `PaymentRequest` accepts only `contract_id`, `amount`, `channel`: `paid_at` is
+always the server clock (TS §2.0) and `payment` has no note column. Decided with the owner: **drop both
+inputs, no backend change**; the success view shows the server's `paid_at`. FE §2.6 is updated. FE §2.7's
+"Kontrak Ref" link has no target route yet (no `GET /payments/{id}`), so the statement shows a short `ref_id`
+and the link is T39 scope.
+Implementation note (2026-11-25, branch `t33-payment-statement-credit`; plan
+`docs/superpowers/plans/2026-11-25-t33-payment-statement-credit.md`): frontend only. New `types/payment.ts`,
+`lib/schemas/payment.ts` (positive scale-2 amount within `NUMERIC(19,2)`, four channels) and
+`hooks/usePayment.ts` (`useCreatePayment` posts with the caller's `Idempotency-Key` and invalidates the
+`["contract", id]` prefix plus `["contracts"]`). `RecordPaymentForm` keeps one key per mount and reuses it on
+every retry; a spent key (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`) disables submit and asks the operator to check
+the statement and choose "Mulai form baru", which remounts the form with a new key — the form never rotates a
+key on its own because the first attempt may have committed. `PaymentResult` renders the server's allocation
+lines in API order with period labels (`installmentLabels.ts`), the server `paid_at`, and an excess-credit
+warning. `RecordPaymentView` (route `/contracts/[id]/payments/new`, behind `RequireWrite`, which gained an
+optional message/back link) shows no form for a non-ACTIVE contract; the detail header shows "Catat
+Pembayaran" for `ADMIN_OPERASIONAL` on ACTIVE. `useStatement` takes `{refType, from, to}` and builds the API
+query (`statementPath`); `StatementView` adds Dari/Sampai/Ref type/Reset, resets to page 0 on a filter change,
+and blocks an inverted range without a request; the ref column shows `ref_type` + a short `ref_id`.
+`ApplyCreditDialog` (`ADMIN_OPERASIONAL`, ACTIVE, balance > 0) sends `{}` for a blank amount (apply all) or a
+validated amount ≤ the balance, with no `Idempotency-Key` (by design); `CreditPanel` labels applications by
+period. Test setup gained jsdom no-op pointer-capture/scroll polyfills so Radix Select can be driven in tests.
+The installment table itself is T32's and is reused unchanged.
+Verification: `npm run lint` (0 problems), `npm run typecheck`, `npm test` = **172 tests / 23 files / 0
+failed**, `NEXT_PUBLIC_API_BASE_URL=https://ci-build.invalid npm run build` (lists
+`/contracts/[id]/payments/new`); backend `./gradlew check` = 121 suites / 932 tests / 0 failed. Manual check in
+the browser against the Compose stack as `admin`: created and activated a test contract with a past start
+date, posted an overpayment → allocation to periods 1–2 (penalty → interest → principal) plus EXCESS with the
+warning; schedule, header outstanding and statement refreshed without a reload; apply-credit with nothing due
+showed `CREDIT_NOT_APPLICABLE` inline; the statement `ref_type=PAYMENT` filter reached the API.
 
 **Goal:** Complete the day-to-day servicing screens: record a payment, read the schedule, read the
 statement and inspect customer credit.
@@ -498,7 +533,7 @@ requirements are scope notes, not estimates to implement from.
 | T36  | G1 dashboard metrics                               | 8      | 3   | ADR-013 A-4/A-5 (DPD, DONE)               | Write the AR / NPL / collection-rate definitions before code; read-only `reporting` port; summary endpoint                                                                                                                  |
 | T37  | G4 FE reports (aging, outstanding)                 | 8      | 3   | T36                                       | Aging page with `as_of` locked to today; outstanding cards/table fed by T36                                                                                                                                                 |
 | T38  | G6 outbox publisher                                | 8      | 2   | none                                      | `outbox_events` already exists in V1; log-based publisher job, no Kafka                                                                                                                                                     |
-| T39  | FE payments tab, settlement and write-off flows    | 8b     | 2   | T33; new `GET /contracts/{id}/payments`   | Payment-history read model + role-matrix row + OpenAPI; quote/execute modal with countdown and `STALE_SETTLEMENT_QUOTE`; write-off dialog with reason                                                                        |
+| T39  | FE payments tab, settlement and write-off flows    | 8b     | 2   | T33; new `GET /contracts/{id}/payments`   | Payment-history read model + role-matrix row + OpenAPI; quote/execute modal with countdown and `STALE_SETTLEMENT_QUOTE`; write-off dialog with reason; link statement `ref_id` to the payment/settlement (T33 left it as a short id) |
 
 Sprint 8 load = 13 pts (T28a, T28b, T36, T37, T38); Sprint 8b = 2 pts (T39). T37 needs T36 first.
 

@@ -73,10 +73,10 @@ frontend/
 │   ├── (auth)/login/            # sign-in
 │   ├── (dashboard)/             # sidebar + header + client guard
 │   │   ├── contracts/           # list, create
-│   │   └── contracts/[id]/      # detail (Jadwal/Kredit/Ledger), statement
+│   │   └── contracts/[id]/      # detail (Jadwal/Kredit/Ledger), statement, payments/new
 │   ├── layout.tsx               # root layout + providers
 │   └── providers.tsx            # QueryClient + toaster
-├── components/                  # auth, contracts, shared, ui (shadcn)
+├── components/                  # auth, contracts, payments, shared, ui (shadcn)
 ├── hooks/                       # Query hooks + session
 ├── lib/                         # api client, auth, session, decimal, format, zod schemas
 ├── test/                        # test helpers
@@ -124,4 +124,7 @@ including values beyond `Number.MAX_SAFE_INTEGER`, exact decimal helpers and the
 create-contract Zod schema and payload mapping (phone normalization, money magnitude), the per-mount
 `Idempotency-Key` with its insecure-context fallback, API base-URL validation, contract-list
 loading/empty/error states and DRAFT `–`, role gating for credit/statement, and the installment table's
-derived totals.
+derived totals. T33 adds the payment schema and payload (no `paid_at`/note), the per-mount key reused on
+retry and the deliberate restart after a spent key (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`), allocation and
+excess-credit rendering, cache invalidation after a payment or credit application, statement filter wiring
+(page reset, inverted-range guard), and the credit-apply amount rules and role/status gating.
