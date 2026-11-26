@@ -38,9 +38,11 @@ and are enumerable.
 4. **Search by raw identifier** goes through `CustomerSearchService` only: the raw value is normalized and
    HMAC'd in memory, the query uses only the lookup value, and the raw value never reaches SQL/logs/URLs.
    The HTTP endpoint is deliberately **not exposed** until RBAC exists (default-deny, addendum §3.4).
-5. **Key management:** `SERFIRA_PII_ENCRYPTION_KEY` (32 bytes) and `SERFIRA_PII_HMAC_KEY` (≥32 bytes),
-   base64, app-env only — **never in the database**. Startup fails fast when missing. Dev/portfolio values
-   live only in `docker-compose.yml` and `src/test/resources/application.properties`.
+5. **Key management:** `SERFIRA_SECURITY_PII_ENCRYPTION_KEY` (32 bytes) and `SERFIRA_SECURITY_PII_HMAC_KEY`
+   (≥32 bytes), base64, app-env only — **never in the database**. Startup fails fast when missing. Dev/portfolio
+   values live only in `docker-compose.yml` and `src/test/resources/application.properties`. *Since T28a this
+   pair is ring entry `k1` of the PII key ring, new writes are `v2:<kid>:…`, and further keys are additive
+   (ADR-025).*
 
 ---
 
@@ -50,7 +52,8 @@ and are enumerable.
 - The DB contains ciphertext for NIK/phone; nothing at rest is usable for identity theft from a leak.
 - Uniqueness/dedup and search remain fully functional through the keyed lookup columns.
 - AES-GCM is authenticated — tampered ciphertext is rejected instead of silently corrupted.
-- Versioned envelope (`v1:`) allows future algorithm/key rotation without schema change.
+- Versioned envelope (`v1:`) allows future algorithm/key rotation without schema change. *Rotation now exists:
+  the `v2:<kid>:` envelope and the PII key ring (ADR-025, T28a).*
 - Satisfies TECH SPEC §6.5 PII test: ciphertext never determines uniqueness; `nik_hash` unique; raw
   values absent from logs/DB.
 
