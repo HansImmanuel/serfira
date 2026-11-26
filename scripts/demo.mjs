@@ -121,18 +121,19 @@ async function installments(api, token, contractId) {
 
 function assertSchedule(label, rows, golden) {
   check(rows.length === golden.count, `${label} has ${golden.count} installments (got ${rows.length})`);
+  // Every row must carry both amounts, so an absent one can never be summed as zero.
+  for (const row of rows) {
+    requireCents(row.principal_amount, `${label} installment ${row.period_no} principal_amount`);
+    requireCents(row.interest_amount, `${label} installment ${row.period_no} interest_amount`);
+  }
   const first = rows[0];
   const last = rows[rows.length - 1];
   checkMoney(first.principal_amount, golden.firstPrincipal, `${label} installment 1 principal`);
   checkMoney(first.interest_amount, golden.firstInterest, `${label} installment 1 interest`);
   checkMoney(last.principal_amount, golden.lastPrincipal, `${label} installment ${golden.count} principal`);
-  if (golden.lastInterest) {
-    checkMoney(last.interest_amount, golden.lastInterest, `${label} installment ${golden.count} interest`);
-  }
+  checkMoney(last.interest_amount, golden.lastInterest, `${label} installment ${golden.count} interest`);
   checkMoney(sumMoney(rows.map((row) => row.principal_amount)), golden.totalPrincipal, `${label} Σ principal`);
-  if (golden.totalInterest) {
-    checkMoney(sumMoney(rows.map((row) => row.interest_amount)), golden.totalInterest, `${label} Σ interest`);
-  }
+  checkMoney(sumMoney(rows.map((row) => row.interest_amount)), golden.totalInterest, `${label} Σ interest`);
   ok(`${label}: schedule matches the Addendum §18 golden values (${rows.length} installments)`);
 }
 
@@ -225,7 +226,9 @@ async function contractA(api, token, today, tag) {
     firstPrincipal: "1333333.33",
     firstInterest: "240000.00",
     lastPrincipal: "1333333.37",
+    lastInterest: "240000.00",
     totalPrincipal: "16000000.00",
+    totalInterest: "2880000.00",
   });
 
   const { payment } = await pay(api, token, contract.id, "2000000.00", "CASH");
