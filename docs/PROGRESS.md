@@ -171,6 +171,11 @@ Definisi metrik di ADR-026:
       lewat port `contract` tanpa mendekripsi NIK/telepon. Verifikasi: backend 126 suite / 969 test,
       frontend 234 test, helper demo 30/30, dicek di browser untuk admin/finance/manager (branch
       `t37-report-pages`)
-- [ ] T38 — G6 outbox writer transaksional, enam event domain, publisher berbasis log
+- [x] T38 — G6 outbox writer transaksional, enam event domain, publisher berbasis log. Enam event
+      (`PaymentReceived`, `PaymentVoided`, `ContractActivated`, `ContractClosed`, `ContractWrittenOff`,
+      `SettlementExecuted`) ditulis dalam transaksi bisnisnya, payload tanpa PII dan tanpa teks bebas (ADR-027).
+      Id UUIDv7 monoton menjaga urutan event dalam satu transaksi. Publisher ShedLock tiap 5 detik menulis satu
+      baris log ECS per event lalu `SENT`; gagal → retry, batas → `FAILED`. Verifikasi: backend 135 suite / 1016 test, frontend
+      236 test, helper demo 30/30, demo exit 0 dengan event di log tanpa PII (branch `t38-outbox-events`)
 - [ ] T28a — PII key ring + envelope `v2` (ADR-025)
 - [ ] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint`
