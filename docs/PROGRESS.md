@@ -169,7 +169,7 @@ Definisi metrik di ADR-026:
       ketiga role; ringkasan dan kartu memakai nilai API apa adanya (rasio lewat `formatRatioPercent`),
       badge NPL bila `dpd_over_90 > 0`, `as_of` tidak pernah dikirim. Baris aging membawa `customer_name`
       lewat port `contract` tanpa mendekripsi NIK/telepon. Verifikasi: backend 126 suite / 969 test,
-      frontend 233 test, helper demo 30/30, dicek di browser untuk admin/finance/manager (branch
+      frontend 234 test, helper demo 30/30, dicek di browser untuk admin/finance/manager (branch
       `t37-report-pages`)
 - [ ] T38 — G6 outbox writer transaksional, enam event domain, publisher berbasis log
 - [ ] T28a — PII key ring + envelope `v2` (ADR-025)

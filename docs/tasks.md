@@ -28,7 +28,7 @@ definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (`
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
 `t37-report-pages`) = **126 suites / 969 tests / 0 failed** (T34 close 121/939; T36 added the
 outstanding report's tests; T37 the aging IT's customer-name case). Frontend `npm test` (2026-11-26, branch
-`t37-report-pages`) = **233 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar
+`t37-report-pages`) = **234 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar
 and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
@@ -362,7 +362,7 @@ reporting roles. Decisions:
   While another page loads, the previous response stays as placeholder data so the summary row and
   `as_of` stay on screen, but its rows render as skeletons, never as the new page's rows (final review).
 - **Verification:** backend `./gradlew check --rerun-tasks` = 126 suites / 969 tests / 0 failed (new
-  `AgingReportIT.everyRowCarriesTheCustomerNameAndNoOtherPii`). Frontend `npm test` = 233 tests / 27 files
+  `AgingReportIT.everyRowCarriesTheCustomerNameAndNoOtherPii`). Frontend `npm test` = 234 tests / 27 files
   / 0 failed; `lint`, `typecheck` and `build` (with `NEXT_PUBLIC_API_BASE_URL`) green. Demo helpers 30/30;
   `node scripts/demo.mjs --up` exits 0. Both pages checked in the browser against the Compose stack as
   `admin`, `finance` and `manager`: summary row = API `portfolio`, cards = API values, no request carries
