@@ -287,23 +287,28 @@ public class ContractCommandService {
 	 * Reuses the customer identified by {@code nik_hash} when the phone matches, and refuses to guess
 	 * otherwise: a NIK registered with another phone, or a phone owned by another customer, is 409.
 	 * An existing customer row is never mutated — there is no customer-update story (PRD C-5 is
-	 * deferred), so silently overwriting PII would destroy the audit trail.
+	 * deferred), so silently overwriting PII would destroy the audit trail. Both lookups and the phone comparison
+	 * match every PII ring key (ADR-025), so a customer hashed under an older key is reused, not duplicated.
 	 */
 	private Customer resolveCustomer(CreateCustomerRequest request) {
 		String rawNik = request.nik().trim();
 		String rawPhone = request.phone().trim();
-		String nikHash = PiiHasher.hashNik(rawNik);
-		String phoneLookup = PiiHasher.hashPhone(rawPhone);
+		// Candidates: the hash under every PII ring key, active first (ADR-025). The existing row may have been
+		// hashed under an older key; a new row stores the active-key hash (element 0).
+		List<String> nikCandidates = PiiHasher.nikCandidates(rawNik);
+		List<String> phoneCandidates = PiiHasher.phoneCandidates(rawPhone);
+		String nikHash = nikCandidates.get(0);
+		String phoneLookup = phoneCandidates.get(0);
 
-		Optional<Customer> byNik = customers.findByNikHash(nikHash);
+		Optional<Customer> byNik = CustomerLookup.byNik(customers, nikCandidates);
 		if (byNik.isPresent()) {
 			Customer existing = byNik.get();
-			if (!existing.getPhoneLookup().equals(phoneLookup)) {
+			if (!phoneCandidates.contains(existing.getPhoneLookup())) {
 				throw new ConflictException("NIK is already registered with a different phone number");
 			}
 			return existing;
 		}
-		if (customers.findByPhoneLookup(phoneLookup).isPresent()) {
+		if (CustomerLookup.byPhone(customers, phoneCandidates).isPresent()) {
 			throw new ConflictException("Phone number is already registered to a different customer");
 		}
 		// The validated raw value is stored; equivalence/uniqueness lives in the HMAC lookup columns
