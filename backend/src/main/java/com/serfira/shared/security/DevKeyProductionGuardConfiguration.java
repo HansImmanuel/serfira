@@ -1,6 +1,7 @@
 package com.serfira.shared.security;
 
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
@@ -10,7 +11,8 @@ import org.springframework.core.env.Environment;
 
 /**
  * Refuses to start a production deployment on the documented {@code docker-compose} development
- * keys (T21b, review CR-16).
+ * keys (T21b, review CR-16), checking every member of the PII key ring (T28a, ADR-025), not only the
+ * flat {@code k1} pair.
  *
  * <p>The compose file ships fixed, public key material so local development needs no setup. Those
  * values are in the repository, which makes them useless as secrets: anyone who has read the file
@@ -58,13 +60,16 @@ public class DevKeyProductionGuardConfiguration {
 			return new DevKeysValidated();
 		}
 
-		List<GuardedKey> configuredKeys = List.of(
-				new GuardedKey("serfira.security.jwt.secret-base64", "SERFIRA_SECURITY_JWT_SECRET_BASE64",
-						environment.getProperty("serfira.security.jwt.secret-base64"), DEV_JWT_SECRET_BASE64),
-				new GuardedKey("serfira.security.pii.encryption-key", "SERFIRA_SECURITY_PII_ENCRYPTION_KEY",
-						environment.getProperty("serfira.security.pii.encryption-key"), DEV_PII_ENCRYPTION_KEY),
-				new GuardedKey("serfira.security.pii.hmac-key", "SERFIRA_SECURITY_PII_HMAC_KEY",
-						environment.getProperty("serfira.security.pii.hmac-key"), DEV_PII_HMAC_KEY));
+		List<GuardedKey> configuredKeys = new ArrayList<>();
+		configuredKeys.add(new GuardedKey("serfira.security.jwt.secret-base64", "SERFIRA_SECURITY_JWT_SECRET_BASE64",
+				environment.getProperty("serfira.security.jwt.secret-base64"), DEV_JWT_SECRET_BASE64));
+		// Every PII ring member (T28a, ADR-025): the flat k1 pair and each serfira.security.pii.keys.<kid> entry.
+		for (PiiKeyRingProperties.ConfiguredKey key : PiiKeyRingProperties.configuredKeys(environment)) {
+			configuredKeys.add(new GuardedKey(key.encryptionProperty(), key.encryptionEnvironmentVariable(),
+					key.encryptionValue(), DEV_PII_ENCRYPTION_KEY));
+			configuredKeys.add(new GuardedKey(key.hmacProperty(), key.hmacEnvironmentVariable(),
+					key.hmacValue(), DEV_PII_HMAC_KEY));
+		}
 
 		List<String> offenders = configuredKeys.stream()
 				.filter(GuardedKey::isDevDefault)

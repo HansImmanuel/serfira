@@ -42,7 +42,11 @@ class DevKeyProductionGuardTest {
 	private static final String PRODUCTION_PII_HMAC =
 			"cHJvZHVjdGlvbi1waWktaG1hYy1rZXktbm90LWRldi0wMTIzNDU2Nzg5MA==";
 
-	private static final String JWT_PROPERTY = "serfira.security.jwt.secret-base64";
+	/** A second, deployment-specific ring entry (T28a). */
+	private static final String RING_PII_ENCRYPTION = "c2Vjb25kLXJpbmctcGlpLWVuY3J5cHRpb24ta2V5LTAx";
+	private static final String RING_PII_HMAC = "c2Vjb25kLXJpbmctcGlpLWhtYWMta2V5LW5vdC1kZXYtMDE=";
+
+	private static final String JWT_PROPERTY ="serfira.security.jwt.secret-base64";
 	private static final String PII_ENCRYPTION_PROPERTY = "serfira.security.pii.encryption-key";
 	private static final String PII_HMAC_PROPERTY = "serfira.security.pii.hmac-key";
 
@@ -166,6 +170,50 @@ class DevKeyProductionGuardTest {
 		// The guard must not report a false positive; binding the key will fail with its own message.
 		runner.withInitializer(context -> context.getEnvironment().setActiveProfiles("prod"))
 				.withPropertyValues(JWT_PROPERTY + "=not-base64!!")
+				.run(context -> assertThat(context).hasNotFailed());
+	}
+
+	@Test
+	void aDevEncryptionKeyAsARingMemberRefusesToStart() {
+		// T28a / ADR-025: every ring member is guarded, not only the flat k1 pair.
+		runner.withInitializer(context -> context.getEnvironment().setActiveProfiles("prod"))
+				.withPropertyValues(productionProperties(null, null))
+				.withPropertyValues(
+						"serfira.security.pii.keys.k2.encryption-key=" + DEV_PII_ENCRYPTION,
+						"serfira.security.pii.keys.k2.hmac-key=" + RING_PII_HMAC)
+				.run(context -> {
+					String message = fullMessage(context.getStartupFailure());
+
+					assertThat(message).contains(
+							"serfira.security.pii.keys.k2.encryption-key (set SERFIRA_SECURITY_PII_KEYS_K2_ENCRYPTIONKEY)");
+					assertThat(message).doesNotContain(DEV_PII_ENCRYPTION).doesNotContain("keys.k2.hmac-key");
+				});
+	}
+
+	@Test
+	void aDevHmacKeyAsARingMemberRefusesToStart() {
+		runner.withInitializer(context -> context.getEnvironment().setActiveProfiles("prod"))
+				.withPropertyValues(productionProperties(null, null))
+				.withPropertyValues(
+						"serfira.security.pii.keys.k2.encryption-key=" + RING_PII_ENCRYPTION,
+						"serfira.security.pii.keys.k2.hmac-key=" + DEV_PII_HMAC)
+				.run(context -> {
+					String message = fullMessage(context.getStartupFailure());
+
+					assertThat(message).contains(
+							"serfira.security.pii.keys.k2.hmac-key (set SERFIRA_SECURITY_PII_KEYS_K2_HMACKEY)");
+					assertThat(message).doesNotContain(DEV_PII_HMAC).doesNotContain("keys.k2.encryption-key");
+				});
+	}
+
+	@Test
+	void aProductionRingWithoutDevKeysStarts() {
+		runner.withInitializer(context -> context.getEnvironment().setActiveProfiles("prod"))
+				.withPropertyValues(productionProperties(null, null))
+				.withPropertyValues(
+						"serfira.security.pii.keys.k2.encryption-key=" + RING_PII_ENCRYPTION,
+						"serfira.security.pii.keys.k2.hmac-key=" + RING_PII_HMAC,
+						"serfira.security.pii.active-kid=k2")
 				.run(context -> assertThat(context).hasNotFailed());
 	}
 
