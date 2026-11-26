@@ -75,6 +75,10 @@ for a GitHub billing reason, not a test failure.
   Addendum §18 contracts through the API with dates relative to today, checks the golden schedules, pays
   (PRD scenarios 1, 2, 3 and 6), reads the statement (Σ debit = Σ credit) and the aging report, and checks
   the role split. Only the demo users are seeded.
+- Outbox (T38, ADR-027): `PaymentReceived`, `PaymentVoided`, `ContractActivated`, `ContractClosed`,
+  `ContractWrittenOff` and `SettlementExecuted` are written to `outbox_events` in their business transaction,
+  PII-free, in write order (monotonic UUIDv7 ids). A ShedLock job (`outbox-publisher`, every 5 s) logs each
+  as one ECS line and marks it `SENT`; failures retry and end `FAILED`.
 
 Full per-task implementation notes for DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
