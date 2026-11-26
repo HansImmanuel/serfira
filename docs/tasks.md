@@ -23,7 +23,7 @@ shell, login, contract lifecycle and the servicing screens (payment, statement f
 implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
 operator flow end to end against the Compose stack.
 **Current sprint: Sprint 8 (COMPLETE, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (`t28b-pii-rekey`). Sprint 8b (T39) is next.
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (`t28b-pii-rekey`). T39 is IN PROGRESS.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
 `t28b-pii-rekey`) = **149 suites / 1170 tests / 0 failed** (T28a close 140/1100; T28b added the census,
@@ -889,19 +889,74 @@ the legacy key.
 
 ---
 
+## Sprint 8b — Payments, Settlement & Write-off UI
+
+**Goal:** the operator can read a contract's payment history and run the two remaining servicing flows
+(early settlement, write-off) from the contract detail screen.
+**Scope (5 pts):** T39.
+**Exit:** `GET /api/v1/contracts/{id}/payments` is live behind the role matrix; the contract detail screen has a
+payments tab, a settlement quote/execute modal and a write-off dialog; statement PAYMENT rows link to the
+payment. Sprint 8b is the last planned sprint; no later story is planned yet.
+
+> **Planned 2026-11-27.** Plan: `docs/superpowers/plans/2026-11-27-t39-payments-settlement-writeoff.md`
+> (Decisions 1–13, Global Constraints, Review Focus).
+
+### T39 — FE payments tab, settlement and write-off flows (5 pts)
+
+Status: IN PROGRESS
+Estimate: 5 pts
+
+Goal: an ADMIN_OPERASIONAL or FINANCE operator sees every payment of a contract (POSTED and VOIDED, with
+allocations, excess and void details), quotes and executes an early settlement, and writes a contract off
+with a reason, all from the contract detail screen.
+Scope:
+- Backend: `GET /api/v1/contracts/{id}/payments` in the `payment` module (`ContractPaymentController`,
+  `PaymentHistoryQueryService`, `ContractPaymentResponse`), `ContractLookupPort.requireExists`, one role-matrix
+  row, OpenAPI, doc rows.
+- Frontend: payments tab; settlement modal with countdown; write-off dialog; `?tab=` and `?payment=` deep links;
+  statement PAYMENT rows link to the payment row.
+Business Rules: all taken at planning, see plan Decisions 1–13; not restated here. In brief: roles are ADMIN and
+FINANCE, MANAJEMEN gets 403 (D2); the list is unpaged, newest first (D3); `PaymentResponse` is not widened
+(D4); settlement cash due is `gross_amount − available_credit` (D5, ADR-018 D9/D10); one `Idempotency-Key` per
+quote (D7); write dialogs mount for any contract status (D8); no payment-void UI (D12).
+Implementation Notes: `contract` never imports `payment`, so the existence check goes through the new
+`ContractLookupPort` in `contract.application`. The new endpoint adds exactly one default-deny matcher row
+(ADR-015) and the same Addendum §3.4 and `EndpointRoleMatrixIT` rows. Money stays a decimal string end to end
+(ADR-024). Task order and files: the plan.
+Dependencies: T33, T12/T13, T19.
+Acceptance Criteria:
+- A settlement whose response is lost but which committed still offers "Coba lagi"; the retry replays with the
+  same key and `quote_id` and ends in the success toast, even after the refetch shows CLOSED.
+- The countdown starts at the server lifetime (`valid_until − quoted_at`) whatever the browser clock says, and
+  execution disables at zero.
+- With customer credit, cash due is `gross − credit`; credit equal to the gross shows Rp 0; credit above the
+  gross blocks execution.
+- A re-quote after `STALE_SETTLEMENT_QUOTE` or `SETTLEMENT_QUOTE_EXPIRED` sends a different `Idempotency-Key`
+  with the new `quote_id`.
+- Write-off reasons are validated and sent trimmed (whitespace only, 500 and 501 characters, surrounding
+  spaces); a retry resends the reason unchanged.
+- `GET /contracts/{id}/payments` answers 200 for ADMIN and FINANCE, 403 for MANAJEMEN, 404 `CONTRACT_NOT_FOUND`
+  for an unknown contract.
+Tests: `ContractPaymentHistoryIT` and `EndpointRoleMatrixIT` first; then the frontend unit and component tests
+named in the plan; `./gradlew check` and `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`.
+Risks: re-estimated from 2 to 5 pts at planning (read model and role row 1, tab and links 1, settlement modal 2,
+write-off dialog 1). The settlement modal carries the only browser-side money arithmetic (D5), so a mistake
+there is a money-display error rather than a ledger error: the server stays the authority.
+
+---
+
 ## Future / Deferred Work
 
 ### Later sprints (planned, detailed at their sprint planning)
 
-Sprint 8 is detailed above. Sprint 8b stays a one-line row until its planning; the carry-forward
+Sprint 8 and Sprint 8b are detailed above; no later story is planned yet. The carry-forward
 requirements are scope notes, not estimates to implement from.
 
 | ID   | Story                                              | Sprint | Pts | Depends on                                | Carry-forward requirements                                                                                                                                                                                                 |
 | ---- | -------------------------------------------------- | ------ | --- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| T39  | FE payments tab, settlement and write-off flows    | 8b     | 2   | T33; new `GET /contracts/{id}/payments`   | Payment-history read model + role-matrix row + OpenAPI; quote/execute modal with countdown and `STALE_SETTLEMENT_QUOTE`; write-off dialog with reason; link statement `ref_id` to the payment/settlement (T33 left it as a short id) |
 
 Sprint 8 = 14 pts (T36, T37, T38, T28a, T28b; a one-point stretch, with T28b the first to slip into 8b).
-Sprint 8b = 2 pts (T39); T28b did not slip.
+Sprint 8b = 5 pts (T39); T28b did not slip.
 
 > **`iss`/`aud` + RS256 (CR-10) and the T7-D2 active-user check** were part of the old T21 carry-forward.
 > The active-user check is now folded into **T21a**. `iss`/`aud` validation and an RS256 migration stay
