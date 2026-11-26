@@ -156,7 +156,7 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
 
 **Sprint 7 selesai.** Alur operator utama berjalan di browser dan dapat diulang lewat `node scripts/demo.mjs`.
 
-Sprint 8 (reporting, outbox & rotasi kunci PII) — **direncanakan 2026-11-26**, 14 pts (stretch 1 poin).
+Sprint 8 (reporting, outbox & rotasi kunci PII) — **selesai** (direncanakan 2026-11-26), 14 pts (stretch 1 poin).
 Definisi metrik di ADR-026:
 
 - [x] T36 — G1 metrik reporting + `GET /reports/outstanding`. Endpoint baru mengembalikan total
@@ -185,4 +185,13 @@ Definisi metrik di ADR-026:
       `PiiKeyRotationIT` menulis di bawah `k1` lalu membaca, mencari, memakai ulang dan 409 di context kedua
       dengan `k2` aktif. Verifikasi: backend 140 suite / 1100 test (branch `t28a-pii-key-ring`). Jangan ganti
       kunci aktif sebelum T28b
-- [ ] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint`
+- [x] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint` (ADR-025 D8–D10). Klaim
+      idempotency kini mencatat kid penandatangannya (`request_hash_kid`, V25; `NULL` = legacy key), sehingga
+      replay lintas rotasi dihitung ulang dengan kid tercatat, bukan `409`. Runner opt-in
+      (`SERFIRA_MAINTENANCE_PIIREKEY_ENABLED`, `DRY_RUN`/`EXECUTE`) menjalankan pre-flight census (nol
+      penulisan bila ada baris tak terbaca atau duplikat), re-key per halaman dengan verifikasi tiap baris,
+      dapat dilanjutkan, dan mencatat verdict `RETIRABLE`/`NOT_RETIRABLE` per kid; kunci lama dihapus hanya
+      bila `RETIRABLE`. Verifikasi: backend 149 suite / 1168 test (branch `t28b-pii-rekey`)
+
+**Sprint 8 selesai.** Laporan manajemen, outbox, dan rotasi kunci PII (ring + re-keying) berjalan; sprint
+berikutnya adalah Sprint 8b (T39).

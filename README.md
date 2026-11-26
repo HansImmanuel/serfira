@@ -311,13 +311,44 @@ itself as their credential.
   ```
 
   `<KID>` is 1–16 lowercase letters or digits (uppercase in the variable name). **Do not switch the
-  active key until T28b ships**: idempotent replays across the switch would get `409`.
+  active key while a T28a instance still runs**: it records no key id with its idempotency claims, so a
+  replay across the switch would get `409`. Switch only when every instance runs T28b or later.
 
   **Upgrading to T28a is two-phase** ([ADR-025 D7](docs/adr/ADR-025-pii-key-ring.md)). Deploy it as is:
   it reads both envelope formats but still writes `v1`, so an older instance running alongside it, or a
   rollback, still reads every row. Set `SERFIRA_SECURITY_PII_WRITEENVELOPE=v2` only after no pre-T28a
   instance runs and you no longer need to roll back below T28a. After that, a rollback below T28a cannot
   read the `v2` rows. Key rotation requires `v2`.
+
+  **Rotating the PII keys** ([ADR-025 D6, D8–D10](docs/adr/ADR-025-pii-key-ring.md)). With
+  `SERFIRA_SECURITY_PII_WRITEENVELOPE=v2` set and no T28a instance running:
+
+  1. Add the new key (`SERFIRA_SECURITY_PII_KEYS_<KID>_*`) on every instance and deploy, still on the old
+     `SERFIRA_SECURITY_PII_ACTIVEKID`.
+  2. Set `SERFIRA_SECURITY_PII_ACTIVEKID` to the new `<kid>` on every instance together and deploy. Idempotent
+     replays keep working across the switch, because each claim records the key it was signed with.
+  3. Run the re-keying pass. It is off unless enabled, and runs once at startup:
+
+     ```
+     SERFIRA_MAINTENANCE_PIIREKEY_ENABLED=true
+     SERFIRA_MAINTENANCE_PIIREKEY_MODE=DRY_RUN     # DRY_RUN (default) or EXECUTE
+     SERFIRA_MAINTENANCE_PIIREKEY_BATCHSIZE=500    # page size, default 500
+     ```
+
+     Restart once with `DRY_RUN` and read the report. Then restart with `MODE=EXECUTE`. It moves every
+     customer to the active key, verifies each row, and can be rerun after an abort. Then remove
+     `SERFIRA_MAINTENANCE_PIIREKEY_ENABLED` (or set it to anything but `true`) so later restarts do not run it.
+     The application serves requests during the pass. `EXECUTE` refuses to run with
+     `SERFIRA_SECURITY_PII_WRITEENVELOPE=v1`. It aborts with zero writes on an unreadable row or a
+     customer that would duplicate another under the active key
+     (`pii-rekey pre-flight aborted with zero writes: …`); the duplicate counts appear only in that abort, not in
+     a `DRY_RUN`.
+  4. Read the report in the application log: one `pii-rekey key kid=<kid> verdict=… envelopeRows=…
+     unexpiredFingerprints=…` line per key, then `pii-rekey summary …`. Remove the old key only once its verdict
+     is `RETIRABLE`. A key stays `NOT_RETIRABLE` while any customer row or any unexpired idempotency claim
+     still uses it, so an old key usually becomes retirable only after the idempotency retention window (7
+     days) has passed since the switch. Run `DRY_RUN` again after that. `MISSING_FROM_RING` means a key was
+     removed too early. Logs contain counts and key ids only.
 
 - **No plaintext PII in SQL, logs, or URLs.** API responses return customer data masked.
 - **Browser boundary (CORS).** A browser client on another origin must be allowlisted explicitly:

@@ -1,7 +1,7 @@
 # ADR-025: PII Key Ring and the `v2` Envelope (T28a)
 
-- **Status:** Accepted; implemented by T28a. T28b (re-keying pass, `RequestFingerprint` key ids, retention
-  rule) adds an addendum.
+- **Status:** Accepted; implemented by T28a (D1–D7) and T28b (D8–D10: fingerprint key ids, re-keying pass,
+  retention rule).
 - **Date:** 2026-11-26
 - **Deciders:** Hans (solo developer)
 - **Relates to:** ADR-004 (at-rest PII), `04_GAPS_ADDENDUM.md` §9, ADR-007 / ADR-017 (idempotency
@@ -82,7 +82,7 @@ A `kid` is 1–16 lowercase letters or digits (`^[a-z0-9]{1,16}$`). Spring's env
   catch a race, as long as every instance has the same active key. During a rolling switch (D6 step 2), an
   old instance writes `k1` hashes while a new one writes `k2` hashes. Two concurrent creates of the same new
   person, one on each, can then insert a cross-`kid` duplicate. Lookups refuse that duplicate loudly, and so
-  does T28b's pre-flight.
+  does the D9 pre-flight.
 
 ### D5 — Startup validation
 
@@ -111,13 +111,14 @@ or misplaced dev value is just as public.
 2. **Switch** `active-kid` to the new `kid` and deploy. New rows are `v2:<new>:…` with new-key hashes, and old
    rows still read and match. Switch every instance together, or pause customer creation during the switch:
    a window with mixed active keys can insert a cross-`kid` duplicate (D4).
-3. **Re-key** with T28b's pass, which moves every row to the active key.
-4. **Retire** the old entry only by T28b's retention rule, never on time alone.
+3. **Re-key** with the D9 pass: run it as `DRY_RUN`, then as `EXECUTE`, then disable it. It moves every row
+   to the active key.
+4. **Retire** the old entry only when the D10 verdict says `RETIRABLE`, never on time alone.
 
-> **Do not perform step 2 until T28b ships.** Switching the active key also rotates the HMAC key.
-> `idempotency_keys.request_hash` is an HMAC computed under the key that was active when the request was
-> claimed (ADR-007). Until T28b records and honours that key id, an idempotent replay across the switch would
-> compare against the new key and get `409`.
+> **Do not perform step 2 while a T28a instance still runs.** Switching the active key also rotates the HMAC
+> key. A T28a instance records no key id with its idempotency claims (D8), so it would claim with a `NULL` kid
+> while signing under the new key, and a replay of that claim would be recomputed under the legacy key and get
+> `409`. Switch only once every instance runs T28b or later.
 
 ### D7 — Version compatibility: `v2` writes are switched on separately
 
@@ -148,7 +149,7 @@ Rules that enforce it:
 - Setting `write-envelope` back to `v1` does not convert `v2` rows that already exist. After phase 2, a rollback
   below T28a makes those rows unreadable. Phase 2 is the point of no return, and it is a deliberate operator
   step.
-- T28b's re-keying pass writes `v2` under the active key, so it also runs only after phase 2.
+- The D9 re-keying pass writes `v2` under the active key, so it also runs only after phase 2.
 
 ---
 
@@ -158,8 +159,8 @@ Rules that enforce it:
   behaves exactly as before, on disk included, until an operator turns on `v2` writes (D7).
 - Every lookup computes one HMAC per ring key. A ring normally holds two keys at most, and only during a
   rotation.
-- `v1:` rows remain readable for as long as the legacy key is configured. T28b re-encrypts them.
-- An operator who removes a key before T28b's verdict makes rows unreadable. Because of D3, the failure is loud.
+- `v1:` rows remain readable for as long as the legacy key is configured. The D9 pass re-encrypts them.
+- An operator who removes a key before the D10 verdict makes rows unreadable. Because of D3, the failure is loud.
 
 ## Alternatives Considered
 
@@ -170,4 +171,137 @@ Rules that enforce it:
 - **Store the `kid` in its own column.** It needs a migration and can drift from the ciphertext, while the
   envelope already carries the `kid`. Rejected.
 - **Re-encrypt in SQL on rotation.** ADR-004 forbids encryption in SQL, and keys never enter the database.
-  Rejected; T28b re-keys in the application.
+  Rejected; the D9 pass re-keys in the application.
+
+---
+
+## Addendum (T28b): fingerprint key ids, the re-keying pass and the retention rule
+
+### D8 — Idempotency fingerprints record their key id
+
+`idempotency_keys.request_hash` is an HMAC computed under the key that was active when the request was claimed
+(ADR-007). A rotation changes the active key, so a replay of an older claim has to be recomputed under the key
+that claim used.
+
+- **Column.** Migration `V25__idempotency_request_hash_kid.sql` adds `request_hash_kid VARCHAR(16) NULL`, with a
+  check that a non-null value matches the `kid` syntax (D2). There is no backfill: `NULL` means a claim recorded
+  before key ids existed, which was hashed under the legacy key. (The task text said V24, but V24 is the
+  reporting indexes.)
+- **Claim.** A claim stores the fingerprint and the active `kid` together.
+- **Replay rule.** A replay recomputes the fingerprint of the new request under the row's recorded `kid`, or
+  under the legacy key when the column is `NULL`, and compares it with the stored hash. Across a rotation, the
+  same body therefore replays and a different body still gets `409`.
+- **Expiry first.** An expired claim is rejected before its `kid` is resolved or any hash is compared
+  (ADR-017), so a claim past its retention window never needs its key again.
+- **A missing key fails loudly.** A recorded `kid` that is not in the ring, or a `NULL` claim with no legacy key
+  configured, throws `IllegalStateException` instead of answering `409`. It means a key was retired too early.
+  The message names the `kid` or the `legacy-kid` property, never a hash.
+- **Switch the active key only once no T28a instance runs.** A T28a instance does not write
+  `request_hash_kid`, so its claims carry `NULL`, yet it signs them under the key that is active on that
+  instance. After a switch, a replay of such a claim would be recomputed under the legacy key and wrongly
+  conflict. This is the D6 step 2 condition. When only T28b or later instances run, every claim made after the
+  switch carries its `kid`.
+
+### D9 — The re-keying pass
+
+A maintenance runner moves every customer's envelopes and lookup hashes to the active key. It lives in the
+`contract` module, reads fingerprint usage through `shared.idempotency`, and exists only when
+`serfira.maintenance.pii-rekey.enabled=true`. Otherwise no bean is created and startup is unchanged.
+
+| Property | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `serfira.maintenance.pii-rekey.enabled` | `SERFIRA_MAINTENANCE_PIIREKEY_ENABLED` | absent | `true` creates the runner; anything else creates no bean. |
+| `serfira.maintenance.pii-rekey.mode` | `SERFIRA_MAINTENANCE_PIIREKEY_MODE` | `DRY_RUN` | `DRY_RUN` or `EXECUTE`; an unknown value fails startup. |
+| `serfira.maintenance.pii-rekey.batch-size` | `SERFIRA_MAINTENANCE_PIIREKEY_BATCHSIZE` | `500` | Page size, at least 1. |
+| `serfira.maintenance.pii-rekey.lock-at-most-for` | none | `PT10M` | ShedLock bound; the keep-alive lock provider extends it while the pass runs. |
+
+- **How it runs.** Once at startup, under its own ShedLock lock (`pii-rekey`), as the `SYSTEM` actor
+  (`AuditContext.SYSTEM_USER_ID`), with one `job_run` row. A stale `RUNNING` row left by a crash is abandoned
+  first. The runner is a synchronous `ApplicationRunner`. By the time runners run, the embedded server already
+  accepts requests, so the application serves during the pass. A failure is logged and recorded in `job_run`;
+  it never stops the application. The cost is that a readiness probe, if one is enabled, reports ready only
+  after the pass.
+- **Pre-flight.** A read-only census pages through every customer, decrypts both envelopes and computes the
+  active-key hashes. For `EXECUTE`, it aborts with **zero writes** when any row has an unknown `kid` or fails to
+  decrypt, or when two customers would share an active `nik_hash` or `phone_lookup`. `EXECUTE` is also refused
+  while `write-envelope=v1`, because the pass writes `v2` (D7). That refusal comes before any scan or write.
+- **A row is on target** when both envelopes start with `v2:<activeKid>:` and both lookup columns equal the
+  active-key hash of the decrypted value. Everything else is re-keyed, `v1:` rows included while `k1` is still
+  active, so the legacy designation can be dropped later.
+- **Execute.** Pages by `id` from the zero UUID, one transaction per page. A row off target is re-encrypted and
+  re-hashed in the application (ADR-004: never in SQL) and written by native SQL on the raw columns, because the
+  entity holds only plaintext and JPA dirty checking would never fire. Only `nik`, `nik_hash`, `phone`,
+  `phone_lookup`, `updated_at` and `updated_by` change. The runner is the only writer of an existing customer
+  row, and the create flow's never-mutate rule is untouched.
+- **Per-row verification.** In the same transaction, each rewritten row is read back, decrypted and compared
+  with the expected plaintext and both hashes. A mismatch rolls back that page and aborts the run.
+- **Resume.** A rerun after an abort skips rows already on target. The cursor advances by the rows *scanned*,
+  not the rows rewritten, so pages that are already done are passed over and the loop terminates. A second
+  complete run changes zero rows.
+- **`job_run` counters.**
+
+  | Run | `status` | `records_processed` | `records_failed` |
+  |---|---|---|---|
+  | `DRY_RUN` | `COMPLETED` | 0 | 0 |
+  | `EXECUTE` | `COMPLETED` | rows re-keyed | 0 |
+  | `EXECUTE` refused while `write-envelope=v1` | `FAILED` | 0 | 0 |
+  | Pre-flight abort | `FAILED` | 0 | blocking findings |
+  | Any later abort | `FAILED` | rows committed so far | 1 |
+
+  Blocking findings are the sum of the unknown-`kid`, undecryptable, duplicate-NIK and duplicate-phone counts,
+  so a row that duplicates on both NIK and phone counts twice.
+- **Logs carry counts, kids and customer ids only** (Addendum §9). The startup runner logs an abort at ERROR as
+  `pii-rekey <MODE> run aborted (<ExceptionClass>): <message>` for the pass's own abort exceptions, and as
+  `pii-rekey <MODE> run aborted (<fully qualified class>)` for anything else, with no message and no stack
+  trace. A database error can quote a lookup hash (a unique violation prints its `Key (nik_hash)=(...)` detail),
+  so its message never reaches the log. A successful run logs
+  `pii-rekey <MODE> run completed: <n> rows re-keyed`.
+
+### D10 — Retention rule and retirement verdict
+
+An old HMAC key is retained until every record signed with it has expired. An old encryption key is retired once
+no customer row carries its `kid`. Concretely:
+
+- **Customer rows:** none remain under the old key once a verified pass completes.
+- **Idempotency claims:** none is still replayable. A claim is **unexpired** when
+  `expires_at IS NULL OR expires_at > now`. That mirrors `IdempotencyService`, which compares a claim whenever
+  it has no expiry or its expiry is in the future. A claim from before expiry was recorded (`expires_at`
+  `NULL`) is therefore always counted, so a key is never called retirable while a replay can still need it.
+  `now` is the application's injected clock.
+
+Every run, dry or real, ends with a report. Per ring `kid` it states one verdict:
+
+- the active key is `ACTIVE`;
+- any other key is `RETIRABLE` only when all of these are zero:
+  - customer rows with an envelope under it (a `v1:` envelope counts under the legacy key);
+  - customer rows with any hash off the active key (a global count: conservative, and exact for a ring of two);
+  - unexpired fingerprints recorded under it (`NULL` counts under the legacy key);
+  - unreadable rows (an unknown `kid` or a failed decrypt);
+- otherwise it is `NOT_RETIRABLE`;
+- an unexpired fingerprint whose `kid` is not in the ring is reported as `MISSING_FROM_RING`, because its
+  replays will fail (D8).
+
+The report is written to the log as one line per key and a summary:
+
+```
+pii-rekey key kid=<kid> verdict=<VERDICT> envelopeRows=<n> unexpiredFingerprints=<n>
+pii-rekey summary activeKid=<kid> rowsOffActiveHashes=<n> unreadableRows=<n>
+```
+
+A `DRY_RUN` prints these lines too, so it shows what an `EXECUTE` would still have to move, but it does not
+print the duplicate counts. Duplicates surface when `EXECUTE` aborts its pre-flight with zero writes, as
+`pii-rekey pre-flight aborted with zero writes: <n> unknown-kid, <n> undecryptable, <n> duplicate NIK, <n>
+duplicate phone rows`.
+
+An unexpired claim keeps its key `NOT_RETIRABLE` even after a clean pass, until its `expires_at` passes. The
+retention window is the `IDEMPOTENCY_KEY_RETENTION_DAYS` system parameter (7 days). Run a `DRY_RUN` again after
+that time. The verdict is the gate, and retiring a key on time alone makes rows unreadable.
+
+### Consequences of the addendum
+
+- A replay across a rotation is a replay, not a `409`. If a key was retired while a claim still needs it, the
+  replay fails loudly.
+- The pass rewrites PII in place. The pre-flight abort and the per-row verification are the safety net, so run
+  `DRY_RUN` in every environment first.
+- The pass holds its ShedLock lock for as long as it takes. The application serves meanwhile, and a customer
+  created during the pass is already on the active key.
