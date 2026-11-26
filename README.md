@@ -104,7 +104,7 @@ flowchart LR
 | `penalty`    | Penalty accrual + waiver, consistency-check, daily job                | Built  |
 | `ledger`     | Double-entry journal, chart of accounts, posting                      | Built  |
 | `settlement` | Early settlement quote and execution                                  | Built  |
-| `reporting`  | Read-only reports (aging)                                             | Built  |
+| `reporting`  | Read-only reports (aging, outstanding)                                | Built  |
 | `auth`       | App users, Argon2id login, token rotation/logout/lockout              | Built  |
 | `shared`     | Clock, audit, error envelope, idempotency, document numbers, security | Built  |
 
@@ -170,8 +170,8 @@ never hits `DUPLICATE_CONTRACT`. Dates are relative to today in Asia/Jakarta, be
 takes the server's clock.
 
 To follow along in the browser, start the frontend (`cd frontend && npm ci && npm run dev`), open
-http://localhost:3000, log in as `admin`, and search for the contract number the script prints. See
-[frontend/README.md](frontend/README.md).
+http://localhost:3000, log in as `admin`, and search for the contract number the script prints. **Laporan →
+Aging / Outstanding** shows both reports to all three demo users. See [frontend/README.md](frontend/README.md).
 
 ### Running tests
 
@@ -314,7 +314,7 @@ itself as their credential.
 | ------------ | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | 1 — MVP      | Contracts, FLAT/EFFECTIVE schedules, payments and allocation, ledger, penalty and aging job, RBAC, aging report, statement | Done                                   |
 | 2            | Early settlement, customer credit, payment void/reversal, penalty waiver, consistency check, write-off, login              | Built                                  |
-| 3            | Next.js dashboard (login, contract lifecycle, payment, statement, credit and the demo script built; reports, payments history, settlement/write-off UI pending), reporting, outbox event publisher, export | In progress                            |
+| 3            | Next.js dashboard (login, contract lifecycle, payment, statement, credit, aging and outstanding reports and the demo script built; payments history, settlement/write-off UI pending), reporting, outbox event publisher, export | In progress                            |
 | 4 (optional) | Restructuring, payment gateway stub, maker-checker, microservice split demo                                                | Optional                               |
 
 Out of scope by design: loan origination (credit scoring, credit bureau checks, e-KYC), funding and

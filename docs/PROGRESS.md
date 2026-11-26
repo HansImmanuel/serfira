@@ -165,7 +165,12 @@ Definisi metrik di ADR-026:
       `contract`/`payment`/`settlement`; kalkulator di `reporting` murni. V24 menambah index range
       `installment.due_date` dan `settlement.executed_at`. Verifikasi: backend 126 suite / 968 test, helper
       demo 30/30 (branch `t36-reporting-outstanding`)
-- [ ] T37 — G4 halaman laporan aging & outstanding + nama customer di API aging
+- [x] T37 — G4 halaman laporan aging & outstanding + nama customer di API aging. Menu "Laporan" untuk
+      ketiga role; ringkasan dan kartu memakai nilai API apa adanya (rasio lewat `formatRatioPercent`),
+      badge NPL bila `dpd_over_90 > 0`, `as_of` tidak pernah dikirim. Baris aging membawa `customer_name`
+      lewat port `contract` tanpa mendekripsi NIK/telepon. Verifikasi: backend 126 suite / 969 test,
+      frontend 233 test, helper demo 30/30, dicek di browser untuk admin/finance/manager (branch
+      `t37-report-pages`)
 - [ ] T38 — G6 outbox writer transaksional, enam event domain, publisher berbasis log
 - [ ] T28a — PII key ring + envelope `v2` (ADR-025)
 - [ ] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint`
