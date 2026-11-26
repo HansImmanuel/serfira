@@ -12,7 +12,7 @@
 
 ## Decisions taken at planning (each goes into ADR-027)
 
-1. **Event order inside one transaction is pinned by the id.** Two events written in one transaction (payment → `ContractClosed`, settlement → `ContractClosed`) get the same `created_at` from `Clock.now()`, and V1's default `id` is a random UUID, so `ORDER BY created_at, id` would order them by chance. The writer assigns the id itself: a **UUIDv7, monotonic per process** (`OutboxEventIds`). PostgreSQL compares `uuid` byte-wise, so `(created_at, id)` is emission order. No migration.
+1. **Event order inside one transaction is pinned by the id.** Two events written in one transaction (payment → `ContractClosed`, settlement → `ContractClosed`) can get the same `created_at` (always under the tests' fixed clock, possible at the clock's resolution), and V1's default `id` is a random UUID, so `ORDER BY created_at, id` would order a tie by chance. The writer assigns the id itself: a **UUIDv7, monotonic per process** (`OutboxEventIds`). PostgreSQL compares `uuid` byte-wise, so the id breaks every `created_at` tie in emission order. This assumes the wall clock does not step backwards between two writes of one transaction: if it does, the later write gets the earlier `created_at`, which sorts first and reverses the emission order (ADR-027 D4). No migration.
 2. **Emission points.** `PaymentReceived` right after the allocations flush and *before* `applyPaymentResolution` (which may close the contract), and `SettlementExecuted` right after the settlement's allocations and credit applications are saved and *before* `closeBySettlement`, so "X, then `ContractClosed`" holds. Every other event is written at the end of its use case, after the ledger post.
 3. **`ContractClosed` has exactly two sites:** the `if (contract.close(MATURITY, …))` branch in `InstallmentReceivableService.closeWhenEveryInstallmentIsPaid` and `if (closed)` in `SettlementCloseService`. The first covers payment, credit application **and** a penalty waiver that clears the last amount (`InstallmentStatusRecomputeService` reuses it), which the spec's table does not list but "every `close()` that returns `true`" includes.
 4. **`job_run` policy:** the publisher writes one `job_run` row named `outbox-publisher` **only for a tick in which at least one event failed** (a retry or a `FAILED`): `records_processed` = events sent, `records_failed` = events that failed, so `JobRun.complete` marks it `FAILED`. Idle and all-success ticks write nothing; the per-event log line and the `SENT` row are their record.
@@ -30,7 +30,7 @@
 
 ## Review Focus
 
-1. **Two events in one transaction share `created_at`** — the publisher must still emit them in write order (`SettlementExecuted` before `ContractClosed`). Pinned by `OutboxEventIdsTest` and `settlementWritesSettlementExecutedThenContractClosed` (Task 4) reading rows `ORDER BY created_at, id`.
+1. **Two events in one transaction can share `created_at`** — the publisher must still emit them in write order (`SettlementExecuted` before `ContractClosed`). Pinned by `OutboxEventIdsTest` and `settlementWritesSettlementExecutedThenContractClosed` (Task 4) reading rows `ORDER BY created_at, id`.
 2. **A penalty waiver that clears the last amount closes the contract** — it must emit `ContractClosed` too. Pinned by `InstallmentReceivableServiceOutboxTest` (Task 3) on the single site.
 3. **Voiding an already-`VOIDED` payment with a fresh key** is a 200 no-op and must emit nothing. Pinned by `voidingAnAlreadyVoidedPaymentWritesNoSecondEvent` (Task 2).
 4. **Activating an already-`ACTIVE` contract** returns 200 without writing and must emit nothing. Pinned by `repeatingActivationWritesNoSecondEvent` (Task 3).
@@ -175,7 +175,7 @@
 - Produces: `record SettlementExecutedPayload(int schemaVersion, UUID settlementId, String settlementNo, UUID contractId, UUID quoteId, BigDecimal cashReceived, BigDecimal creditUsed, BigDecimal rebateAmount, BigDecimal adminFee, OffsetDateTime executedAt) implements OutboxPayload`
 
 - [ ] **Step 1: Write the failing cases**
-  - `settlementWritesSettlementExecutedThenContractClosed` — quote + execute (request shapes from `SettlementExecutionIT`) → exactly two new rows in this transaction, read with `ORDER BY created_at, id`: `SettlementExecuted` (aggregate `SETTLEMENT`, the settlement id) then `ContractClosed` (`closed_reason = SETTLEMENT`); the two `created_at` values are equal (proves the id breaks the tie — Review Focus 1).
+  - `settlementWritesSettlementExecutedThenContractClosed` — quote + execute (request shapes from `SettlementExecutionIT`) → exactly two new rows in this transaction, read with `ORDER BY created_at, id`: `SettlementExecuted` (aggregate `SETTLEMENT`, the settlement id) then `ContractClosed` (`closed_reason = SETTLEMENT`). The two `created_at` values may differ or tie; either way the order holds, and on a tie the id breaks it (Review Focus 1, ADR-027 D4).
   - `aReplayedSettlementKeyWritesNoSecondRow`.
   - `noPayloadCarriesCustomerDataOrFreeText` — runs last over **all** rows the class created: for every `payload_json::text`, assert it contains none of the seeded `full_name`, `nik`, `phone` (and address) constants, neither sentinel reason, and that no key is in `{full_name, name, nik, phone, address, reason, void_reason, write_off_reason, note}`. Make it self-contained: drive one flow of each type inside the test so it does not depend on test order.
 
@@ -200,7 +200,7 @@
   - `@Query(value = "select * from outbox_events where status = 'PENDING' order by created_at, id limit :limit for update skip locked", nativeQuery = true) List<OutboxEvent> claimPending(@Param("limit") int limit)`
   - `record OutboxBatchResult(int claimed, int sent, int failed)` (`failed` counts both retried and terminally failed events)
   - `OutboxBatchPublisher.publishBatch(int limit) → OutboxBatchResult` — `@Transactional(REQUIRES_NEW)`; per event: `sink.publish` → `markSent(clock.now())`; on `RuntimeException` → `recordFailure(maxRetries)` (WARN log with id and type, never the payload) and continue
-  - `OutboxPublisherJob.run()` — under `AuditContext.SYSTEM_USER_ID`: loop `publishBatch(batchSize)` until `claimed < batchSize`; sum results; if total `failed > 0` → `jobRuns.start("outbox-publisher", clock.today())` then `complete(id, sent, failed)` (Decision 4); otherwise no `job_run`
+  - `OutboxPublisherJob.run()` — under `AuditContext.SYSTEM_USER_ID`: loop `publishBatch(batchSize)` while the batch is full **and** has no failures (`claimed == batchSize && failed == 0`), so it stops at a short batch and also right after any batch with a failure, even a full one, and an event cannot spend its retry budget within one tick; sum results; if total `failed > 0` → `jobRuns.start("outbox-publisher", clock.today())` then `complete(id, sent, failed)` (Decision 4); otherwise no `job_run`
   - `LockedOutboxPublisherJob.run()` — `@SchedulerLock(name = "outbox-publisher", lockAtMostFor = "${serfira.jobs.outbox-publisher.lock-at-most-for:PT1M}")`, `LockAssert.assertLocked()`
   - `OutboxPublisherScheduler` — `@Scheduled(cron = "${serfira.jobs.outbox-publisher.cron}", zone = "Asia/Jakarta")`
   - Properties (main): `serfira.jobs.outbox-publisher.cron=*/5 * * * * *`, `…lock-at-most-for=PT1M`, `…batch-size=100`, `…max-retries=10`, each with a one-line comment like the existing job blocks. Constructor guards: `batch-size >= 1`, `max-retries >= 1`.
@@ -245,7 +245,7 @@
 - [ ] **Step 3: Full verification** (record exact counts):
   - `cd backend && ./gradlew check --rerun-tasks` → 0 failed
   - `cd frontend && npm test` (unchanged code, sanity) → 0 failed
-  - `node --test "scripts/demo/*.test.mjs"` and `node scripts/demo.mjs --reset` → exit 0; then `docker compose logs app | grep "Published outbox event"` shows the demo's events (≥ 2 `ContractActivated`, 3 `PaymentReceived`) and no customer name/NIK/phone.
+  - `node --test "scripts/demo/*.test.mjs"` and `node scripts/demo.mjs --reset` → exit 0; then `docker compose logs app | grep "Published outbox event"` shows the demo's events (≥ 2 `ContractActivated`, ≥ 2 `PaymentReceived`) and no customer name/NIK/phone.
 
 - [ ] **Step 4: Close T38** in `docs/tasks.md` and `docs/PROGRESS.md` with the verified counts; commit `docs(t38): ADR-027, spec and glossary updates; close T38`.
 

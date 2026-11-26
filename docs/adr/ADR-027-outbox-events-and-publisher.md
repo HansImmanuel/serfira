@@ -115,7 +115,8 @@ nothing: at a five-second cadence they would bury the daily jobs' rows, and the 
 
 `OutboxSink.publish(OutboxEvent)` is the only broker-facing surface. Today `LoggingOutboxSink` writes one INFO
 line per event (`Published outbox event`) whose key-values — `event_id`, `event_type`, `aggregate_type`,
-`aggregate_id`, `payload` — become fields of the ECS line (T20). A broker (Kafka, TS §2.7) replaces only this
+`aggregate_id`, `payload` — become fields of the ECS line (T20). With INFO disabled for that logger it throws
+instead of returning, so the event counts a retry and is never marked `SENT` unlogged. A broker (Kafka, TS §2.7) replaces only this
 bean; writer, ordering, retries and `job_run` stay as they are.
 
 ---
