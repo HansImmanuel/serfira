@@ -29,7 +29,7 @@ class OutstandingReportServiceTest {
 	private final OutstandingReportService service = new OutstandingReportService(
 			asOf -> {
 				calls.add("owed " + asOf);
-				return List.of(new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0001", TODAY, 0,
+				return List.of(new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0001", "Budi Santoso", TODAY, 0,
 						new BigDecimal("1573333.33")));
 			},
 			(from, to) -> {

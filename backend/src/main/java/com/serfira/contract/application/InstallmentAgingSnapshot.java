@@ -19,18 +19,21 @@ import java.util.UUID;
  *
  * @param contractId   owning contract
  * @param contractNo   owning contract's business number ({@code MF-YYYYMM-XXXX}), for the per-contract row
+ * @param customerName the owning contract's customer {@code full_name}, for the per-contract row (T37). It is
+ *                     stored unencrypted (Addendum §9); NIK and phone are never carried
  * @param dueDate      the installment's due date; the outstanding report's AR keeps the installments with
  *                     {@code due_date <= as_of}, including those still inside grace (ADR-026 D3)
  * @param daysPastDue  aging DPD on the snapshot's business date, {@code >= 0}
  * @param outstanding  installment outstanding (principal + recognized interest + penalty − resolved),
  *                     scale-2, {@code > 0}
  */
-public record InstallmentAgingSnapshot(UUID contractId, String contractNo, LocalDate dueDate, int daysPastDue,
-		BigDecimal outstanding) {
+public record InstallmentAgingSnapshot(UUID contractId, String contractNo, String customerName, LocalDate dueDate,
+		int daysPastDue, BigDecimal outstanding) {
 
 	public InstallmentAgingSnapshot {
 		Objects.requireNonNull(contractId, "contractId");
 		Objects.requireNonNull(contractNo, "contractNo");
+		Objects.requireNonNull(customerName, "customerName");
 		Objects.requireNonNull(dueDate, "dueDate");
 		Objects.requireNonNull(outstanding, "outstanding");
 		if (daysPastDue < 0) {

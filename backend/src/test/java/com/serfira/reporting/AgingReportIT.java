@@ -156,6 +156,29 @@ class AgingReportIT {
 	}
 
 	@Test
+	void everyRowCarriesTheCustomerNameAndNoOtherPii() throws Exception {
+		// T37: the name reaches the row through the contract port; NIK and phone never do (ADR-004).
+		UUID budi = activateContract("Budi Santoso", "B2121AA", "3171012501900021", "08123456721");
+		UUID siti = activateContract("Siti Rahayu", "B2222BB", "3171012501900022", "08123456722");
+		for (UUID contractId : List.of(budi, siti)) {
+			setInstallment(contractId, 1, dueForDpd(10), "100.00");
+			for (int period = 2; period <= 12; period++) {
+				zeroOutInstallment(contractId, period);
+			}
+		}
+
+		JsonNode rows = data(getReport("/api/v1/reports/aging")).get("contracts").get("content");
+
+		assertThat(rows.size()).isEqualTo(2);
+		// Contract-number order: budi was created first.
+		assertThat(rows.get(0).get("contract_id").asText()).isEqualTo(budi.toString());
+		assertThat(rows.get(0).get("customer_name").asText()).isEqualTo("Budi Santoso");
+		assertThat(rows.get(1).get("contract_id").asText()).isEqualTo(siti.toString());
+		assertThat(rows.get(1).get("customer_name").asText()).isEqualTo("Siti Rahayu");
+		rows.forEach(row -> assertThat(row.has("nik") || row.has("phone") || row.has("customer")).isFalse());
+	}
+
+	@Test
 	void onlyActiveContractsAppear() throws Exception {
 		UUID active = activateContract("B3333CC", "3171012501900003", "08123456781");
 		setInstallment(active, 1, dueForDpd(10), "500.00");
@@ -253,15 +276,23 @@ class AgingReportIT {
 	}
 
 	private UUID activateContract(String plateNo, String nik, String phone) {
+		return activateContract("Budi Santoso", plateNo, nik, phone);
+	}
+
+	private UUID activateContract(String fullName, String plateNo, String nik, String phone) {
 		ContractResponse draft = commands.create("aging-key-" + UUID.randomUUID(),
-				contractRequest(plateNo, nik, phone));
+				contractRequest(fullName, plateNo, nik, phone));
 		commands.activate(draft.id(), null);
 		return draft.id();
 	}
 
 	private static CreateContractRequest contractRequest(String plateNo, String nik, String phone) {
+		return contractRequest("Budi Santoso", plateNo, nik, phone);
+	}
+
+	private static CreateContractRequest contractRequest(String fullName, String plateNo, String nik, String phone) {
 		return new CreateContractRequest(
-				new CreateCustomerRequest("Budi Santoso", nik, phone, "Jakarta"),
+				new CreateCustomerRequest(fullName, nik, phone, "Jakarta"),
 				new CreateAssetRequest(AssetType.MOTORCYCLE, "Honda", "Beat", null, plateNo),
 				new BigDecimal("20000000.00"), new BigDecimal("4000000.00"), 12, InterestScheme.FLAT,
 				new BigDecimal("0.0150"), LocalDate.of(2026, 1, 31));

@@ -51,4 +51,15 @@ public interface ContractRepository extends JpaRepository<Contract, UUID>, JpaSp
 			@Param("afterId") UUID afterId, Limit limit);
 
 	boolean existsByIdAndStatus(UUID id, ContractStatus status);
+
+	/**
+	 * The customer name of every ACTIVE contract, for the aging report's rows (T37). Scalars only, so no
+	 * {@code Customer} is hydrated and no PII column is decrypted (see {@link ContractCustomerName}).
+	 */
+	@Query("""
+			select c.id as contractId, cu.fullName as fullName
+			from Contract c join c.customer cu
+			where c.status = com.serfira.contract.domain.ContractStatus.ACTIVE
+			""")
+	List<ContractCustomerName> findActiveContractCustomerNames();
 }
