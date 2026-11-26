@@ -5,6 +5,7 @@
 
 const BUSINESS_ZONE = "Asia/Jakarta";
 const MONEY_PATTERN = /^(-?)(\d+)(?:\.(\d{1,2}))?$/;
+const RATIO_PATTERN = /^\d+\.\d{4}$/;
 
 /** A failed demo step: carries enough of the HTTP exchange to diagnose it without a rerun. */
 export class DemoError extends Error {
@@ -93,6 +94,15 @@ function formatCents(cents) {
 /** Exact sum of decimal money strings, as a scale-2 string. */
 export function sumMoney(amounts) {
   return formatCents(amounts.reduce((total, amount) => total + toCents(amount), 0n));
+}
+
+/**
+ * A report ratio as ADR-026 D7 puts it on the wire: a scale-4 decimal string, or null when its denominator is
+ * zero. A JSON number is rejected even when it prints like one (0.1234), because ADR-024 money and ratios are
+ * strings.
+ */
+export function isRatioOrNull(value) {
+  return value === null || (typeof value === "string" && RATIO_PATTERN.test(value));
 }
 
 /** A per-run tag (UTC YYYYMMDDHHmmss) that keeps asset serials unique across demo runs. */

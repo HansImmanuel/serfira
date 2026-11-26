@@ -25,7 +25,7 @@ implemented, and `node scripts/demo.mjs` proves the operator flow end to end aga
 definitions are decided in ADR-026. T36 is DONE (`t36-reporting-outstanding`); T37 is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t36-reporting-outstanding`) = **126 suites / 965 tests / 0 failed** (T34 close 121/939; T36 added the
+`t36-reporting-outstanding`) = **126 suites / 968 tests / 0 failed** (T34 close 121/939; T36 added the
 outstanding report's unit tests, `OutstandingReportIT` and its role-matrix row). Frontend `npm test`
 (2026-11-25, branch `t34-demo-script`) = **203 tests / 23 files / 0 failed** (T33 close 178; PR #24's
 review fixes added the rest), plus green `npm run lint` and `npm run typecheck`; `npm run build` was green
@@ -209,11 +209,11 @@ amount }` and `active_contract_count`. Decisions:
   `settlement.application.SettlementCashPort` turns the business dates into a half-open Jakarta instant
   range.
 - **Calculator.** `reporting.application.OutstandingMetricsCalculator` is pure. Stock metrics come from
-  one pass over the aging snapshots. Money is scale 2, zero is `"0.00"`, and ratios are scale-4 HALF_UP or
-  `null`.
+  one pass over the aging snapshots. Money and ratios follow ADR-026 D7.
 - **`active_contract_count`** is the number of ACTIVE contracts with outstanding, i.e. the aging report's
-  `contracts.total_elements`. The service is not `@Transactional`, and the snapshot skew is documented in
-  OpenAPI.
+  `contracts.total_elements`. The service is not `@Transactional`: each port reads in its own read-only
+  transaction, so the reads share no snapshot and, under concurrent financial writes, one response can mix
+  values from different points in time. The OpenAPI description says so.
 - **V24** adds `idx_installment_due_date` and `idx_settlement_executed_at`. The baseline indexes lead with
   `contract_id`, so they could not serve the range reads. `OutstandingReportIT` asserts that the planner
   uses the due-date index.
@@ -223,10 +223,10 @@ amount }` and `active_contract_count`. Decisions:
   a separate bug task.
 
 Verification: the new unit tests (`OutstandingMetricsCalculatorTest` 9, `OutstandingReportServiceTest` 2,
-`CollectedAllocationServiceTest` 2, `SettlementCashServiceTest` 2), `OutstandingReportIT` 8 and
+`CollectedAllocationServiceTest` 5, `SettlementCashServiceTest` 2), `OutstandingReportIT` 8 and
 `EndpointRoleMatrixIT` 74 are green. The IT moves money through the API (payment, void, credit apply,
-settlement, penalty reduce, daily job). Full `./gradlew check --rerun-tasks` = **126 suites / 965 tests /
-0 failed**. Demo helpers 28/28. `node scripts/demo.mjs --up` exits 0 on a rebuilt stack, re-run
+settlement, penalty reduce, daily job). Full `./gradlew check --rerun-tasks` = **126 suites / 968 tests /
+0 failed**. Demo helpers 30/30. `node scripts/demo.mjs --up` exits 0 on a rebuilt stack, re-run
 against an existing database: outstanding total = aging total, and manager → 200 on the new endpoint.
 
 **Goal:** Serve PRD R-1's management metrics, computed exactly as ADR-026 defines them, from one read-only
@@ -283,9 +283,11 @@ endpoint that reconciles with the aging report.
   application zone (`Asia/Jakarta`, the injectable `Clock`'s zone).
 - The service is not `@Transactional` itself. Each port reads inside its own read-only transaction, as
   `AgingReportService` does.
-- **Snapshot consistency:** the three ports are separate reads, so a payment that commits between them can
-  skew one response by at most that payment. Accept this, because the report is not a ledger, and record
-  it in the controller's OpenAPI description.
+- **Snapshot consistency:** the ports are separate read-only transactions that share no database snapshot,
+  so any number of financial writes (payments, voids, credit applications, settlements, penalty changes) can
+  commit between them, and under concurrent writes one response can mix values from different points in
+  time. Accept this, because the report is not a ledger, and record it in the controller's OpenAPI
+  description.
 
 **Dependencies:** ADR-026 (Accepted at planning). T8, T30 and T33 are DONE.
 

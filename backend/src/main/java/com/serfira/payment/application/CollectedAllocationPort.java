@@ -21,7 +21,7 @@ public interface CollectedAllocationPort {
 	 *
 	 * <p>Read-only, in its own read-only transaction (or the caller's, if one is active).
 	 *
-	 * @param installmentIds the cohort; an empty input yields zero
+	 * @param installmentIds the cohort; an empty input yields zero, and a repeated id counts once
 	 * @return scale-2 money, {@code >= 0}
 	 */
 	BigDecimal sumCollected(Collection<UUID> installmentIds);

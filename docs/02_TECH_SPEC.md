@@ -96,7 +96,9 @@ Aturan dependency:
   - `reporting → settlement` lewat `settlement.application.SettlementCashPort` (Σ `cash_received` menurut
     tanggal bisnis `executed_at`, Asia/Jakarta).
   Kalkulator metrik (`reporting.application.OutstandingMetricsCalculator`) murni dan hanya mengagregasi;
-  total outstanding dan NPL dihitung dari satu lintasan snapshot aging sehingga kedua laporan selalu sama.
+  total outstanding dan NPL dihitung dari satu lintasan snapshot aging sehingga, atas data yang sama, kedua
+  laporan selalu sama. Port-port itu tidak berbagi snapshot database, jadi saat ada penulisan finansial
+  bersamaan satu respons bisa mencampur nilai dari titik waktu berbeda; laporan ini bukan ledger.
 - Sejak T12 (E1, ADR-018) modul `settlement` baru boleh bergantung ke `contract` dan `penalty`, keduanya
   satu arah lewat **application interface** modul pemilik data (`contract` dan `penalty` tidak tahu modul
   `settlement`):

@@ -58,9 +58,11 @@ public class OutstandingReportController {
 					is excluded and settlement is never part of the collection rate.
 					Money is an exact decimal string. A ratio is a scale-4 fraction rounded HALF_UP ("0.0150" = \
 					1.5%), or null when its denominator is zero.
-					`as_of` defaults to today and must be today. The metrics come from separate read-only reads, so \
-					a payment committing between them can skew one response by at most that payment; the report \
-					is not a ledger.""")
+					`as_of` defaults to today and must be today. The metrics come from separate read-only \
+					transactions that share no database snapshot, so under concurrent financial writes (payments, \
+					voids, credit applications, settlements, penalty changes) one response can mix values read at \
+					different points in time, and its metrics need not reconcile with each other. The report is \
+					not a ledger.""")
 	@ApiResponses({
 			@io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200",
 					description = "The outstanding report"),

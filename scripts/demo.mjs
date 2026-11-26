@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import {
   DemoError,
   createApiClient,
+  isRatioOrNull,
   jakartaToday,
   minusDays,
   minusMonths,
@@ -304,7 +305,7 @@ async function outstanding(api, token, agingReport) {
     "accounts_receivable <= total_outstanding",
   );
   for (const [label, ratio] of [["npl.ratio", report.npl?.ratio], ["collection.rate", report.collection?.rate]]) {
-    check(ratio === null || /^\d+\.\d{4}$/.test(ratio), `${label} is a scale-4 decimal string or null, got ${ratio}`);
+    check(isRatioOrNull(ratio), `${label} is a scale-4 decimal string or null, got ${typeof ratio} ${JSON.stringify(ratio)}`);
   }
   ok(
     `outstanding as of ${report.as_of}: total ${report.total_outstanding} (= aging), AR ${report.accounts_receivable}, ` +

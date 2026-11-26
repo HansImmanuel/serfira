@@ -9,6 +9,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -16,6 +17,8 @@ import java.util.UUID;
 /**
  * Implementation of {@link CollectedAllocationPort} (T36): sums the POSTED, non-EXCESS allocations of the
  * cohort in chunks, so a large cohort never exceeds PostgreSQL's bind-parameter limit on the {@code in} list.
+ * The ids are deduplicated first (first-occurrence order): a repeated id in two chunks would otherwise count
+ * its allocations twice.
  */
 @Service
 public class CollectedAllocationService implements CollectedAllocationPort {
@@ -35,7 +38,7 @@ public class CollectedAllocationService implements CollectedAllocationPort {
 	@Transactional(readOnly = true)
 	public BigDecimal sumCollected(Collection<UUID> installmentIds) {
 		Objects.requireNonNull(installmentIds, "installmentIds");
-		List<UUID> ids = List.copyOf(installmentIds);
+		List<UUID> ids = List.copyOf(new LinkedHashSet<>(installmentIds));
 		BigDecimal total = BigDecimal.ZERO;
 		for (int from = 0; from < ids.size(); from += CHUNK_SIZE) {
 			List<UUID> chunk = new ArrayList<>(ids.subList(from, Math.min(from + CHUNK_SIZE, ids.size())));
