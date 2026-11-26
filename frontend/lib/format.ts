@@ -100,6 +100,32 @@ export function formatMoney(value: string | null | undefined): string {
   return MONEY_FORMAT.format(roundToWholeRupiah(parsed));
 }
 
+const RATIO_SCALE = 4;
+
+const GROUPED_INTEGER_FORMAT = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 });
+
+/**
+ * A report ratio (ADR-026 D7: a scale-4 fraction string, `"0.0150"`) as an id-ID percent with two
+ * decimals: `"1,50%"`. A `null` ratio has a zero denominator and renders as the empty dash.
+ *
+ * <p>Exact: at scale 4 the fraction's units are the percent at scale 2, so the value is only shifted,
+ * never divided or routed through a binary float (FE §3.1). A negative value or one finer than scale 4
+ * is not a ratio the API returns and also renders as the dash.
+ */
+export function formatRatioPercent(value: string | null | undefined): string {
+  if (value === null || value === undefined) {
+    return EMPTY_VALUE;
+  }
+  const parsed = parseDecimal(value);
+  if (parsed === null || parsed.units < 0n || parsed.scale > RATIO_SCALE) {
+    return EMPTY_VALUE;
+  }
+  const percentHundredths = parsed.units * 10n ** BigInt(RATIO_SCALE - parsed.scale);
+  const whole = GROUPED_INTEGER_FORMAT.format(percentHundredths / 100n);
+  const fraction = String(percentHundredths % 100n).padStart(2, "0");
+  return `${whole},${fraction}%`;
+}
+
 /** `28 Feb 2026`, in the business zone, without a day shift for date-only values. */
 export function formatDate(value: string | null | undefined): string {
   if (!value) {
