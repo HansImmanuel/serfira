@@ -113,12 +113,20 @@ or misplaced dev value is just as public.
    a window with mixed active keys can insert a cross-`kid` duplicate (D4).
 3. **Re-key** with the D9 pass: run it as `DRY_RUN`, then as `EXECUTE`, then disable it. It moves every row
    to the active key.
-4. **Retire** the old entry only when the D10 verdict says `RETIRABLE`, never on time alone.
+4. **Retire** the old entry only when the D10 verdict says `RETIRABLE`, never on time alone. To re-read the
+   verdict after step 3, re-enable the runner as `DRY_RUN`, restart, read the report, and disable it again.
+   Then drop the entry in one deploy on every instance. For `k1`, the flat pair, unset or blank
+   `serfira.security.pii.encryption-key` and `.hmac-key` (`SERFIRA_SECURITY_PII_ENCRYPTION_KEY` / `_HMAC_KEY`);
+   an entry under `keys.<kid>.*` is removed with its two variables. If `legacy-kid=k1` was set explicitly, unset
+   it in the same deploy, or startup refuses because the legacy kid is not in the ring. `active-kid` stays set
+   (it is required once no flat pair exists) and so does `write-envelope=v2`.
 
 > **Do not perform step 2 while a T28a instance still runs.** Switching the active key also rotates the HMAC
 > key. A T28a instance records no key id with its idempotency claims (D8), so it would claim with a `NULL` kid
 > while signing under the new key, and a replay of that claim would be recomputed under the legacy key and get
-> `409`. Switch only once every instance runs T28b or later.
+> `409`. Switch only once every instance runs T28b or later. For the same reason, do not roll back below T28b
+> after the switch: a T28a build compares replays under the active key only, so a retry of a claim recorded under
+> the old key would get `409`.
 
 ### D7 — Version compatibility: `v2` writes are switched on separately
 
@@ -213,7 +221,7 @@ A maintenance runner moves every customer's envelopes and lookup hashes to the a
 | `serfira.maintenance.pii-rekey.enabled` | `SERFIRA_MAINTENANCE_PIIREKEY_ENABLED` | absent | `true` creates the runner; anything else creates no bean. |
 | `serfira.maintenance.pii-rekey.mode` | `SERFIRA_MAINTENANCE_PIIREKEY_MODE` | `DRY_RUN` | `DRY_RUN` or `EXECUTE`; an unknown value fails startup. |
 | `serfira.maintenance.pii-rekey.batch-size` | `SERFIRA_MAINTENANCE_PIIREKEY_BATCHSIZE` | `500` | Page size, at least 1. |
-| `serfira.maintenance.pii-rekey.lock-at-most-for` | none | `PT10M` | ShedLock bound; the keep-alive lock provider extends it while the pass runs. |
+| `serfira.maintenance.pii-rekey.lock-at-most-for` | `SERFIRA_MAINTENANCE_PIIREKEY_LOCKATMOSTFOR` | `PT10M` | ShedLock bound; the keep-alive lock provider extends it while the pass runs. |
 
 - **How it runs.** Once at startup, under its own ShedLock lock (`pii-rekey`), as the `SYSTEM` actor
   (`AuditContext.SYSTEM_USER_ID`), with one `job_run` row. A stale `RUNNING` row left by a crash is abandoned
@@ -222,7 +230,7 @@ A maintenance runner moves every customer's envelopes and lookup hashes to the a
   it never stops the application. The cost is that a readiness probe, if one is enabled, reports ready only
   after the pass.
 - **Pre-flight.** A read-only census pages through every customer, decrypts both envelopes and computes the
-  active-key hashes. For `EXECUTE`, it aborts with **zero writes** when any row has an unknown `kid` or fails to
+  active-key hashes, keeping two sets of lookup hashes, so memory grows with the number of customers. For `EXECUTE`, it aborts with **zero writes** when any row has an unknown `kid` or fails to
   decrypt, or when two customers would share an active `nik_hash` or `phone_lookup`. `EXECUTE` is also refused
   while `write-envelope=v1`, because the pass writes `v2` (D7). That refusal comes before any scan or write.
 - **A row is on target** when both envelopes start with `v2:<activeKid>:` and both lookup columns equal the
@@ -285,13 +293,24 @@ The report is written to the log as one line per key and a summary:
 
 ```
 pii-rekey key kid=<kid> verdict=<VERDICT> envelopeRows=<n> unexpiredFingerprints=<n>
-pii-rekey summary activeKid=<kid> rowsOffActiveHashes=<n> unreadableRows=<n>
+pii-rekey summary activeKid=<kid> rowsOffActiveHashes=<n> unreadableRows=<n> unlabelledFingerprints=<n>
 ```
 
-A `DRY_RUN` prints these lines too, so it shows what an `EXECUTE` would still have to move, but it does not
-print the duplicate counts. Duplicates surface when `EXECUTE` aborts its pre-flight with zero writes, as
-`pii-rekey pre-flight aborted with zero writes: <n> unknown-kid, <n> undecryptable, <n> duplicate NIK, <n>
-duplicate phone rows`.
+`unlabelledFingerprints` counts unexpired claims with a `NULL` kid. With no legacy key they cannot be attributed
+to any key, so while it is above zero every non-active key is `NOT_RETIRABLE`: dropping `k1` would remove the
+option of fixing those claims by setting `legacy-kid=k1`.
+
+Every run, `DRY_RUN` included, first logs one census line once the census has run, before the `EXECUTE`
+pre-flight gate, so it also appears on an abort:
+
+```
+pii-rekey census scannedRows=<n> rowsToRekey=<n> unknownKidRows=<n> undecryptableRows=<n> duplicateNikRows=<n> duplicatePhoneRows=<n> executeWouldRun=<true|false>
+```
+
+`executeWouldRun=false` means `EXECUTE` would refuse or abort: a blocking row, or `write-envelope=v1`. A `DRY_RUN`
+therefore shows the duplicate counts and what an `EXECUTE` would still have to move. An aborted `EXECUTE` also
+reports `pii-rekey pre-flight aborted with zero writes: <n> unknown-kid, <n> undecryptable, <n> duplicate NIK, <n>
+duplicate phone rows` through its exception.
 
 An unexpired claim keeps its key `NOT_RETIRABLE` even after a clean pass, until its `expires_at` passes. The
 retention window is the `IDEMPOTENCY_KEY_RETENTION_DAYS` system parameter (7 days). Run a `DRY_RUN` again after

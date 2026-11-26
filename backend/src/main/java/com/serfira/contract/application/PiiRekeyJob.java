@@ -21,12 +21,12 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Runs as the SYSTEM actor with one {@code job_run} row named {@code pii-rekey}, abandoning a crash remnant first
  * like {@code IdempotencyCleanupJob}. A census decrypts every row before anything is written: {@code EXECUTE} refuses
- * to start while new values are still written as {@code v1} (Decision 4) or when a row is unreadable or stored twice,
+ * to start while new values are still written as {@code v1} (ADR-025 D7, D9) or when a row is unreadable or stored twice,
  * leaving zero writes. It then re-keys page by page through {@link CustomerRekeyPageWriter}, each page verified and
  * committed on its own, so a rerun after an abort resumes where the committed pages end. The cursor advances by the
  * rows scanned, not the rows rewritten, so pages already on target are passed over.
  *
- * <p>The {@code job_run} counters follow Decision 8. A failure is recorded and rethrown; this class logs no exception
+ * <p>The {@code job_run} counters follow ADR-025 D9. A failure is recorded and rethrown; this class logs no exception
  * message, so a database error quoting a lookup hash never reaches the log from here.
  */
 public class PiiRekeyJob {
@@ -73,7 +73,7 @@ public class PiiRekeyJob {
 		jobRuns.abandonStaleRuns(List.of(JOB_NAME));
 		UUID runId = jobRuns.start(JOB_NAME, clock.today());
 		int rekeyed = 0;
-		// Decision 8: a pre-flight abort records its blocking rows; any later abort records 1.
+		// ADR-025 D9: a pre-flight abort records its blocking rows; any later abort records 1.
 		int failed = 1;
 		try {
 			boolean execute = mode == PiiRekeyMode.EXECUTE;
@@ -83,6 +83,8 @@ public class PiiRekeyJob {
 						"pii-rekey EXECUTE needs serfira.security.pii.write-envelope=v2 (ADR-025 D7)");
 			}
 			CustomerKeyCensus census = census();
+			// Every mode logs the census, so a DRY_RUN says in advance whether EXECUTE would refuse or abort.
+			LOGGER.info(census.censusLine(executeWouldRun(census)));
 			if (execute && census.blocksRekey()) {
 				logReport(census);
 				failed = Math.toIntExact(census.unknownKidRows() + census.undecryptableRows()
@@ -133,6 +135,10 @@ public class PiiRekeyJob {
 			}
 		} while (page.size() == batchSize);
 		return census.build();
+	}
+
+	private static boolean executeWouldRun(CustomerKeyCensus census) {
+		return !census.blocksRekey() && PiiSecuritySupport.writeEnvelope() != PiiEnvelopeVersion.V1;
 	}
 
 	private PiiRetirementReport logReport(CustomerKeyCensus census) {

@@ -333,6 +333,7 @@ itself as their credential.
      SERFIRA_MAINTENANCE_PIIREKEY_ENABLED=true
      SERFIRA_MAINTENANCE_PIIREKEY_MODE=DRY_RUN     # DRY_RUN (default) or EXECUTE
      SERFIRA_MAINTENANCE_PIIREKEY_BATCHSIZE=500    # page size, default 500
+     SERFIRA_MAINTENANCE_PIIREKEY_LOCKATMOSTFOR=PT10M  # ShedLock bound for the pass, default PT10M
      ```
 
      Restart once with `DRY_RUN` and read the report. Then restart with `MODE=EXECUTE`. It moves every
@@ -341,14 +342,30 @@ itself as their credential.
      The application serves requests during the pass. `EXECUTE` refuses to run with
      `SERFIRA_SECURITY_PII_WRITEENVELOPE=v1`. It aborts with zero writes on an unreadable row or a
      customer that would duplicate another under the active key
-     (`pii-rekey pre-flight aborted with zero writes: …`); the duplicate counts appear only in that abort, not in
-     a `DRY_RUN`.
+     (`pii-rekey pre-flight aborted with zero writes: …`). Every run, `DRY_RUN` included, first logs one
+     `pii-rekey census scannedRows=… rowsToRekey=… unknownKidRows=… undecryptableRows=… duplicateNikRows=…
+     duplicatePhoneRows=… executeWouldRun=…` line; `executeWouldRun=false` means `EXECUTE` would refuse or abort,
+     so fix that first. With several instances, only the one that wins the `pii-rekey` lock runs the pass and logs
+     these lines; the others log nothing for it.
   4. Read the report in the application log: one `pii-rekey key kid=<kid> verdict=… envelopeRows=…
-     unexpiredFingerprints=…` line per key, then `pii-rekey summary …`. Remove the old key only once its verdict
-     is `RETIRABLE`. A key stays `NOT_RETIRABLE` while any customer row or any unexpired idempotency claim
-     still uses it, so an old key usually becomes retirable only after the idempotency retention window (7
-     days) has passed since the switch. Run `DRY_RUN` again after that. `MISSING_FROM_RING` means a key was
+     unexpiredFingerprints=…` line per key, then `pii-rekey summary activeKid=… rowsOffActiveHashes=…
+     unreadableRows=… unlabelledFingerprints=…`. Retire the old key only once its verdict is `RETIRABLE`. A key
+     stays `NOT_RETIRABLE` while any customer row or any unexpired idempotency claim still uses it, so an old key
+     usually becomes retirable only after the idempotency retention window (7 days) has passed since the switch.
+     Without a legacy key, any unlabelled claim (`unlabelledFingerprints` above 0) keeps every non-active key
+     `NOT_RETIRABLE`. To re-read the verdict after step 3 removed the runner, set
+     `SERFIRA_MAINTENANCE_PIIREKEY_ENABLED=true` and `SERFIRA_MAINTENANCE_PIIREKEY_MODE=DRY_RUN`, restart, read
+     the lines, then remove `SERFIRA_MAINTENANCE_PIIREKEY_ENABLED` again. `MISSING_FROM_RING` means a key was
      removed too early. Logs contain counts and key ids only.
+  5. Retire the old key (here `k1`, the flat pair) in one deploy on every instance. Unset (or blank)
+     `SERFIRA_SECURITY_PII_ENCRYPTION_KEY` and `SERFIRA_SECURITY_PII_HMAC_KEY`; with no flat pair, the ring is
+     just the `SERFIRA_SECURITY_PII_KEYS_<KID>_*` entries. In Compose these two variables carry a dev default
+     (`${…:-…}`), so an empty value is replaced by it: delete the two lines instead. If you set
+     `SERFIRA_SECURITY_PII_LEGACYKID=k1` explicitly, unset it in the same deploy, or startup refuses because
+     the legacy kid is not in the ring (with no flat pair the legacy kid defaults to none). Keep
+     `SERFIRA_SECURITY_PII_ACTIVEKID` (now required) and `SERFIRA_SECURITY_PII_WRITEENVELOPE=v2` set. Do not roll
+     back below T28b after the active-key switch: a T28a build compares replays under the active key only, so a
+     retry of a claim recorded under the old key would get `409`.
 
 - **No plaintext PII in SQL, logs, or URLs.** API responses return customer data masked.
 - **Browser boundary (CORS).** A browser client on another origin must be allowlisted explicitly:

@@ -6,7 +6,7 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 
 /**
- * Runs the re-keying pass once at startup, synchronously (T28b Decision 5): the server is already accepting requests,
+ * Runs the re-keying pass once at startup, synchronously (ADR-025 D9): the server is already accepting requests,
  * and a failure is logged and left in {@code job_run} but never stops the application.
  *
  * <p>Only the pass's own aborts are logged with their message, which carries counts or a customer id. Anything else is

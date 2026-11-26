@@ -7,13 +7,13 @@ import java.util.Optional;
 import java.util.TreeSet;
 
 /**
- * Which ring keys can be retired (T28b, Decision 7). The active key is {@code ACTIVE}. Any other ring key is
+ * Which ring keys can be retired (T28b, ADR-025 D10). The active key is {@code ACTIVE}. Any other ring key is
  * {@code RETIRABLE} only when no customer envelope, no off-active hash, no unexpired fingerprint and no unreadable
  * row remains; a fingerprint under a key that is not in the ring is {@code MISSING_FROM_RING}. Holds kids and
  * counts only.
  */
 public record PiiRetirementReport(String activeKid, long rowsOffActiveHashes, long unreadableRows,
-		List<KeyVerdict> keys) {
+		long unlabelledFingerprints, List<KeyVerdict> keys) {
 
 	public enum Verdict {
 		ACTIVE, RETIRABLE, NOT_RETIRABLE, MISSING_FROM_RING
@@ -25,6 +25,9 @@ public record PiiRetirementReport(String activeKid, long rowsOffActiveHashes, lo
 	static PiiRetirementReport of(CustomerKeyCensus census, FingerprintKeyUsage fingerprints, List<String> ringKids,
 			String activeKid, Optional<String> legacyKid) {
 		List<KeyVerdict> keys = new ArrayList<>();
+		// Claims with no recorded kid belong to the legacy key. With none configured they cannot be attributed, so
+		// every non-active key stays NOT_RETIRABLE: dropping k1 would remove the chance to set legacy-kid=k1.
+		boolean unattributable = legacyKid.isEmpty() && fingerprints.unlabelled() > 0;
 		for (String kid : ringKids) {
 			long envelopeRows = census.rowsByKid().getOrDefault(kid, 0L);
 			long unexpired = fingerprints.byKid().getOrDefault(kid, 0L)
@@ -33,7 +36,7 @@ public record PiiRetirementReport(String activeKid, long rowsOffActiveHashes, lo
 			if (kid.equals(activeKid)) {
 				verdict = Verdict.ACTIVE;
 			} else if (envelopeRows == 0 && census.rowsOffActiveHashes() == 0 && unexpired == 0
-					&& census.unreadableRows() == 0) {
+					&& census.unreadableRows() == 0 && !unattributable) {
 				verdict = Verdict.RETIRABLE;
 			} else {
 				verdict = Verdict.NOT_RETIRABLE;
@@ -47,7 +50,7 @@ public record PiiRetirementReport(String activeKid, long rowsOffActiveHashes, lo
 			}
 		}
 		return new PiiRetirementReport(activeKid, census.rowsOffActiveHashes(), census.unreadableRows(),
-				List.copyOf(keys));
+				fingerprints.unlabelled(), List.copyOf(keys));
 	}
 
 	public Optional<KeyVerdict> verdictFor(String kid) {
@@ -62,7 +65,7 @@ public record PiiRetirementReport(String activeKid, long rowsOffActiveHashes, lo
 					+ key.envelopeRows() + " unexpiredFingerprints=" + key.unexpiredFingerprints());
 		}
 		lines.add("pii-rekey summary activeKid=" + activeKid + " rowsOffActiveHashes=" + rowsOffActiveHashes
-				+ " unreadableRows=" + unreadableRows);
+				+ " unreadableRows=" + unreadableRows + " unlabelledFingerprints=" + unlabelledFingerprints);
 		return lines;
 	}
 }

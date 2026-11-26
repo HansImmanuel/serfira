@@ -45,7 +45,7 @@ public final class CustomerKeyCensus {
 	}
 
 	/**
-	 * Decision 3: on target when both envelopes are {@code v2:<activeKid>:} and both lookup columns equal the
+	 * On target (ADR-025 D9) when both envelopes are {@code v2:<activeKid>:} and both lookup columns equal the
 	 * active-key hash of the decrypted {@code nik} and {@code phone}.
 	 */
 	static boolean onActiveKey(CustomerPiiRow row, String nik, String phone) {
@@ -86,7 +86,7 @@ public final class CustomerKeyCensus {
 		return undecryptableRows;
 	}
 
-	long duplicateNikRows() {
+	public long duplicateNikRows() {
 		return duplicateNikRows;
 	}
 
@@ -96,6 +96,16 @@ public final class CustomerKeyCensus {
 
 	long unreadableRows() {
 		return unknownKidRows + undecryptableRows;
+	}
+
+	/**
+	 * The census as one log line: counts and a boolean only, so it can never carry a value. {@code executeWouldRun}
+	 * is false when {@code EXECUTE} would refuse or abort with zero writes.
+	 */
+	String censusLine(boolean executeWouldRun) {
+		return "pii-rekey census scannedRows=" + scannedRows + " rowsToRekey=" + rowsToRekey + " unknownKidRows="
+				+ unknownKidRows + " undecryptableRows=" + undecryptableRows + " duplicateNikRows=" + duplicateNikRows
+				+ " duplicatePhoneRows=" + duplicatePhoneRows + " executeWouldRun=" + executeWouldRun;
 	}
 
 	/** True when a re-key must not run: an unreadable row or a duplicate under the active-key hash. */

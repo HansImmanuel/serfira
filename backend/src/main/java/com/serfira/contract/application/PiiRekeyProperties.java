@@ -4,7 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
- * The re-keying runner's settings (T28b Decision 6): {@code serfira.maintenance.pii-rekey.mode} ({@code
+ * The re-keying runner's settings (ADR-025 D9): {@code serfira.maintenance.pii-rekey.mode} ({@code
  * SERFIRA_MAINTENANCE_PIIREKEY_MODE}, an unknown value fails startup) and {@code .batch-size} ({@code
  * SERFIRA_MAINTENANCE_PIIREKEY_BATCHSIZE}, the page size, at least 1). Whether the runner exists at all is {@code
  * serfira.maintenance.pii-rekey.enabled}, read by {@link PiiRekeyConfiguration}.

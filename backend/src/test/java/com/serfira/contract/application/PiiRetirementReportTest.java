@@ -81,6 +81,10 @@ class PiiRetirementReportTest {
 		return PiiRetirementReport.of(census, fingerprints, RING, "k2", Optional.of("k1"));
 	}
 
+	private static PiiRetirementReport reportWithoutLegacyKid(CustomerKeyCensus census, FingerprintKeyUsage fingerprints) {
+		return PiiRetirementReport.of(census, fingerprints, RING, "k2", Optional.empty());
+	}
+
 	private static Verdict verdict(PiiRetirementReport report, String kid) {
 		return report.verdictFor(kid).orElseThrow().verdict();
 	}
@@ -132,6 +136,18 @@ class PiiRetirementReportTest {
 	}
 
 	@Test
+	void unlabelledFingerprintsWithoutALegacyKidBlockEveryNonActiveKid() {
+		PiiRetirementReport report = reportWithoutLegacyKid(census(onActiveKey()), new FingerprintKeyUsage(Map.of(), 2));
+
+		assertThat(verdict(report, "k1")).isEqualTo(Verdict.NOT_RETIRABLE);
+		assertThat(verdict(report, "k2")).isEqualTo(Verdict.ACTIVE);
+		assertThat(report.unlabelledFingerprints()).isEqualTo(2);
+		assertThat(report.logLines().get(report.logLines().size() - 1)).endsWith("unlabelledFingerprints=2");
+		assertThat(verdict(reportWithoutLegacyKid(census(onActiveKey()), NO_FINGERPRINTS), "k1"))
+				.isEqualTo(Verdict.RETIRABLE);
+	}
+
+	@Test
 	void anOldKidWithAllCountsZeroIsRetirable() {
 		PiiRetirementReport report = report(census(onActiveKey()), NO_FINGERPRINTS);
 
@@ -168,6 +184,6 @@ class PiiRetirementReportTest {
 		assertThat(lines).allMatch(line -> line.matches("^pii-rekey (key|summary) [a-zA-Z=0-9_ ]+$"));
 		assertThat(lines.get(0)).isEqualTo("pii-rekey key kid=k2 verdict=ACTIVE envelopeRows=2 unexpiredFingerprints=0");
 		assertThat(lines.get(3)).startsWith("pii-rekey summary activeKid=k2 rowsOffActiveHashes=");
-		assertThat(lines.get(3)).endsWith("unreadableRows=1");
+		assertThat(lines.get(3)).endsWith("unreadableRows=1 unlabelledFingerprints=1");
 	}
 }

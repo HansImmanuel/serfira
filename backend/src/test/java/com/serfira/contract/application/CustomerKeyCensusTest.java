@@ -184,4 +184,22 @@ class CustomerKeyCensusTest {
 		assertThat(printed).isEqualTo("CustomerPiiRow[id=" + row.id() + "]");
 		assertThat(printed).doesNotContain("v2:").doesNotContain(row.nikHash()).doesNotContain(row.phoneLookup());
 	}
+
+	@Test
+	void theCensusLineCarriesOnlyCountsAndTheExecuteVerdict() {
+		CustomerPiiRow first = row(sealV2("k1", NIK), nikHash("k1", NIK), sealV2("k1", "081234567891"),
+				phoneHash("k1", "081234567891"));
+		CustomerPiiRow second = row(sealV2("k2", NIK), nikHash("k2", NIK), sealV2("k2", "081234567892"),
+				phoneHash("k2", "081234567892"));
+		CustomerKeyCensus census = census(first, second);
+
+		String line = census.censusLine(false);
+
+		assertThat(line).isEqualTo("pii-rekey census scannedRows=2 rowsToRekey=1 unknownKidRows=0 undecryptableRows=0"
+				+ " duplicateNikRows=1 duplicatePhoneRows=0 executeWouldRun=false");
+		assertThat(line).matches("^pii-rekey (key|summary|census) [a-zA-Z=0-9_ ]+$");
+		assertThat(census(rowUnder("k2", "k2", NIK, PHONE)).censusLine(true))
+				.endsWith("rowsToRekey=0 unknownKidRows=0 undecryptableRows=0 duplicateNikRows=0 duplicatePhoneRows=0"
+						+ " executeWouldRun=true");
+	}
 }

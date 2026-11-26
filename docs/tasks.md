@@ -26,7 +26,7 @@ operator flow end to end against the Compose stack.
 definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (`t28b-pii-rekey`). Sprint 8b (T39) is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t28b-pii-rekey`) = **149 suites / 1168 tests / 0 failed** (T28a close 140/1100; T28b added the census,
+`t28b-pii-rekey`) = **149 suites / 1170 tests / 0 failed** (T28a close 140/1100; T28b added the census,
 row-verifier, retirement-report, runner and configuration suites, `PiiRekeyIT` and `IdempotencyKeyRotationIT`). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
 **236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
@@ -765,10 +765,11 @@ rule. Decisions:
   the entity holds only plaintext and dirty checking would never fire.
 Rulings: the resume cursor advances by the rows scanned, not rewritten, so an aborted run resumes without
 looping or skipping; the startup runner logs the message only for its own abort exceptions and the class name
-alone for anything else, because a unique-violation message quotes a lookup hash; a `DRY_RUN` logs the per-`kid`
-lines and the summary but not the duplicate counts, which surface as an `EXECUTE` pre-flight abort with zero
-writes.
-Verification: backend 149 suites / 1168 tests / 0 failed (`./gradlew check --rerun-tasks`, BUILD
+alone for anything else, because a unique-violation message quotes a lookup hash; every run logs one counts-only
+`pii-rekey census ...` line (with `executeWouldRun`, false when `EXECUTE` would refuse or abort), so a `DRY_RUN`
+shows the duplicate counts in advance; the summary line carries `unlabelledFingerprints`, and with no legacy key
+any unlabelled claim keeps every non-active key `NOT_RETIRABLE`.
+Verification: backend 149 suites / 1170 tests / 0 failed (`./gradlew check --rerun-tasks`, BUILD
 SUCCESSFUL; T28b added the census, row-verifier, retirement-report, runner and configuration suites,
 `PiiRekeyIT` and `IdempotencyKeyRotationIT`, which restart the application on one database under a different
 ring); frontend and demo unchanged (no change outside the backend and docs). ADR-025 D6 now forbids switching

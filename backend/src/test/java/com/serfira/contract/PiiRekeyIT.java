@@ -207,7 +207,7 @@ class PiiRekeyIT {
 	}
 
 	private static Map<UUID, Map<String, Object>> snapshotOf(Set<UUID> ids) {
-		Map<UUID, Map<String, Object>> rows = snapshot();
+		Map<UUID, Map<String, Object>> rows = new LinkedHashMap<>(snapshot());
 		rows.keySet().retainAll(ids);
 		return rows;
 	}
@@ -259,6 +259,13 @@ class PiiRekeyIT {
 				PiiSecuritySupport.encrypt(X.nik()), PiiHasher.nikCandidates(X.nik()).get(0),
 				PiiSecuritySupport.encrypt(DUPLICATE_PHONE), PiiHasher.phoneCandidates(DUPLICATE_PHONE).get(0));
 		try {
+			// A dry run tells the operator in advance: it completes, writes nothing and counts the duplicate.
+			PiiRekeyOutcome dryRun = job().run(PiiRekeyMode.DRY_RUN);
+
+			assertThat(dryRun.census().duplicateNikRows()).isEqualTo(1);
+			assertThat(snapshotOf(initial.keySet())).isEqualTo(initial);
+			assertThat(latestRun()).isEqualTo(new Run("COMPLETED", 0, 0));
+
 			assertThatThrownBy(() -> job().run(PiiRekeyMode.EXECUTE))
 					.isInstanceOf(PiiRekeyPreflightException.class)
 					.hasMessageContaining("1 duplicate NIK");
@@ -384,6 +391,7 @@ class PiiRekeyIT {
 
 		// The guard must have seen the report, or it proves nothing.
 		assertThat(messages).anyMatch(message -> message.startsWith("pii-rekey key kid="));
+		assertThat(messages).anyMatch(message -> message.startsWith("pii-rekey census scannedRows="));
 		for (String message : messages) {
 			for (String value : forbidden) {
 				assertThat(message).doesNotContain(value);

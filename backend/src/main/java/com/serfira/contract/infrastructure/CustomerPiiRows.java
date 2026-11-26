@@ -9,7 +9,7 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Raw-column access to the stored customer PII for the T28b re-keying pass (Decision 9). The {@link
+ * Raw-column access to the stored customer PII for the T28b re-keying pass (ADR-025 D9). The {@link
  * com.serfira.contract.domain.Customer} entity holds plaintext only, so a re-key bypasses JPA: these statements read
  * and write the envelopes and lookup hashes exactly as stored. They only ever carry values the application encrypted
  * and hashed (ADR-004); no key and no plaintext reaches SQL.

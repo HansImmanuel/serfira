@@ -4,6 +4,7 @@ import com.serfira.shared.security.PiiEnvelopeVersion;
 import com.serfira.shared.security.PiiKey;
 import com.serfira.shared.security.PiiKeyRing;
 import com.serfira.shared.security.PiiSecuritySupport;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -17,8 +18,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Unit tests for {@link RequestFingerprint} — the documented refinement of TS §2.5 (ADR-007).
  *
- * <p>Keys are bound once and deliberately not reset: the static bridge is JVM-global and shared with
- * the cached {@code @SpringBootTest} contexts (same reasoning as {@code PiiHasherTest}).
+ * <p>The static bridge is JVM-global and shared with the cached {@code @SpringBootTest} contexts, so the
+ * class binds its own a/b keys and {@link #restoreTestProfileRing()} puts the test-profile ring back.
  */
 class RequestFingerprintTest {
 
@@ -26,6 +27,12 @@ class RequestFingerprintTest {
 	static void bindKeys() {
 		PiiSecuritySupport.configure("a".repeat(32).getBytes(StandardCharsets.UTF_8),
 				"b".repeat(32).getBytes(StandardCharsets.UTF_8));
+	}
+
+	@AfterAll
+	static void restoreTestProfileRing() {
+		PiiSecuritySupport.configure("0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.UTF_8),
+				"abcdef0123456789abcdef0123456789".getBytes(StandardCharsets.UTF_8));
 	}
 
 	@Test
