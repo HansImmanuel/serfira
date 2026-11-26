@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { apiFetch } from "@/lib/api";
 import type { AgingReport, OutstandingReport } from "@/types/report";
@@ -18,13 +18,15 @@ export function agingReportPath(page: number): string {
 }
 
 /**
- * The aging report, one page at a time. No placeholder data across pages: like the statement, a financial
- * table never shows another page's rows while its own are loading.
+ * The aging report, one page at a time. The previous response is kept as placeholder data so the
+ * page-independent values (`portfolio`, `as_of`) stay on screen while another page loads; the table must
+ * render rows as skeletons while `isPlaceholderData`, so another page's rows are never shown as this one's.
  */
 export function useAgingReport(page: number, enabled = true) {
   return useQuery({
     queryKey: ["reports", "aging", page],
     queryFn: () => apiFetch<AgingReport>(agingReportPath(page)),
+    placeholderData: keepPreviousData,
     enabled,
   });
 }

@@ -25,6 +25,10 @@ public interface AgingReportSourcePort {
 	 * fall out naturally because their outstanding is zero. The order is deterministic (by contract number,
 	 * then period) so paging in the caller is stable.
 	 *
+	 * <p>Call it outside a transaction. The implementation reads its statements at REPEATABLE_READ so each
+	 * snapshot carries its contract's customer name; inside a caller's transaction Spring keeps the caller's
+	 * isolation instead, and a contract closing mid-read could then fail the call.
+	 *
 	 * @param asOf business date to evaluate days-past-due against
 	 * @return owed installment snapshots, never {@code null}; empty when nothing is outstanding
 	 */

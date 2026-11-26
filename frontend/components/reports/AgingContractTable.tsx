@@ -80,7 +80,9 @@ export function AgingContractTable({
   }
 
   const report = query.data;
-  const rows = report?.contracts.content ?? [];
+  // Placeholder data is the previous page: keep its portfolio and page count, never its rows.
+  const loadingRows = query.isPending || query.isPlaceholderData;
+  const rows = loadingRows ? [] : (report?.contracts.content ?? []);
   const totalPages = report?.contracts.total_pages ?? 0;
 
   return (
@@ -106,7 +108,7 @@ export function AgingContractTable({
                 <BucketCells buckets={report.portfolio} />
               </TableRow>
             ) : null}
-            {query.isPending
+            {loadingRows
               ? Array.from({ length: 5 }, (_, index) => (
                   <TableRow key={`skeleton-${index}`} data-testid="aging-row-skeleton">
                     <TableCell colSpan={COLUMN_COUNT}>
@@ -128,7 +130,7 @@ export function AgingContractTable({
                     <BucketCells buckets={row.buckets} />
                   </TableRow>
                 ))}
-            {!query.isPending && rows.length === 0 ? (
+            {!loadingRows && rows.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={COLUMN_COUNT} className="py-8 text-center text-sm text-muted-foreground">
                   Tidak ada kontrak ACTIVE dengan outstanding.
@@ -143,7 +145,7 @@ export function AgingContractTable({
         <span>
           {report === undefined
             ? "–"
-            : `${report.contracts.total_elements} kontrak · halaman ${report.contracts.page + 1} dari ${Math.max(totalPages, 1)}`}
+            : `${report.contracts.total_elements} kontrak · halaman ${page + 1} dari ${Math.max(totalPages, 1)}`}
         </span>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={page === 0} onClick={() => onPageChange(Math.max(page - 1, 0))}>

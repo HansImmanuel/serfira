@@ -137,6 +137,23 @@ describe("AgingReportView", () => {
     }
   });
 
+  it("keeps the portfolio summary and as-of while the next page loads, but never the previous rows", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiFetch).mockImplementation(((path: string) =>
+      path.includes("page=1") ? new Promise(() => {}) : Promise.resolve(reportOf([ROW], 0, 25))) as never);
+    renderWithQueryClient(<AgingReportView />);
+
+    await screen.findByRole("link", { name: "MF-202611-0001" });
+    await user.click(screen.getByRole("button", { name: /Berikutnya/ }));
+
+    await waitFor(() => expect(screen.getAllByTestId("aging-row-skeleton").length).toBeGreaterThan(0));
+    expect(screen.queryByRole("link", { name: "MF-202611-0001" })).not.toBeInTheDocument();
+    const summary = screen.getByRole("row", { name: "Total portofolio" });
+    expect(within(summary).getByText(/26\.400\.000/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Per tanggal")).toHaveValue(formatDate("2026-11-26"));
+    expect(screen.getByText("25 kontrak · halaman 2 dari 2")).toBeInTheDocument();
+  });
+
   it("shows the API's as_of in a read-only field", async () => {
     vi.mocked(apiFetch).mockResolvedValue(reportOf([ROW]) as never);
     renderWithQueryClient(<AgingReportView />);

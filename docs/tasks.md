@@ -358,8 +358,9 @@ reporting roles. Decisions:
   `null` ratio renders the app's empty dash "–" (FE §2.10 updated). The NPL badge is `dpd_over_90` not
   being a zero string (ADR-026 D4). The aging API sends an empty bucket as `"0"`, which the test covers.
 - **Shared table.** `AgingContractTable` serves both pages (portfolio summary row on the aging page, NPL
-  badge on the outstanding page). Cards and table are separate queries that load and fail independently;
-  pages never show another page's rows while loading.
+  badge on the outstanding page). Cards and table are separate queries that load and fail independently.
+  While another page loads, the previous response stays as placeholder data so the summary row and
+  `as_of` stay on screen, but its rows render as skeletons, never as the new page's rows (final review).
 - **Verification:** backend `./gradlew check --rerun-tasks` = 126 suites / 969 tests / 0 failed (new
   `AgingReportIT.everyRowCarriesTheCustomerNameAndNoOtherPii`). Frontend `npm test` = 233 tests / 27 files
   / 0 failed; `lint`, `typecheck` and `build` (with `NEXT_PUBLIC_API_BASE_URL`) green. Demo helpers 30/30;
@@ -395,7 +396,8 @@ The pages show numbers the backend computed and never compute their own.
 
 **Business Rules.**
 
-- ADR-026: what each card means; a `null` ratio displays as "—".
+- ADR-026: what each card means; a `null` ratio displays as the app's empty dash "–" (`EMPTY_VALUE`;
+  see the implementation note).
 - ADR-013 A-6: `as_of` locked to today.
 - ADR-024 and FE §3.1: money and ratios stay decimal strings, and percentages are formatted with
   `lib/decimal.ts`/`lib/format.ts`, never `Number`/`parseFloat`.
@@ -420,7 +422,7 @@ snapshot with the customer name).
 - Both pages render against the Compose stack for `ADMIN_OPERASIONAL`, `FINANCE` and `MANAJEMEN`.
 - The aging page never sends an `as_of` other than today.
 - The summary row equals the API's portfolio buckets.
-- Every card shows the T36 value unchanged, apart from formatting. A `null` ratio renders "—".
+- Every card shows the T36 value unchanged, apart from formatting. A `null` ratio renders "–".
 - The NPL badge appears exactly on rows with `dpd_over_90 > 0`.
 - The aging API returns `customer_name` on every row. The existing aging IT and `EndpointRoleMatrixIT` stay
   green.
