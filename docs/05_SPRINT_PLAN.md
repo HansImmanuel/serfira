@@ -352,6 +352,11 @@ Story baru "done" kalau **semua** terpenuhi:
 
 > **Re-planned 2026-11-19:** Sprint 8 = T28a (2) + T28b (3) + T36 (G1, 3) + T37 (G4, 3) + T38 (G6, 2) =
 > **13 pts**; T39 (payments tab, settlement, write-off UI, 2 pts) adalah Sprint 8b.
+>
+> **Planned 2026-11-26 (`docs/tasks.md` otoritatif):** T38 naik ke 3 pts. Belum ada yang menulis ke
+> `outbox_events`, jadi T38 juga mencakup outbox writer transaksional dan enam event domain. Sprint 8 =
+> **14 pts**, stretch satu poin yang disengaja; bila molor, T28b pindah ke Sprint 8b. Urutan kerja:
+> T36 → T37 → T38 → T28a → T28b. Definisi metrik diputuskan di ADR-026.
 
 ### Deferred backlog — tidak dihitung dalam 100 points
 

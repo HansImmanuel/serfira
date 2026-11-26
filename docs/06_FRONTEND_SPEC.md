@@ -371,13 +371,20 @@ Hanya kontrak `ACTIVE` yang tampil. **Summary baris total** di atas tabel.
 ### 2.10 `/reports/outstanding` — Outstanding Portfolio
 **Tampilan:** summary cards + tabel.
 
+Sumber: `GET /api/v1/reports/outstanding` (T36). Definisi ada di **ADR-026**. Browser tidak menghitung
+metrik apa pun: semua angka diformat apa adanya dari API, dan rasio `null` tampil sebagai "—".
+
 **Cards:**
 - Total Outstanding
-- Total AR (overdue receivable)
-- NPL % (kontrak >90 DPD / total outstanding)
-- Collection Rate periode ini
+- Total AR: receivable yang sudah jatuh tempo s.d. hari ini, termasuk yang masih dalam grace. Bukan "overdue".
+- NPL %: seluruh outstanding kontrak yang punya installment >90 DPD / total outstanding, plus nominal dan
+  jumlah kontraknya.
+- Collection Rate bulan berjalan (MTD): collected / due beserta label periodenya.
+- Settlement Cash MTD: card terpisah, tidak masuk collection rate.
 
-**Tabel:** per-contract breakdown dengan outstanding, aging bucket, status.
+**Tabel:** per-contract breakdown memakai ulang baris `GET /reports/aging` (outstanding + bucket, kontrak
+ACTIVE saja, sehingga tanpa kolom status). Baris dengan `dpd_over_90 > 0` diberi badge NPL (identitas
+ADR-026 D4). Tidak ada endpoint per-contract kedua.
 
 ---
 

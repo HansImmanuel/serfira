@@ -47,6 +47,12 @@ Seeded from the domain model. Extend it lazily via `/domain-modeling` as new ter
 - **OVERDUE** — An Installment becomes OVERDUE on the first chargeable day, `today >= due_date + grace_period_days + 1`. Aging only moves *into* OVERDUE; exit is only via payment, settlement, or write-off. (ADR-013, DM §1.4)
 - **Aging buckets** — Delinquency bands: Current, 1–30, 31–60, 61–90, >90 days. (PRD)
 
+## Reporting metrics
+
+- **AR (accounts receivable due)** — Outstanding on installments of ACTIVE contracts with `due_date ≤ as_of`, including those still inside grace (DPD 0). Not the same as overdue receivable, which is the DPD ≥ 1 subset. (ADR-026 D3)
+- **NPL** — An ACTIVE contract with at least one installment where `outstanding > 0` and DPD > 90. NPL outstanding is the *whole* contract's outstanding, including undue principal, not only its >90 bucket. NPL % = NPL outstanding / total active outstanding. (ADR-026 D4)
+- **Collection rate** — Month to date. Posted, non-voided, non-`EXCESS` payment allocations to installments due in `[1st of month, as_of]`, divided by those installments' recognized receivable net of `settled_amount`. Credit applications and settlement are not collections; settlement cash is reported separately. (ADR-026 D5/D6)
+
 ## Settlement
 
 - **SettlementQuote** — An immutable snapshot of settlement components (`outstanding_principal`, `unpaid_billed_interest`, `accrued_interest`, `penalty_outstanding`, `rebate_amount`, `admin_fee`, `available_credit`, `credit_used`, `gross_amount`, `cash_due`) with a `valid_until` TTL and a `contract_version` for stale detection. Status `QUOTED | EXECUTED | EXPIRED`. Number `Q-YYYYMMDD-XXXX`. (DM §1.5)
