@@ -17,12 +17,12 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `53a3890` (PR #25, T34 demo script, merged). **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `b6dfc24` (PR #28, T36 outstanding report, merged). **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, and `node scripts/demo.mjs` proves the operator flow end to end against the Compose stack.
 **Current sprint: Sprint 8 (IN PROGRESS, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (`t36-reporting-outstanding`); T37 is next.
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is IN PROGRESS (`t37-report-pages`).
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
 `t36-reporting-outstanding`) = **126 suites / 968 tests / 0 failed** (T34 close 121/939; T36 added the
@@ -159,7 +159,7 @@ without losing data.
 **Scope (14 pts — a deliberate one-point stretch over the 13-point ceiling):**
 
 - T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
-- T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — TODO
+- T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — IN PROGRESS
 - T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — TODO
 - T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — TODO
 - T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
@@ -336,7 +336,7 @@ endpoint that reconciles with the aging report.
 
 ### T37 — G4: frontend report pages and customer name in the aging API (3 pts)
 
-Status: TODO
+Status: IN PROGRESS
 Estimate: 3 pts
 
 **Goal:** Let an operator, finance user or manager read the aging and outstanding reports in the browser.
