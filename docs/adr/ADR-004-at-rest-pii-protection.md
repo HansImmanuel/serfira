@@ -41,8 +41,8 @@ and are enumerable.
 5. **Key management:** `SERFIRA_SECURITY_PII_ENCRYPTION_KEY` (32 bytes) and `SERFIRA_SECURITY_PII_HMAC_KEY`
    (≥32 bytes), base64, app-env only — **never in the database**. Startup fails fast when missing. Dev/portfolio
    values live only in `docker-compose.yml` and `src/test/resources/application.properties`. *Since T28a this
-   pair is ring entry `k1` of the PII key ring, new writes are `v2:<kid>:…`, and further keys are additive
-   (ADR-025).*
+   pair is ring entry `k1` of the PII key ring, further keys are additive, and new writes become `v2:<kid>:…`
+   once `write-envelope=v2` is set (ADR-025 D7).*
 
 ---
 

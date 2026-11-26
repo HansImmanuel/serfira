@@ -31,6 +31,24 @@ class PiiKeyRingTest {
 	}
 
 	@Test
+	void aRingOfOneWritesV1AndAnExplicitRingDefaultsToV2() {
+		assertThat(PiiKeyRing.single(key('a'), key('b')).writeEnvelope()).isEqualTo(PiiEnvelopeVersion.V1);
+		assertThat(new PiiKeyRing(List.of(PiiKey.of("k1", key('a'), key('b'))), "k1", "k1").writeEnvelope())
+				.isEqualTo(PiiEnvelopeVersion.V2);
+	}
+
+	@Test
+	void v1WritesNeedTheActiveKeyToBeTheLegacyKey() {
+		List<PiiKey> keys = List.of(PiiKey.of("k1", key('a'), key('b')), PiiKey.of("k2", key('c'), key('d')));
+
+		assertThatThrownBy(() -> new PiiKeyRing(keys, "k2", "k1", PiiEnvelopeVersion.V1))
+				.isInstanceOf(IllegalStateException.class).hasMessageContaining("write-envelope");
+		assertThatThrownBy(() -> new PiiKeyRing(keys, "k2", null, PiiEnvelopeVersion.V1))
+				.isInstanceOf(IllegalStateException.class).hasMessageContaining("write-envelope");
+		assertThatCode(() -> new PiiKeyRing(keys, "k1", "k1", PiiEnvelopeVersion.V1)).doesNotThrowAnyException();
+	}
+
+	@Test
 	void candidateOrderIsActiveFirstThenByKid() {
 		PiiKeyRing ring = new PiiKeyRing(List.of(
 				PiiKey.of("k1", key('a'), key('b')),

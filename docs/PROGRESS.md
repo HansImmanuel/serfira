@@ -178,10 +178,11 @@ Definisi metrik di ADR-026:
       baris log ECS per event lalu `SENT`; gagal → retry, batas → `FAILED`. Verifikasi: backend 136 suite / 1017 test, frontend
       236 test, helper demo 30/30, demo exit 0 dengan event di log tanpa PII (branch `t38-outbox-events`)
 - [x] T28a — PII key ring + envelope `v2` (ADR-025). Kunci PII kini berupa ring (`kid` + kunci AES + kunci
-      HMAC); pasangan kunci lama menjadi entry `k1`, tulisan baru `v2:<kid>:…` dengan kunci aktif, baris `v1:`
+      HMAC); pasangan kunci lama menjadi entry `k1`. Rollout dua fase (ADR-025 D7): versi ini membaca `v1` dan
+      `v2` tetapi menulis `v1` sampai `write-envelope=v2`, lalu `v2:<kid>:…` dengan kunci aktif; baris `v1:`
       tetap terbaca dengan legacy key, dan lookup NIK/telepon mencocokkan hash di bawah semua kunci ring.
       Startup menolak kid tak dikenal, panjang kunci salah, material kunci ganda, atau dev key di production.
       `PiiKeyRotationIT` menulis di bawah `k1` lalu membaca, mencari, memakai ulang dan 409 di context kedua
-      dengan `k2` aktif. Verifikasi: backend 140 suite / 1080 test (branch `t28a-pii-key-ring`). Jangan ganti
+      dengan `k2` aktif. Verifikasi: backend 140 suite / 1087 test (branch `t28a-pii-key-ring`). Jangan ganti
       kunci aktif sebelum T28b
 - [ ] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint`

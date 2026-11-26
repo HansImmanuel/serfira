@@ -67,7 +67,8 @@ class PiiKeyRotationIT {
 
 	@BeforeAll
 	static void writeUnderK1ThenRotateToK2() {
-		try (ConfigurableApplicationContext original = start()) {
+		// Context A has finished the ADR-025 D7 transition (v2 writes on): X and Z are v2:k1, Y is a v1 row.
+		try (ConfigurableApplicationContext original = start("serfira.security.pii.write-envelope=v2")) {
 			ContractCommandService commands = original.getBean(ContractCommandService.class);
 			customerX = createContract(commands, X_NIK, X_PHONE, "B1001AA").customer().id();
 			createContract(commands, Z_NIK, Z_PHONE, "B1003AA");
@@ -81,7 +82,8 @@ class PiiKeyRotationIT {
 		rotated = start(
 				"serfira.security.pii.keys.k2.encryption-key=" + K2_AES_BASE64,
 				"serfira.security.pii.keys.k2.hmac-key=" + K2_HMAC_BASE64,
-				"serfira.security.pii.active-kid=k2");
+				"serfira.security.pii.active-kid=k2",
+				"serfira.security.pii.write-envelope=v2");
 	}
 
 	@AfterAll

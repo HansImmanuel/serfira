@@ -21,7 +21,9 @@ import org.springframework.core.env.Environment;
  *   <li>{@code serfira.security.pii.active-kid} — defaults to {@code k1} when the flat pair is set, otherwise
  *       required;</li>
  *   <li>{@code serfira.security.pii.legacy-kid} — the key that reads {@code v1:} envelopes; defaults to {@code k1}
- *       when the flat pair is set, otherwise none.</li>
+ *       when the flat pair is set, otherwise none;</li>
+ *   <li>{@code serfira.security.pii.write-envelope} — {@code v1} (default) or {@code v2}: the envelope new values
+ *       are written in (ADR-025 D7).</li>
  * </ul>
  *
  * <p>Every failure names the property and its environment variable, never the configured value (Addendum §9).
@@ -34,6 +36,7 @@ final class PiiKeyRingProperties {
 	static final String ACTIVE_KID_PROPERTY = PREFIX + ".active-kid";
 	static final String LEGACY_KID_PROPERTY = PREFIX + ".legacy-kid";
 	static final String KEYS_PROPERTY = PREFIX + ".keys";
+	static final String WRITE_ENVELOPE_PROPERTY = PREFIX + ".write-envelope";
 
 	/** AES key must decode to exactly 32 bytes (see PiiKey.of). */
 	static final String MISSING_ENCRYPTION_KEY_MESSAGE =
@@ -122,7 +125,22 @@ final class PiiKeyRingProperties {
 		if (isBlank(legacyKid)) {
 			legacyKid = flatPairSet ? PiiKeyRing.SINGLE_KID : null;
 		}
-		return new PiiKeyRing(keys, activeKid.trim(), legacyKid == null ? null : legacyKid.trim());
+		return new PiiKeyRing(keys, activeKid.trim(), legacyKid == null ? null : legacyKid.trim(),
+				writeEnvelope(environment));
+	}
+
+	/** {@code v1} unless configured: a new deployment writes exactly what the previous version reads (ADR-025 D7). */
+	private static PiiEnvelopeVersion writeEnvelope(Environment environment) {
+		String value = environment.getProperty(WRITE_ENVELOPE_PROPERTY);
+		if (isBlank(value)) {
+			return PiiEnvelopeVersion.V1;
+		}
+		return switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
+			case "v1" -> PiiEnvelopeVersion.V1;
+			case "v2" -> PiiEnvelopeVersion.V2;
+			default -> throw new IllegalStateException("'" + WRITE_ENVELOPE_PROPERTY
+					+ "' must be v1 or v2; set the SERFIRA_SECURITY_PII_WRITEENVELOPE environment variable");
+		};
 	}
 
 	private static byte[] decode(String value, String property, String environmentVariable, String missingMessage,

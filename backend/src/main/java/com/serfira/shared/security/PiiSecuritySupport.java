@@ -18,14 +18,15 @@ import javax.crypto.spec.SecretKeySpec;
  *
  * <p>Implements ADR-001/ADR-004 at-rest protection over the key ring of ADR-025: values are sealed with
  * AES-256-GCM (random 12-byte IV + 128-bit auth tag) under the <b>active</b> key and returned as the envelope
- * {@code v2:<kid>:<base64(iv ‖ ciphertext|tag)>}. Reads accept {@code v2} under any ring key and the pre-ring
- * {@code v1:<base64(...)>} under the <b>legacy</b> key. Lookup/uniqueness values are HMAC-SHA-256 digests of the
+ * {@code v2:<kid>:<base64(iv ‖ ciphertext|tag)>}, or as {@code v1:<base64(...)>} while the ring still writes
+ * {@code v1} for compatibility with earlier versions (D7). Reads accept {@code v2} under any ring key and
+ * {@code v1} under the <b>legacy</b> key. Lookup/uniqueness values are HMAC-SHA-256 digests of the
  * *normalized* input ({@link PiiHasher}): {@link #hmacHex} under the active key for writers, and
  * {@link #hmacCandidates} under every ring key for matching — ciphertext is randomized per write and never used
  * for equality or indexing.
  *
- * <p>Every envelope failure is an {@link IllegalArgumentException} whose message never repeats the envelope or
- * the plaintext; only a parsed, syntactically valid {@code kid} may appear in it.
+ * <p>Every envelope failure is an {@link IllegalArgumentException} whose message never repeats any part of the
+ * envelope — not even its {@code kid}, which in a corrupted value could be a NIK — nor the plaintext.
  */
 public final class PiiSecuritySupport {
 
@@ -68,7 +69,10 @@ public final class PiiSecuritySupport {
 		ring = null;
 	}
 
-	/** Seals {@code plaintext} into a {@code v2:<activeKid>:base64(...)} envelope. */
+	/**
+	 * Seals {@code plaintext} under the active key, as {@code v2:<activeKid>:base64(...)} or — while the ring still
+	 * writes {@code v1} (ADR-025 D7) — as {@code v1:base64(...)}, which every earlier version reads.
+	 */
 	public static String encrypt(String plaintext) {
 		PiiKeyRing keys = requireKeys();
 		if (plaintext == null) {
@@ -84,7 +88,8 @@ public final class PiiSecuritySupport {
 			byte[] envelope = new byte[iv.length + sealed.length];
 			System.arraycopy(iv, 0, envelope, 0, iv.length);
 			System.arraycopy(sealed, 0, envelope, iv.length, sealed.length);
-			return V2_PREFIX + active.kid() + ":" + Base64.getEncoder().encodeToString(envelope);
+			String body = Base64.getEncoder().encodeToString(envelope);
+			return keys.writeEnvelope() == PiiEnvelopeVersion.V1 ? V1_PREFIX + body : V2_PREFIX + active.kid() + ":" + body;
 		} catch (GeneralSecurityException e) {
 			throw new IllegalStateException("failed to encrypt PII value", e);
 		}
@@ -111,8 +116,9 @@ public final class PiiSecuritySupport {
 			if (!PiiKey.isValidKid(kid)) {
 				throw malformed();
 			}
+			// The kid is not echoed: a 16-digit NIK matches the kid syntax, so a corrupted envelope could carry one.
 			PiiKey key = keys.find(kid).orElseThrow(() -> new IllegalArgumentException(
-					"PII envelope names key id '" + kid + "', which is not in the key ring"));
+					"PII envelope names a key id that is not in the key ring"));
 			return open(key.encryptionKey(), rest.substring(separator + 1));
 		}
 		throw malformed();

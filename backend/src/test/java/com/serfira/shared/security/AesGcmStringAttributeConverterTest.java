@@ -40,7 +40,7 @@ class AesGcmStringAttributeConverterTest {
 	void ciphertextUsesVersionedEnvelopeAndNeverContainsPlaintext() {
 		String plaintext = "08123456789";
 		String sealed = converter.convertToDatabaseColumn(plaintext);
-		assertThat(sealed).startsWith("v2:k1:");
+		assertThat(sealed).startsWith("v1:");
 		assertThat(sealed).doesNotContain(plaintext);
 	}
 
@@ -54,10 +54,10 @@ class AesGcmStringAttributeConverterTest {
 	@Test
 	void tamperedCiphertextFailsIntegrityCheck() {
 		String sealed = converter.convertToDatabaseColumn("3171012501900001");
-		byte[] envelope = Base64.getDecoder().decode(sealed.substring("v2:k1:".length()));
+		byte[] envelope = Base64.getDecoder().decode(sealed.substring("v1:".length()));
 		// Flip one byte inside the AEAD payload (after the 12-byte IV) → auth-tag mismatch.
 		envelope[envelope.length - 1] ^= 0x01;
-		String tampered = "v2:k1:" + Base64.getEncoder().encodeToString(envelope);
+		String tampered = "v1:" + Base64.getEncoder().encodeToString(envelope);
 		assertThatThrownBy(() -> converter.convertToEntityAttribute(tampered))
 				.isInstanceOf(IllegalArgumentException.class)
 				.hasMessageContaining("integrity");

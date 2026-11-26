@@ -342,14 +342,15 @@ dengan angka bunga berjalan yang dihitung manual memakai konvensi ini.
   di logging interceptor — nik tampil sebagai `****1234` kalau terpaksa muncul di log).
 - Kolom `nik` **dan `phone`** di-encrypt at rest (application-level encryption via JPA
   `AttributeConverter` AES-256-GCM, bukan pgcrypto di level DB, supaya key management ada di
-  aplikasi; lihat ADR-004). Envelope `v2:<kid>:<base64(IV‖ciphertext|tag)>` (sejak T28a, ADR-025;
-  baris lama `v1:` tetap terbaca dengan legacy key) disimpan di kolom `TEXT`; plaintext hanya ada di
-  memory entity saat lifecycle JPA.
+  aplikasi; lihat ADR-004). Envelope `v1:<base64(IV‖ciphertext|tag)>`, atau `v2:<kid>:<base64(...)>`
+  setelah `write-envelope=v2` (sejak T28a, ADR-025 D7; kedua format selalu terbaca) disimpan di kolom
+  `TEXT`; plaintext hanya ada di memory entity saat lifecycle JPA.
 - `nik_hash` menyimpan HMAC-SHA-256 atas NIK yang sudah dinormalisasi menggunakan application secret. `nik_hash` yang dipakai untuk uniqueness/index; ciphertext random tidak dipakai untuk uniqueness. Secret tidak disimpan di database.
 - `phone_lookup` menyimpan HMAC-SHA-256 atas phone yang sudah dinormalisasi (trunk code `0…` → `62`), **unique** — aturan bisnis satu phone per customer (konsisten dengan form frontend yang mewajibkan no. telpon). Phone `NOT NULL`.
 - Pencarian nasabah by raw NIK/phone hanya melalui lookup service internal (`CustomerSearchService`): input dinormalisasi + di-HMAC di memory, query memakai lookup value; raw value tidak pernah menyentuh SQL/log/URL. Endpoint REST dari service ini **belum diekspos** — menunggu RBAC (default-deny, Sprint 6b) dan dicatat di matriks §3.4.
 - Kunci: env `SERFIRA_SECURITY_PII_ENCRYPTION_KEY` (32 byte) dan `SERFIRA_SECURITY_PII_HMAC_KEY` (≥32 byte), base64; startup gagal cepat bila kosong. Nilai dev/portofolio ada di `docker-compose.yml` dan `src/test/resources/application.properties` — bukan production value.
 - **Key ring (T28a, ADR-025):** pasangan kunci di atas adalah entry `k1`; kunci tambahan lewat `SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY` / `_HMACKEY`, dengan `SERFIRA_SECURITY_PII_ACTIVEKID` sebagai kunci aktif. Tulisan baru memakai kunci aktif; lookup `nik_hash`/`phone_lookup` mencocokkan hash di bawah **semua** kunci ring. Startup gagal bila kid aktif tidak ada, panjang kunci salah, dua kid berbagi material kunci, atau anggota ring mana pun sama dengan dev key di profil production. **Jangan mengganti kunci aktif sebelum T28b selesai** — HMAC `request_hash` idempotency masih dihitung dengan kunci aktif, sehingga replay lintas rotasi akan `409`.
+- **Kompatibilitas versi (ADR-025 D7):** default `SERFIRA_SECURITY_PII_WRITEENVELOPE=v1` — versi ini membaca `v1` dan `v2` tetapi menulis `v1`, sehingga instance versi lama (yang hanya membaca `v1`) dan rollback tetap aman. Set `v2` hanya setelah tidak ada instance pra-T28a dan rollback ke bawah T28a tidak lagi diperlukan; sesudah itu rollback ke pra-T28a membuat baris `v2` tak terbaca. Rotasi kunci membutuhkan `v2`.
 - Endpoint yang mengembalikan data Customer di response envelope: field `nik`
   di-mask untuk role selain ADMIN_OPERASIONAL & FINANCE (mis. MANAJEMEN cuma lihat
   agregat, tidak perlu NIK penuh).

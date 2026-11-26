@@ -26,7 +26,7 @@ operator flow end to end against the Compose stack.
 definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (`t28a-pii-key-ring`); T28b is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t28a-pii-key-ring`) = **140 suites / 1080 tests / 0 failed** (T38 close 136/1019 after its review fix; T28a
+`t28a-pii-key-ring`) = **140 suites / 1087 tests / 0 failed** (T38 close 136/1019 after its review fix; T28a
 added the key-ring, envelope, configuration and rotation suites). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
 **236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
@@ -79,7 +79,8 @@ for a GitHub billing reason, not a test failure.
   `ContractWrittenOff` and `SettlementExecuted` are written to `outbox_events` in their business transaction,
   PII-free, in write order (monotonic UUIDv7 ids). A ShedLock job (`outbox-publisher`, every 5 s) logs each
   as one ECS line and marks it `SENT`; failures retry and end `FAILED`.
-- PII key ring (T28a, ADR-025): customer PII is sealed `v2:<kid>:…` under the active key and `v1:` rows read
+- PII key ring (T28a, ADR-025): customer PII is sealed under the active key, as `v1:` until
+  `write-envelope=v2` and then `v2:<kid>:…`; both formats always read, and `v1:` rows read
   under the legacy key; NIK/phone lookups match the hash under every ring key. The flat key pair is entry
   `k1`; extra keys are `serfira.security.pii.keys.<kid>.*`. Re-keying and `RequestFingerprint` key ids are T28b.
 
@@ -602,9 +603,13 @@ Decisions:
   flat pair is set. Compose, the test profile and the README's existing variables are unchanged.
 - **`kid` = 1–16 lowercase letters or digits**, so it round-trips through
   `SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY` (Spring lowercases env map keys and splits on `_`).
+- **Two-phase write format (PR #31 review).** `serfira.security.pii.write-envelope` = `v1` (default) or `v2`.
+  This version reads both but writes `v1` until an operator sets `v2`, so a pre-T28a instance running alongside
+  it, or a rollback, can still read every row. `v1` writes are refused unless the active key is the legacy key,
+  so a rotation needs `v2` first (ADR-025 D7).
 - **Envelope `v2:<kid>:<base64>`**, no AAD: a relabelled body fails its tag because no two ring keys share
   material. `v1:` reads under the legacy key. Every failure is an `IllegalArgumentException` that never echoes
-  the envelope. No migration (`TEXT` columns since V2).
+  the envelope or its `kid` (a 16-digit NIK fits the `kid` syntax). No migration (`TEXT` columns since V2).
 - **Candidates.** `hmacHex` stays the active key (writers, `RequestFingerprint`); `PiiHasher.nikCandidates` /
   `phoneCandidates` hash under every ring key, active first. `CustomerSearchService` and `resolveCustomer`
   (including its phone comparison) match any candidate through `CustomerLookup`; two matching rows fail with
@@ -612,11 +617,11 @@ Decisions:
 - **Startup** refuses an unknown active/legacy `kid`, a duplicate or invalid `kid`, a wrong key length, shared
   key material, a half-configured entry, bad base64, and `keys.k1` alongside the flat pair; messages name the
   property and variable, never the value. The dev-key guard checks every ring member.
-Rulings: the two existing tests that asserted a `v1:` prefix now assert `v2:k1:` (new writes are `v2`); the
+Rulings: the existing `v1:` prefix assertions are unchanged again, because the default is `v1` writes; the
 single-hash finders `findByNikHash`/`findByPhoneLookup` stay for tests; the at-most-one check lives in
 `contract.application.CustomerLookup`, because Spring Data's exception translation rewraps an exception thrown
 in a repository default method. ADR-004 and Addendum §9 now name the real `SERFIRA_SECURITY_PII_*` variables.
-Verification: backend 140 suites / 1080 tests / 0 failed (`./gradlew check --rerun-tasks`; T28a added
+Verification: backend 140 suites / 1087 tests / 0 failed (`./gradlew check --rerun-tasks`; T28a added
 `PiiKeyRingTest`, `PiiSecuritySupportKeyRingTest`, `PiiKeyRingConfigurationTest` and `PiiKeyRotationIT`, which
 writes under `k1` in one application context and reads, finds, reuses and 409s in a second context with `k2`
 active on the same database); frontend and demo unchanged (no change outside the backend and docs). Review

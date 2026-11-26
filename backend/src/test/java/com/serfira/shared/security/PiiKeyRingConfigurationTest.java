@@ -42,12 +42,43 @@ class PiiKeyRingConfigurationTest {
 	}
 
 	@Test
-	void theFlatPairAloneIsARingOfOneUnderK1() {
+	void theFlatPairAloneIsARingOfOneUnderK1WritingV1ByDefault() {
+		// Phase 1 of ADR-025 D7: a deployment of this version writes exactly what the previous version reads.
 		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC)
+				.run(context -> {
+					assertThat(context).hasNotFailed();
+					assertThat(PiiSecuritySupport.encrypt("x")).startsWith("v1:");
+				});
+	}
+
+	@Test
+	void writeEnvelopeV2WritesV2UnderK1() {
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						"serfira.security.pii.write-envelope=v2")
 				.run(context -> {
 					assertThat(context).hasNotFailed();
 					assertThat(PiiSecuritySupport.encrypt("x")).startsWith("v2:k1:");
 				});
+	}
+
+	@Test
+	void switchingTheActiveKeyRequiresV2Writes() {
+		// A v1 envelope has no key id and reads under the legacy key, so it cannot carry a k2 write.
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						K2_ENCRYPTION_PROPERTY + K2_ENCRYPTION, K2_HMAC_PROPERTY + K2_HMAC,
+						"serfira.security.pii.active-kid=k2")
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.write-envelope")
+						.contains("SERFIRA_SECURITY_PII_WRITEENVELOPE"));
+	}
+
+	@Test
+	void anUnknownWriteEnvelopeFailsNamingTheProperty() {
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						"serfira.security.pii.write-envelope=v3")
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.write-envelope")
+						.doesNotContain("v3"));
 	}
 
 	@Test
@@ -64,7 +95,7 @@ class PiiKeyRingConfigurationTest {
 
 		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
 						K2_ENCRYPTION_PROPERTY + K2_ENCRYPTION, K2_HMAC_PROPERTY + K2_HMAC,
-						"serfira.security.pii.active-kid=k2")
+						"serfira.security.pii.active-kid=k2", "serfira.security.pii.write-envelope=v2")
 				.run(context -> {
 					assertThat(context).hasNotFailed();
 					assertThat(PiiSecuritySupport.encrypt("x")).startsWith("v2:k2:");
@@ -82,7 +113,7 @@ class PiiKeyRingConfigurationTest {
 	@Test
 	void aRingWithoutTheFlatPairStartsWithAnActiveKid() {
 		runner.withPropertyValues(K2_ENCRYPTION_PROPERTY + K2_ENCRYPTION, K2_HMAC_PROPERTY + K2_HMAC,
-						"serfira.security.pii.active-kid=k2")
+						"serfira.security.pii.active-kid=k2", "serfira.security.pii.write-envelope=v2")
 				.run(context -> {
 					assertThat(context).hasNotFailed();
 					assertThat(PiiSecuritySupport.encrypt("x")).startsWith("v2:k2:");
@@ -177,7 +208,8 @@ class PiiKeyRingConfigurationTest {
 						new SystemEnvironmentPropertySource(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
 								Map.of("SERFIRA_SECURITY_PII_KEYS_K2_ENCRYPTIONKEY", K2_ENCRYPTION,
 										"SERFIRA_SECURITY_PII_KEYS_K2_HMACKEY", K2_HMAC,
-										"SERFIRA_SECURITY_PII_ACTIVEKID", "k2"))))
+										"SERFIRA_SECURITY_PII_ACTIVEKID", "k2",
+										"SERFIRA_SECURITY_PII_WRITEENVELOPE", "v2"))))
 				.run(context -> {
 					assertThat(context).hasNotFailed();
 					assertThat(PiiSecuritySupport.encrypt("x")).startsWith("v2:k2:");

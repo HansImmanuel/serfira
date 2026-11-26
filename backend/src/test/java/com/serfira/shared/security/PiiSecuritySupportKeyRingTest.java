@@ -71,6 +71,18 @@ class PiiSecuritySupportKeyRingTest {
 	}
 
 	@Test
+	void aV1RingWritesWhatThePreviousVersionReads() {
+		// ADR-025 D7 phase 1: an older instance (a v1-only reader) must read every row this version writes.
+		PiiSecuritySupport.configure(K1_AES, K1_HMAC);
+
+		String sealed = PiiSecuritySupport.encrypt("3171012501900001");
+
+		assertThat(sealed).startsWith("v1:");
+		assertThat(LegacyV1Envelope.open(K1_AES, sealed)).isEqualTo("3171012501900001");
+		assertThat(PiiSecuritySupport.decrypt(sealed)).isEqualTo("3171012501900001");
+	}
+
+	@Test
 	void aV1EnvelopeWithoutALegacyKeyFails() {
 		PiiSecuritySupport.configure(ring("k2", null));
 		String legacy = LegacyV1Envelope.seal(K1_AES, "08123456789");
@@ -84,7 +96,23 @@ class PiiSecuritySupportKeyRingTest {
 
 		assertThatThrownBy(() -> PiiSecuritySupport.decrypt("v2:k9:" + body))
 				.isInstanceOf(IllegalArgumentException.class)
-				.hasMessageContaining("k9");
+				.hasMessageContaining("not in the key ring")
+				.satisfies(failure -> assertThat(failure.getMessage()).doesNotContain("k9"));
+	}
+
+	@Test
+	void anUnknownNumericKidThatCouldBeANikIsNeverEchoed() {
+		// A 16-digit NIK matches the kid syntax: a corrupted envelope must not put it in an exception message.
+		String nik = "3171012501900001";
+		String body = PiiSecuritySupport.encrypt("x").substring("v2:k2:".length());
+
+		assertThatThrownBy(() -> PiiSecuritySupport.decrypt("v2:" + nik + ":" + body))
+				.isInstanceOf(IllegalArgumentException.class)
+				.satisfies(failure -> {
+					for (Throwable current = failure; current != null; current = current.getCause()) {
+						assertThat(String.valueOf(current.getMessage())).doesNotContain(nik).doesNotContain(body);
+					}
+				});
 	}
 
 	static List<String> malformedEnvelopes() {

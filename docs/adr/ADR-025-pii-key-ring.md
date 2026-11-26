@@ -36,9 +36,10 @@ so they live in one entry. Configuration is additive:
 | `serfira.security.pii.keys.<kid>.encryption-key` / `.hmac-key` | `SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY` / `_HMACKEY` | Further entries. |
 | `serfira.security.pii.active-kid` | `SERFIRA_SECURITY_PII_ACTIVEKID` | The key for new writes and hashes. Defaults to `k1` when the flat pair is set; otherwise it is required. |
 | `serfira.security.pii.legacy-kid` | `SERFIRA_SECURITY_PII_LEGACYKID` | The key that reads `v1:` envelopes. Defaults to `k1` when the flat pair is set; otherwise there is none. |
+| `serfira.security.pii.write-envelope` | `SERFIRA_SECURITY_PII_WRITEENVELOPE` | `v1` (default) or `v2`: the envelope new values are written in (D7). |
 
 The existing flat pair therefore still configures exactly today's behaviour: a ring of one key, `k1`, which is
-both active and legacy. Compose, the test profile and existing deployments need no change. Defining `keys.k1.*`
+both active and legacy and, by default, still writes `v1:` (D7). Compose, the test profile and existing deployments need no change. Defining `keys.k1.*`
 while the flat pair is set is a startup error, because `k1` would be defined twice.
 
 ### D2 — `kid` syntax
@@ -49,7 +50,8 @@ A `kid` is 1–16 lowercase letters or digits (`^[a-z0-9]{1,16}$`). Spring's env
 
 ### D3 — The `v2` envelope
 
-- Writes produce `v2:<kid>:<base64(iv12 ‖ ciphertext|tag128)>` under the active key.
+- With `write-envelope=v2`, writes produce `v2:<kid>:<base64(iv12 ‖ ciphertext|tag128)>` under the active key.
+  Until then they produce `v1:<base64(…)>`, which every earlier version reads (D7).
 - Reads accept:
   - `v2` under any ring key;
   - `v1:<base64(…)>` under the legacy key.
@@ -58,7 +60,8 @@ A `kid` is 1–16 lowercase letters or digits (`^[a-z0-9]{1,16}$`). Spring's env
   - a `v1` envelope with no legacy key;
   - a malformed envelope: no second `:`, an invalid `kid`, bad base64, or a body of 12 bytes or fewer;
   - a failed GCM tag.
-- An error message never repeats the envelope or the plaintext. A parsed, valid `kid` may appear.
+- An error message never repeats any part of the envelope, not even its `kid`, and never the plaintext. A
+  16-digit NIK matches the `kid` syntax, so a corrupted value could carry one in that position.
 - The `kid` is not bound as AAD. A body relabelled with another ring `kid` still fails its tag, because no two
   ring keys share material (D5).
 - No migration was needed: `nik` and `phone` have been `TEXT` since V2.
@@ -98,6 +101,8 @@ Every message names the property and its environment variable, never the value. 
 
 ### D6 — Rotation runbook
 
+0. **Finish the D7 transition first.** `write-envelope` must be `v2` before step 2 (startup refuses `v1` writes
+   under a non-legacy active key).
 1. **Add** the new entry (`keys.<new>.*`) on every instance and deploy, still on the old `active-kid`. From
    now on every instance can read the new key before any instance writes with it.
 2. **Switch** `active-kid` to the new `kid` and deploy. New rows are `v2:<new>:…` with new-key hashes, and old
@@ -111,12 +116,40 @@ Every message names the property and its environment variable, never the value. 
 > claimed (ADR-007). Until T28b records and honours that key id, an idempotent replay across the switch would
 > compare against the new key and get `409`.
 
+### D7 — Version compatibility: `v2` writes are switched on separately
+
+The application before T28a reads only `v1:`. If this version wrote `v2` as soon as it was deployed, any older
+instance would fail to decrypt those rows. That happens in two cases:
+- an old and a new instance overlap during a deployment;
+- the deployment is rolled back to a pre-T28a version.
+
+ADR-001 fixes a single deployment unit but says nothing about overlap or rollback, so neither may be assumed
+away. The rollout therefore has two phases:
+
+1. **Phase 1 — read `v2`, write `v1`.** Deploy this version with `write-envelope` unset, which defaults to
+   `v1`. It reads `v1` and `v2`, and writes only `v1` under `k1`, which every earlier version reads.
+   Overlapping old instances and rollback are both safe.
+2. **Phase 2 — write `v2`.** Set `write-envelope=v2` and deploy, but only once both of these hold:
+   - no pre-T28a instance runs;
+   - rolling back below this version is no longer an option.
+
+   From then on new rows are `v2:<active>:…`.
+
+Rules that enforce it:
+- `v1` writes are refused at startup unless the active key is the legacy key. A `v1` envelope has no `kid` and
+  is read under the legacy key, so a `v1` write under another key would be unreadable. A rotation (D6 step 2)
+  therefore cannot begin before phase 2.
+- Setting `write-envelope` back to `v1` does not convert `v2` rows that already exist. After phase 2, a rollback
+  below T28a makes those rows unreadable. Phase 2 is the point of no return, and it is a deliberate operator
+  step.
+- T28b's re-keying pass writes `v2` under the active key, so it also runs only after phase 2.
+
 ---
 
 ## Consequences
 
 - PII keys can rotate without downtime and without making a row unreadable or unfindable. A ring of one key
-  behaves exactly as before, except that new writes are `v2:k1:`.
+  behaves exactly as before, on disk included, until an operator turns on `v2` writes (D7).
 - Every lookup computes one HMAC per ring key. A ring normally holds two keys at most, and only during a
   rotation.
 - `v1:` rows remain readable for as long as the legacy key is configured. T28b re-encrypts them.

@@ -61,8 +61,8 @@ class CustomerPiiIT {
 
 		Map<String, Object> row = jdbc.queryForMap(
 				"select nik, phone, nik_hash, phone_lookup from customer");
-		assertThat(row.get("nik").toString()).startsWith("v2:k1:").isNotEqualTo(RAW_NIK);
-		assertThat(row.get("phone").toString()).startsWith("v2:k1:").isNotEqualTo(RAW_PHONE);
+		assertThat(row.get("nik").toString()).startsWith("v1:").isNotEqualTo(RAW_NIK);
+		assertThat(row.get("phone").toString()).startsWith("v1:").isNotEqualTo(RAW_PHONE);
 		assertThat(row.get("nik_hash").toString()).isEqualTo(PiiHasher.hashNik(RAW_NIK));
 		assertThat(row.get("phone_lookup").toString()).isEqualTo(PiiHasher.hashPhone(RAW_PHONE));
 
@@ -120,8 +120,8 @@ class CustomerPiiIT {
 		List<Map<String, Object>> rows = jdbc.queryForList("select nik, phone from customer");
 		assertThat(rows).isNotEmpty();
 		for (Map<String, Object> row : rows) {
-			assertThat(row.get("nik").toString()).startsWith("v2:k1:").isNotEqualTo(RAW_NIK);
-			assertThat(row.get("phone").toString()).startsWith("v2:k1:").isNotEqualTo(RAW_PHONE);
+			assertThat(row.get("nik").toString()).startsWith("v1:").isNotEqualTo(RAW_NIK);
+			assertThat(row.get("phone").toString()).startsWith("v1:").isNotEqualTo(RAW_PHONE);
 		}
 
 		Integer plaintextHits = jdbc.queryForObject(

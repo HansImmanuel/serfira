@@ -9,15 +9,30 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Seals a {@code v1:} envelope exactly as the pre-T28a write path did ({@code v1:base64(iv ‖ ciphertext|tag)},
- * AES-256-GCM, 12-byte IV, 128-bit tag). Production code no longer writes {@code v1}; tests need it to prove that
- * rows written before the key ring still read under the legacy key (ADR-025).
+ * Seals and opens {@code v1:} envelopes exactly as the pre-T28a write path did ({@code v1:base64(iv ‖ ciphertext|tag)},
+ * AES-256-GCM, 12-byte IV, 128-bit tag). Tests use it to stand in for an instance of the previous version: rows it
+ * wrote must read under the legacy key, and rows this version writes in v1 mode must open with it (ADR-025 D7).
  */
 public final class LegacyV1Envelope {
 
 	private static final SecureRandom RANDOM = new SecureRandom();
 
 	private LegacyV1Envelope() {
+	}
+
+	/** Opens a {@code v1:} envelope exactly as the pre-T28a read path did; anything else is refused. */
+	public static String open(byte[] aesKey, String envelope) {
+		if (!envelope.startsWith("v1:")) {
+			throw new IllegalArgumentException("unsupported or malformed PII envelope");
+		}
+		try {
+			byte[] body = Base64.getDecoder().decode(envelope.substring(3));
+			Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+			cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(aesKey, "AES"), new GCMParameterSpec(128, body, 0, 12));
+			return new String(cipher.doFinal(body, 12, body.length - 12), StandardCharsets.UTF_8);
+		} catch (GeneralSecurityException e) {
+			throw new IllegalStateException(e);
+		}
 	}
 
 	public static String seal(byte[] aesKey, String plaintext) {

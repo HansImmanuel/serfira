@@ -16,6 +16,10 @@ import java.util.Optional;
  * <p>Construction is the startup validation: the active and legacy ids exist, no id appears twice, and no two ids
  * share an encryption key or an HMAC key. The last rule is what makes a body relabelled with another ring id
  * fail its GCM tag instead of decrypting.
+ *
+ * <p>The ring also fixes the envelope new values are written in ({@link PiiEnvelopeVersion}, ADR-025 D7). A
+ * {@code v1} envelope carries no key id and is read under the legacy key, so {@code v1} writes require the active
+ * key to be the legacy key.
  */
 public final class PiiKeyRing {
 
@@ -25,13 +29,22 @@ public final class PiiKeyRing {
 	private final PiiKey active;
 	private final PiiKey legacy;
 	private final List<PiiKey> candidateOrder;
+	private final PiiEnvelopeVersion writeEnvelope;
+
+	/** A ring that writes {@code v2} envelopes; see {@link #PiiKeyRing(List, String, String, PiiEnvelopeVersion)}. */
+	public PiiKeyRing(List<PiiKey> keys, String activeKid, String legacyKid) {
+		this(keys, activeKid, legacyKid, PiiEnvelopeVersion.V2);
+	}
 
 	/**
-	 * @param keys      the ring entries
-	 * @param activeKid the key for new writes and hashes; must be in {@code keys}
-	 * @param legacyKid the key that reads {@code v1:} envelopes, or {@code null} for none; must be in {@code keys}
+	 * @param keys          the ring entries
+	 * @param activeKid     the key for new writes and hashes; must be in {@code keys}
+	 * @param legacyKid     the key that reads {@code v1:} envelopes, or {@code null} for none; must be in
+	 *                      {@code keys}
+	 * @param writeEnvelope the envelope new values are written in; {@code V1} requires {@code activeKid} to be
+	 *                      the {@code legacyKid}
 	 */
-	public PiiKeyRing(List<PiiKey> keys, String activeKid, String legacyKid) {
+	public PiiKeyRing(List<PiiKey> keys, String activeKid, String legacyKid, PiiEnvelopeVersion writeEnvelope) {
 		if (keys == null || keys.isEmpty()) {
 			throw new IllegalStateException("the PII key ring is empty");
 		}
@@ -63,11 +76,30 @@ public final class PiiKeyRing {
 				.sorted(Comparator.comparing(PiiKey::kid))
 				.forEach(order::add);
 		this.candidateOrder = List.copyOf(order);
+		if (writeEnvelope == null) {
+			throw new IllegalStateException("the PII write envelope is required");
+		}
+		if (writeEnvelope == PiiEnvelopeVersion.V1 && (legacy == null || !legacy.kid().equals(active.kid()))) {
+			throw new IllegalStateException("v1 PII envelopes carry no key id and are read under the legacy key, so "
+					+ "they can only be written while the active key is the legacy key; set "
+					+ "'serfira.security.pii.write-envelope' to v2 (SERFIRA_SECURITY_PII_WRITEENVELOPE) once every "
+					+ "running version reads v2 (ADR-025 D7)");
+		}
+		this.writeEnvelope = writeEnvelope;
 	}
 
-	/** A ring of one key, {@code k1}, that is both active and legacy: exactly the pre-ring behaviour. */
+	/**
+	 * A ring of one key, {@code k1}, that is both active and legacy and writes {@code v1}: exactly the pre-ring
+	 * behaviour, on disk included.
+	 */
 	public static PiiKeyRing single(byte[] encryptionKey, byte[] hmacKey) {
-		return new PiiKeyRing(List.of(PiiKey.of(SINGLE_KID, encryptionKey, hmacKey)), SINGLE_KID, SINGLE_KID);
+		return new PiiKeyRing(List.of(PiiKey.of(SINGLE_KID, encryptionKey, hmacKey)), SINGLE_KID, SINGLE_KID,
+				PiiEnvelopeVersion.V1);
+	}
+
+	/** The envelope new values are written in. */
+	public PiiEnvelopeVersion writeEnvelope() {
+		return writeEnvelope;
 	}
 
 	public PiiKey active() {
