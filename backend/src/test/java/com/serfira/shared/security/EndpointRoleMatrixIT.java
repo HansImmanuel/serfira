@@ -117,6 +117,8 @@ class EndpointRoleMatrixIT {
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID, List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/installments", List.of(ADMIN, FINANCE, MANAJEMEN));
 		allowedRoles.put("GET /api/v1/reports/aging", List.of(ADMIN, FINANCE, MANAJEMEN));
+		// Outstanding report (T36, ADR-026): the same three reporting roles (Addendum §3.4).
+		allowedRoles.put("GET /api/v1/reports/outstanding", List.of(ADMIN, FINANCE, MANAJEMEN));
 		// Statement (T9): ADMIN_OPERASIONAL + FINANCE, MANAJEMEN denied (Addendum §3.4).
 		allowedRoles.put("GET /api/v1/contracts/" + RANDOM_ID + "/statement", List.of(ADMIN, FINANCE));
 		// Credit (T14): apply is ADMIN_OPERASIONAL only; read is ADMIN_OPERASIONAL + FINANCE (Addendum §3.4).

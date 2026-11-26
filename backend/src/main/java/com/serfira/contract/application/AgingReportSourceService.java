@@ -80,7 +80,7 @@ public class AgingReportSourceService implements AgingReportSourcePort {
 			int daysPastDue = InstallmentAging.daysPastDue(installment.getDueDate(),
 					installment.getContract().getGracePeriodDays(), asOf);
 			snapshots.add(new InstallmentAgingSnapshot(installment.getContract().getId(),
-					installment.getContract().getContractNo(), daysPastDue, outstanding));
+					installment.getContract().getContractNo(), installment.getDueDate(), daysPastDue, outstanding));
 		}
 		return List.copyOf(snapshots);
 	}

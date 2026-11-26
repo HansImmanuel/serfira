@@ -78,6 +78,23 @@ public interface PaymentAllocationRepository extends JpaRepository<PaymentAlloca
 			@Param("installmentIds") Collection<UUID> installmentIds);
 
 	/**
+	 * {@code Σ} resolving allocation amount (penalty + interest + principal, EXCESS excluded) of payments in the
+	 * given status, over a set of installments: the collection-rate numerator of the outstanding report (T36,
+	 * ADR-026 D5), called with {@code status = POSTED} so a voided payment's allocations are excluded
+	 * (ADR-020). Credit applications and settlements never write {@code payment_allocation}, so they are
+	 * excluded by construction. {@code coalesce} yields zero when nothing matches.
+	 */
+	@Query("""
+			select coalesce(sum(a.amount), 0)
+			from PaymentAllocation a
+			where a.payment.status = :status
+				and a.type <> com.serfira.payment.domain.AllocationType.EXCESS
+				and a.installmentId in :installmentIds
+			""")
+	BigDecimal sumResolvedAmountByInstallmentIds(@Param("status") PaymentStatus status,
+			@Param("installmentIds") Collection<UUID> installmentIds);
+
+	/**
 	 * The earliest {@code paid_at} among the payments in the given status whose non-EXCESS allocations
 	 * resolve each installment (E4 void, task T16). Called with {@code status = POSTED} after the voided
 	 * payment is flushed VOIDED, so it yields the first <b>surviving</b> resolving instant per installment,

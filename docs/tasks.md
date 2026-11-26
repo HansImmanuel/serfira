@@ -21,12 +21,12 @@ Completed Work index, open tasks, and open ambiguities.
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, and `node scripts/demo.mjs` proves the operator flow end to end against the Compose stack.
-**Current sprint: Sprint 8 (PLANNED 2026-11-26, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026.
+**Current sprint: Sprint 8 (IN PROGRESS, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
+definitions are decided in ADR-026. T36 is DONE (`t36-reporting-outstanding`); T37 is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t34-demo-script`) = **121 suites / 939 tests / 0 failed** (T32 close 121/932; PR #24 added the credit-apply
-`Idempotency-Key` tests; T34 touched no backend file). Frontend `npm test`
+`t36-reporting-outstanding`) = **126 suites / 965 tests / 0 failed** (T34 close 121/939; T36 added the
+outstanding report's unit tests, `OutstandingReportIT` and its role-matrix row). Frontend `npm test`
 (2026-11-25, branch `t34-demo-script`) = **203 tests / 23 files / 0 failed** (T33 close 178; PR #24's
 review fixes added the rest), plus green `npm run lint` and `npm run typecheck`; `npm run build` was green
 at T33 (the production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo
@@ -37,15 +37,17 @@ for a GitHub billing reason, not a test failure.
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `auth`, `shared`.
-- Migrations **V1–V23** plus the `demo`-profile repeatable seed `R__demo_seed.sql`; schema is owned by
-  Flyway (`ddl-auto=validate`). V22/V23 are the latest: durable void idempotency and void-excluded caps.
+- Migrations **V1–V24** plus the `demo`-profile repeatable seed `R__demo_seed.sql`; schema is owned by
+  Flyway (`ddl-auto=validate`). V24 is the latest: the reporting range indexes on `installment.due_date`
+  and `settlement.executed_at` (T36).
 - Daily servicing (billing → penalty → aging → consistency check) runs as the ShedLock job with `job_run`
   rows; a second job cleans expired idempotency keys (T18).
 - Money paths: schedule engine, payment allocation + idempotency, billing/recognition, penalty accrual
   and waive/reduce, settlement quote/execution, credit application, payment void, write-off, double-entry
   ledger with DB backstops (ADR-008/009/011/014/017/018/019/020/021).
-- **18 endpoints** under `/api/v1`: auth login/refresh/logout, contracts create/activate/list/detail/
-  installments/statement, payments create/void, aging report, credit apply/read, write-off, penalty
+- **19 endpoints** under `/api/v1`: auth login/refresh/logout, contracts create/activate/list/detail/
+  installments/statement, payments create/void, aging and outstanding reports (ADR-026), credit
+  apply/read, write-off, penalty
   adjustment, settlement quote/execute. Every one has a default-deny role-matrix row (ADR-015); only the
   three auth endpoints are `permitAll` (ADR-022).
 - Auth: Argon2id, 15-minute HS256 access token, hashed opaque refresh token with single-use rotation,
@@ -123,6 +125,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T35   | Browser-client CORS boundary: exact-origin allowlist + startup validation, `CorsFilter` before the matrix, ADR-023 | ADR-023, `t35-cors-adr-023`                             |
 | T33   | Frontend G3: payment form + allocation result, statement filters, credit apply; no `paid_at`/note input     | 06_FRONTEND_SPEC §2.6–§2.7, `t33-payment-statement-credit` |
 | T34   | G5 demo: `scripts/demo.mjs` end-to-end API demo (relative dates), CI compose-smoke run, README close-out    | Addendum §18 (amended), `t34-demo-script`               |
+| T36   | G1 reporting metrics: `GET /reports/outstanding` (outstanding, AR, NPL, collection rate, settlement cash), V24 | ADR-026, `t36-reporting-outstanding`                    |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -155,7 +158,7 @@ without losing data.
 
 **Scope (14 pts — a deliberate one-point stretch over the 13-point ceiling):**
 
-- T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — TODO
+- T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
 - T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — TODO
 - T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — TODO
 - T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — TODO
@@ -191,8 +194,40 @@ Business rules live in the PRD, `02_TECH_SPEC.md`, `03_DOMAIN_MODEL.md`, `04_GAP
 
 ### T36 — G1: reporting metrics and `GET /reports/outstanding` (3 pts)
 
-Status: TODO
+Status: DONE
 Estimate: 3 pts
+
+Implementation note (2026-11-26, branch `t36-reporting-outstanding`): `GET /api/v1/reports/outstanding`
+returns `as_of`, `total_outstanding`, `accounts_receivable`, `npl { contract_count, outstanding, ratio }`,
+`collection { period_from, period_to, collected, due, rate }`, `settlement_cash { period_from, period_to,
+amount }` and `active_contract_count`. Decisions:
+- **Ports (ADR-026 D8).** `InstallmentAgingSnapshot` gained `due_date`. The new
+  `contract.application.CollectionCohortSourcePort` returns the cohort's recognized total (net of active
+  penalty adjustments, read through the existing bulk `EffectivePenaltyPort` only for contracts whose cohort
+  installments carry penalty) and `settled_amount`. The new `payment.application.CollectedAllocationPort`
+  sums POSTED non-EXCESS allocations in 1,000-id chunks (bind-parameter limit). The new
+  `settlement.application.SettlementCashPort` turns the business dates into a half-open Jakarta instant
+  range.
+- **Calculator.** `reporting.application.OutstandingMetricsCalculator` is pure. Stock metrics come from
+  one pass over the aging snapshots. Money is scale 2, zero is `"0.00"`, and ratios are scale-4 HALF_UP or
+  `null`.
+- **`active_contract_count`** is the number of ACTIVE contracts with outstanding, i.e. the aging report's
+  `contracts.total_elements`. The service is not `@Transactional`, and the snapshot skew is documented in
+  OpenAPI.
+- **V24** adds `idx_installment_due_date` and `idx_settlement_executed_at`. The baseline indexes lead with
+  `contract_id`, so they could not serve the range reads. `OutstandingReportIT` asserts that the planner
+  uses the due-date index.
+- **Found in passing (not fixed here):** a partial penalty REDUCE on an OVERDUE installment with nothing
+  paid fails with 409 (`ck_installment_paid_coherence`), because `Installment.recomputeResolutionStatus`
+  promotes it to PARTIALLY_PAID with no `paid_at`. The IT pays 10,000 first to stay clear of it. Proposed as
+  a separate bug task.
+
+Verification: the new unit tests (`OutstandingMetricsCalculatorTest` 9, `OutstandingReportServiceTest` 2,
+`CollectedAllocationServiceTest` 2, `SettlementCashServiceTest` 2), `OutstandingReportIT` 8 and
+`EndpointRoleMatrixIT` 74 are green. The IT moves money through the API (payment, void, credit apply,
+settlement, penalty reduce, daily job). Full `./gradlew check --rerun-tasks` = **126 suites / 965 tests /
+0 failed**. Demo helpers 28/28. `node scripts/demo.mjs --up` exits 0 on a rebuilt stack, re-run
+against an existing database: outstanding total = aging total, and manager → 200 on the new endpoint.
 
 **Goal:** Serve PRD R-1's management metrics, computed exactly as ADR-026 defines them, from one read-only
 endpoint that reconciles with the aging report.

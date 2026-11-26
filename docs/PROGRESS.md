@@ -159,7 +159,12 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
 Sprint 8 (reporting, outbox & rotasi kunci PII) — **direncanakan 2026-11-26**, 14 pts (stretch 1 poin).
 Definisi metrik di ADR-026:
 
-- [ ] T36 — G1 metrik reporting + `GET /reports/outstanding`
+- [x] T36 — G1 metrik reporting + `GET /reports/outstanding`. Endpoint baru mengembalikan total
+      outstanding (= total portofolio aging), AR, NPL whole-contract, collection rate MTD (kohort due-date,
+      hanya alokasi POSTED non-EXCESS) dan settlement cash, sesuai ADR-026. Data dibaca lewat port read-only
+      `contract`/`payment`/`settlement`; kalkulator di `reporting` murni. V24 menambah index range
+      `installment.due_date` dan `settlement.executed_at`. Verifikasi: backend 126 suite / 965 test, helper
+      demo 28/28 (branch `t36-reporting-outstanding`)
 - [ ] T37 — G4 halaman laporan aging & outstanding + nama customer di API aging
 - [ ] T38 — G6 outbox writer transaksional, enam event domain, publisher berbasis log
 - [ ] T28a — PII key ring + envelope `v2` (ADR-025)

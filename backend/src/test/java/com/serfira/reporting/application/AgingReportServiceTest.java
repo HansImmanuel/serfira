@@ -23,6 +23,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AgingReportServiceTest {
 
 	private static final LocalDate TODAY = LocalDate.of(2026, 10, 1);
+	/** The aging service buckets by DPD only, so one due date serves every snapshot here. */
+	private static final LocalDate DUE = TODAY.minusDays(10);
 
 	private final FixedClock clock = new FixedClock(TODAY);
 
@@ -31,9 +33,9 @@ class AgingReportServiceTest {
 		UUID contractA = UUID.randomUUID();
 		UUID contractB = UUID.randomUUID();
 		AgingReportService service = service(
-				new InstallmentAgingSnapshot(contractA, "MF-202601-0001", 0, new BigDecimal("100.00")),
-				new InstallmentAgingSnapshot(contractA, "MF-202601-0001", 45, new BigDecimal("300.00")),
-				new InstallmentAgingSnapshot(contractB, "MF-202601-0002", 91, new BigDecimal("400.00")));
+				new InstallmentAgingSnapshot(contractA, "MF-202601-0001", DUE, 0, new BigDecimal("100.00")),
+				new InstallmentAgingSnapshot(contractA, "MF-202601-0001", DUE, 45, new BigDecimal("300.00")),
+				new InstallmentAgingSnapshot(contractB, "MF-202601-0002", DUE, 91, new BigDecimal("400.00")));
 
 		AgingReportResponse report = service.aging(null, 0, 20);
 
@@ -70,9 +72,9 @@ class AgingReportServiceTest {
 	@Test
 	void pagesThePerContractRowsWhilePortfolioSpansEveryContract() {
 		AgingReportService service = service(
-				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0001", 10, new BigDecimal("100.00")),
-				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0002", 10, new BigDecimal("200.00")),
-				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0003", 10, new BigDecimal("300.00")));
+				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0001", DUE, 10, new BigDecimal("100.00")),
+				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0002", DUE, 10, new BigDecimal("200.00")),
+				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0003", DUE, 10, new BigDecimal("300.00")));
 
 		AgingReportResponse firstPage = service.aging(null, 0, 2);
 		assertThat(firstPage.contracts().content()).hasSize(2);
@@ -109,7 +111,7 @@ class AgingReportServiceTest {
 	@Test
 	void aPageOffsetThatOverflowsIntMultiplicationStillReturnsAnEmptyPage() {
 		AgingReportService service = service(
-				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0001", 10, new BigDecimal("100.00")));
+				new InstallmentAgingSnapshot(UUID.randomUUID(), "MF-202601-0001", DUE, 10, new BigDecimal("100.00")));
 
 		// page * size overflows a signed int (21474837 * 100 > Integer.MAX_VALUE); the offset must be computed
 		// in long arithmetic and clamped, not wrap negative into subList.
