@@ -75,10 +75,6 @@ export function AgingContractTable({
   showNplBadge: boolean;
   showSummary?: boolean;
 }) {
-  if (query.isError) {
-    return <ErrorAlert error={query.error} onRetry={() => void query.refetch()} />;
-  }
-
   const report = query.data;
   // Placeholder data is the previous page: keep its portfolio and page count, never its rows.
   const loadingRows = query.isPending || query.isPlaceholderData;
@@ -87,59 +83,65 @@ export function AgingContractTable({
 
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>No. Kontrak</TableHead>
-              <TableHead>Nasabah</TableHead>
-              <TableHead className="text-right">Outstanding</TableHead>
-              <TableHead className="text-right">Current</TableHead>
-              <TableHead className="text-right">1–30</TableHead>
-              <TableHead className="text-right">31–60</TableHead>
-              <TableHead className="text-right">61–90</TableHead>
-              <TableHead className="text-right">&gt;90</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {showSummary && report !== undefined ? (
-              <TableRow aria-label="Total portofolio" className="bg-muted/50 font-medium">
-                <TableCell colSpan={2}>Total portofolio</TableCell>
-                <BucketCells buckets={report.portfolio} />
-              </TableRow>
-            ) : null}
-            {loadingRows
-              ? Array.from({ length: 5 }, (_, index) => (
-                  <TableRow key={`skeleton-${index}`} data-testid="aging-row-skeleton">
-                    <TableCell colSpan={COLUMN_COUNT}>
-                      <Skeleton className="h-5 w-full" />
-                    </TableCell>
-                  </TableRow>
-                ))
-              : rows.map((row) => (
-                  <TableRow key={row.contract_id}>
-                    <TableCell className="font-mono text-xs">
-                      <span className="flex items-center gap-2">
-                        <Link href={`/contracts/${row.contract_id}`} className="underline-offset-4 hover:underline">
-                          {row.contract_no}
-                        </Link>
-                        {showNplBadge && isNplRow(row) ? <Badge variant="destructive">NPL</Badge> : null}
-                      </span>
-                    </TableCell>
-                    <TableCell>{row.customer_name}</TableCell>
-                    <BucketCells buckets={row.buckets} />
-                  </TableRow>
-                ))}
-            {!loadingRows && rows.length === 0 ? (
+      {/* A failed page shows the error instead of the table (no rows from another page), and the pager
+          below stays so the user can retry or go back to a page that loaded. */}
+      {query.isError ? (
+        <ErrorAlert error={query.error} onRetry={() => void query.refetch()} />
+      ) : (
+        <div className="rounded-lg border">
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={COLUMN_COUNT} className="py-8 text-center text-sm text-muted-foreground">
-                  Tidak ada kontrak ACTIVE dengan outstanding.
-                </TableCell>
+                <TableHead>No. Kontrak</TableHead>
+                <TableHead>Nasabah</TableHead>
+                <TableHead className="text-right">Outstanding</TableHead>
+                <TableHead className="text-right">Current</TableHead>
+                <TableHead className="text-right">1–30</TableHead>
+                <TableHead className="text-right">31–60</TableHead>
+                <TableHead className="text-right">61–90</TableHead>
+                <TableHead className="text-right">&gt;90</TableHead>
               </TableRow>
-            ) : null}
-          </TableBody>
-        </Table>
-      </div>
+            </TableHeader>
+            <TableBody>
+              {showSummary && report !== undefined ? (
+                <TableRow aria-label="Total portofolio" className="bg-muted/50 font-medium">
+                  <TableCell colSpan={2}>Total portofolio</TableCell>
+                  <BucketCells buckets={report.portfolio} />
+                </TableRow>
+              ) : null}
+              {loadingRows
+                ? Array.from({ length: 5 }, (_, index) => (
+                    <TableRow key={`skeleton-${index}`} data-testid="aging-row-skeleton">
+                      <TableCell colSpan={COLUMN_COUNT}>
+                        <Skeleton className="h-5 w-full" />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                : rows.map((row) => (
+                    <TableRow key={row.contract_id}>
+                      <TableCell className="font-mono text-xs">
+                        <span className="flex items-center gap-2">
+                          <Link href={`/contracts/${row.contract_id}`} className="underline-offset-4 hover:underline">
+                            {row.contract_no}
+                          </Link>
+                          {showNplBadge && isNplRow(row) ? <Badge variant="destructive">NPL</Badge> : null}
+                        </span>
+                      </TableCell>
+                      <TableCell>{row.customer_name}</TableCell>
+                      <BucketCells buckets={row.buckets} />
+                    </TableRow>
+                  ))}
+              {!loadingRows && rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={COLUMN_COUNT} className="py-8 text-center text-sm text-muted-foreground">
+                    Tidak ada kontrak ACTIVE dengan outstanding.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>

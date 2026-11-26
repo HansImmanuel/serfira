@@ -183,6 +183,54 @@ describe("AgingReportView", () => {
     expect(await screen.findByRole("link", { name: "MF-202611-0001" })).toBeInTheDocument();
   });
 
+  it("keeps the pager when another page fails, without stale rows, so the user can go back", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiFetch).mockImplementation(((path: string) =>
+      path.includes("page=1")
+        ? Promise.reject(new ApiError("INTERNAL_ERROR", "Halaman gagal dimuat", 500))
+        : Promise.resolve(reportOf([ROW], 0, 25))) as never);
+    renderWithQueryClient(<AgingReportView />);
+
+    await screen.findByRole("link", { name: "MF-202611-0001" });
+    await user.click(screen.getByRole("button", { name: /Berikutnya/ }));
+
+    expect(await screen.findByText("Halaman gagal dimuat")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "MF-202611-0001" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Berikutnya/ })).toBeDisabled();
+    const previous = screen.getByRole("button", { name: /Sebelumnya/ });
+    expect(previous).toBeEnabled();
+
+    await user.click(previous);
+
+    expect(await screen.findByRole("link", { name: "MF-202611-0001" })).toBeInTheDocument();
+    expect(screen.queryByText("Halaman gagal dimuat")).not.toBeInTheDocument();
+  });
+
+  it("retries a failed page in place", async () => {
+    const user = userEvent.setup();
+    const NEXT_ROW: ContractAgingRow = { ...ROW, contract_id: "page-2-row", contract_no: "MF-202611-0021" };
+    let pageOneCalls = 0;
+    vi.mocked(apiFetch).mockImplementation(((path: string) => {
+      if (!path.includes("page=1")) {
+        return Promise.resolve(reportOf([ROW], 0, 25));
+      }
+      pageOneCalls += 1;
+      return pageOneCalls === 1
+        ? Promise.reject(new ApiError("INTERNAL_ERROR", "Halaman gagal dimuat", 500))
+        : Promise.resolve(reportOf([NEXT_ROW], 1, 25));
+    }) as never);
+    renderWithQueryClient(<AgingReportView />);
+
+    await screen.findByRole("link", { name: "MF-202611-0001" });
+    await user.click(screen.getByRole("button", { name: /Berikutnya/ }));
+    await screen.findByText("Halaman gagal dimuat");
+
+    await user.click(screen.getByRole("button", { name: "Coba lagi" }));
+
+    expect(await screen.findByRole("link", { name: "MF-202611-0021" })).toBeInTheDocument();
+    expect(screen.getByText("25 kontrak · halaman 2 dari 2")).toBeInTheDocument();
+  });
+
   it("renders access denied without a request for a role that cannot read reports", () => {
     signInAs([]);
     renderWithQueryClient(<AgingReportView />);

@@ -396,8 +396,7 @@ The pages show numbers the backend computed and never compute their own.
 
 **Business Rules.**
 
-- ADR-026: what each card means; a `null` ratio displays as the app's empty dash "–" (`EMPTY_VALUE`;
-  see the implementation note).
+- ADR-026: what each card means. Null-ratio display: FE §2.10.
 - ADR-013 A-6: `as_of` locked to today.
 - ADR-024 and FE §3.1: money and ratios stay decimal strings, and percentages are formatted with
   `lib/decimal.ts`/`lib/format.ts`, never `Number`/`parseFloat`.
