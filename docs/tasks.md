@@ -741,14 +741,11 @@ rule. Decisions:
 - **The migration is V25, not V24.** V24 is T36's reporting indexes. `V25__idempotency_request_hash_kid.sql`
   adds `request_hash_kid VARCHAR(16) NULL` with a `kid`-syntax check and no backfill (`NULL` = legacy key).
   The Scope below is corrected.
-- **Replay.** A claim records the active `kid`; a replay recomputes the fingerprint under the recorded `kid`
-  (the legacy key for `NULL`), after the ADR-017 expiry check. A `kid` missing from the ring, or a `NULL`
-  claim with no legacy key, throws `IllegalStateException`, not `409`. The active key may be switched only
-  once no T28a instance runs, because such an instance claims with a `NULL` kid while signing under the new key.
-- **Unexpired** means `expires_at IS NULL OR expires_at > now`, mirroring `IdempotencyService`, so a claim from
-  before expiry existed counts and a key is never called retirable while a replay can still need it.
-- **On target** means both envelopes start with `v2:<activeKid>:` and both hashes equal the active-key hash,
-  so `v1:` rows are re-keyed even while `k1` is active.
+- **Replay, unexpired and on-target rules:** see ADR-025
+  [D8](adr/ADR-025-pii-key-ring.md#d8--idempotency-fingerprints-record-their-key-id) (replay under the
+  recorded `kid`, and the T28a-instance rollout rule),
+  [D9](adr/ADR-025-pii-key-ring.md#d9--the-re-keying-pass) (when a row is on target) and
+  [D10](adr/ADR-025-pii-key-ring.md#d10--retention-rule-and-retirement-verdict) (what counts as unexpired).
 - **`EXECUTE` refuses `write-envelope=v1`** (the pass writes `v2`) as a `PiiRekeyPreflightException` before any
   write; `DRY_RUN` runs in either mode.
 - **Runner.** A synchronous `ApplicationRunner`, so the application serves during the pass and a failure never
