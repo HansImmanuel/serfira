@@ -6,6 +6,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
@@ -127,6 +128,69 @@ public final class PiiSecuritySupport {
 	/** Deterministic keyed digest of a {@code normalizedValue} under the active key — the value writers store. */
 	public static String hmacHex(String normalizedValue) {
 		return hmac(requireKeys().active(), normalizedValue);
+	}
+
+	/**
+	 * The digest of {@code normalizedValue} under the ring key {@code kid} — how a value hashed under a recorded
+	 * key is recomputed. A {@code kid} outside the ring means the key was retired while a value signed with it is
+	 * still live; a syntactically invalid one is never echoed (it may not be a key id at all).
+	 */
+	public static String hmacHex(String kid, String normalizedValue) {
+		PiiKeyRing keys = requireKeys();
+		if (!PiiKey.isValidKid(kid)) {
+			throw new IllegalStateException("the PII key id is not a valid key id (1-16 lowercase letters or digits)");
+		}
+		PiiKey key = keys.find(kid).orElseThrow(() -> new IllegalStateException("PII key '" + kid
+				+ "' is not in the key ring; it was retired while a value signed with it is still live (ADR-025)"));
+		return hmac(key, normalizedValue);
+	}
+
+	/** The id of the key new writes and hashes use. */
+	public static String activeKid() {
+		return requireKeys().active().kid();
+	}
+
+	/** The id of the key that reads {@code v1:} envelopes, if one is configured. */
+	public static Optional<String> legacyKid() {
+		return requireKeys().legacy().map(PiiKey::kid);
+	}
+
+	/** The envelope new values are written in. */
+	public static PiiEnvelopeVersion writeEnvelope() {
+		return requireKeys().writeEnvelope();
+	}
+
+	/** Every ring key id, the active one first and the rest by ascending {@code kid}. */
+	public static List<String> ringKids() {
+		return requireKeys().candidateOrder().stream().map(PiiKey::kid).toList();
+	}
+
+	/**
+	 * The ring key that sealed {@code envelope}, from its prefix alone: {@code v1:} is the legacy key, {@code
+	 * v2:<kid>:} the named key when it is in the ring. Anything else — including a {@code v1:} envelope with no
+	 * legacy key — is empty. Never decrypts and never throws on a non-null input.
+	 */
+	public static Optional<String> sealingKid(String envelope) {
+		PiiKeyRing keys = requireKeys();
+		if (envelope.startsWith(V1_PREFIX)) {
+			return keys.legacy().map(PiiKey::kid);
+		}
+		if (envelope.startsWith(V2_PREFIX)) {
+			String rest = envelope.substring(V2_PREFIX.length());
+			int separator = rest.indexOf(':');
+			if (separator > 0) {
+				String kid = rest.substring(0, separator);
+				if (PiiKey.isValidKid(kid) && keys.find(kid).isPresent()) {
+					return Optional.of(kid);
+				}
+			}
+		}
+		return Optional.empty();
+	}
+
+	/** True for a {@code v2:} envelope sealed under the active key. */
+	public static boolean isActiveV2Envelope(String envelope) {
+		return envelope.startsWith(V2_PREFIX + activeKid() + ":");
 	}
 
 	/**

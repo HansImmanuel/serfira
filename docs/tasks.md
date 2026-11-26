@@ -17,17 +17,17 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `a6df34d` (PR #30, T38 outbox, merged); T28a on `t28a-pii-key-ring`. **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `59b26a5` (PR #31, T28a key ring, merged); T28b on `t28b-pii-rekey`. **Sprint 8 is COMPLETE** (T36, T37, T38, T28a, T28b). **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
 operator flow end to end against the Compose stack.
-**Current sprint: Sprint 8 (IN PROGRESS, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (`t28a-pii-key-ring`); T28b is next.
+**Current sprint: Sprint 8 (COMPLETE, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (`t28b-pii-rekey`). Sprint 8b (T39) is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t28a-pii-key-ring`) = **140 suites / 1100 tests / 0 failed** (T38 close 136/1019 after its review fix; T28a
-added the key-ring, envelope, configuration and rotation suites). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
+`t28b-pii-rekey`) = **149 suites / 1170 tests / 0 failed** (T28a close 140/1100; T28b added the census,
+row-verifier, retirement-report, runner and configuration suites, `PiiRekeyIT` and `IdempotencyKeyRotationIT`). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
 **236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
@@ -37,9 +37,9 @@ for a GitHub billing reason, not a test failure.
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `auth`, `shared`.
-- Migrations **V1–V24** plus the `demo`-profile repeatable seed `R__demo_seed.sql`; schema is owned by
-  Flyway (`ddl-auto=validate`). V24 is the latest: the reporting range indexes on `installment.due_date`
-  and `settlement.executed_at` (T36).
+- Migrations **V1–V25** plus the `demo`-profile repeatable seed `R__demo_seed.sql`; schema is owned by
+  Flyway (`ddl-auto=validate`). V25 is the latest: the nullable `idempotency_keys.request_hash_kid` (T28b).
+  V24 is the reporting range indexes on `installment.due_date` and `settlement.executed_at` (T36).
 - Daily servicing (billing → penalty → aging → consistency check) runs as the ShedLock job with `job_run`
   rows; a second job cleans expired idempotency keys (T18).
 - Money paths: schedule engine, payment allocation + idempotency, billing/recognition, penalty accrual
@@ -67,7 +67,7 @@ for a GitHub billing reason, not a test failure.
   T37 adds `/reports/aging` and `/reports/outstanding` (a "Laporan" sidebar group for all three roles):
   the summary row and cards are the API's values, formatted only, and the aging rows carry `customer_name`.
 - PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
-  search (ADR-004); rotation is **T28a/T28b** (Sprint 8).
+  search (ADR-004); rotation is **T28a/T28b** (Sprint 8, DONE).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
   Dependency-Check and Compose smoke as separate CI jobs (T27, T32). No scanner is wired into `check`.
   Compose smoke also runs the demo helpers' tests and `node scripts/demo.mjs` (T34).
@@ -82,7 +82,12 @@ for a GitHub billing reason, not a test failure.
 - PII key ring (T28a, ADR-025): customer PII is sealed under the active key, as `v1:` until
   `write-envelope=v2` and then `v2:<kid>:…`; both formats always read, and `v1:` rows read
   under the legacy key; NIK/phone lookups match the hash under every ring key. The flat key pair is entry
-  `k1`; extra keys are `serfira.security.pii.keys.<kid>.*`. Re-keying and `RequestFingerprint` key ids are T28b.
+  `k1`; extra keys are `serfira.security.pii.keys.<kid>.*`.
+- PII re-keying (T28b, ADR-025 D8–D10): an idempotency claim records the key id it was signed with
+  (`request_hash_kid`, `NULL` = legacy key), and a replay recomputes the fingerprint under it. An opt-in
+  runner (`serfira.maintenance.pii-rekey.enabled=true`, `DRY_RUN` or `EXECUTE`) moves every customer to the
+  active key after a census pre-flight, verifies each row, resumes after an abort, and logs a per-`kid`
+  retirement verdict. A key is retired only when that verdict is `RETIRABLE`.
 
 Full per-task implementation notes for DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
@@ -139,6 +144,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T37   | G4 report pages `/reports/aging` and `/reports/outstanding`; `customer_name` on aging rows                     | ADR-026, FE §2.9/§2.10, `t37-report-pages`              |
 | T38   | G6 outbox: six PII-free domain events written in their transaction; ShedLock log publisher, retries, `FAILED` | ADR-027, `t38-outbox-events`                            |
 | T28a  | CR-11 PII key ring: `v2:<kid>` envelope, candidate lookups, ring validation + guard on every member         | ADR-025, `t28a-pii-key-ring`                            |
+| T28b  | CR-11 re-keying pass + `request_hash_kid` (V25): verified resumable re-key, kid-aware replay, retirement verdict | ADR-025 D8–D10, `t28b-pii-rekey`                        |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -161,7 +167,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 
 ---
 
-## Sprint 8 — Reporting, Outbox & PII Key Rotation (PLANNED)
+## Sprint 8 — Reporting, Outbox & PII Key Rotation (COMPLETE)
 
 **Goal (05_SPRINT_PLAN.md Sprint 8):** management reporting and the event foundation are done, which closes
 **Phase 3**. The dashboard metrics have written definitions (ADR-026), the aging and outstanding reports run
@@ -175,7 +181,7 @@ without losing data.
 - T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
 - T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — DONE
 - T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — DONE
-- T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
+- T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — DONE
 
 **Exit:**
 
@@ -194,7 +200,8 @@ without losing data.
   start the moment T36 is merged.
 - T28a/T28b come last. They touch only `shared/security`, `shared/idempotency` and `customer`.
 - **If the sprint runs over, T28b is the point that slips to Sprint 8b.** T28a alone is safe to ship: one
-  key in the ring behaves exactly as today. Until T28b lands, do not rotate the HMAC key in any environment.
+  key in the ring behaves exactly as today. T28b landed in the sprint, so it did not slip; the HMAC key may
+  now be rotated once no T28a instance runs (ADR-025 D6, D8).
 
 > **Planned 2026-11-26.** The definitions in ADR-026, the event catalogue for T38, and the T28b retention
 > rule were decided at planning. T38 grew from 2 to 3 pts because nothing writes to `outbox_events` yet: a
@@ -725,8 +732,45 @@ unfindable (CR-11). Record the scheme in **ADR-025**.
 
 ### T28b — PII/HMAC re-keying pass and `RequestFingerprint` key compatibility (CR-11) (3 pts)
 
-Status: TODO
+Status: DONE
 Estimate: 3 pts
+
+Implementation note (2026-11-26, branch `t28b-pii-rekey`; plan
+`docs/superpowers/plans/2026-11-26-t28b-pii-rekey.md`): ADR-025 D8–D10 record the scheme and the retention
+rule. Decisions:
+- **The migration is V25, not V24.** V24 is T36's reporting indexes. `V25__idempotency_request_hash_kid.sql`
+  adds `request_hash_kid VARCHAR(16) NULL` with a `kid`-syntax check and no backfill (`NULL` = legacy key).
+  The Scope below is corrected.
+- **Replay, unexpired and on-target rules:** see ADR-025
+  [D8](adr/ADR-025-pii-key-ring.md#d8--idempotency-fingerprints-record-their-key-id) (replay under the
+  recorded `kid`, and the T28a-instance rollout rule),
+  [D9](adr/ADR-025-pii-key-ring.md#d9--the-re-keying-pass) (when a row is on target) and
+  [D10](adr/ADR-025-pii-key-ring.md#d10--retention-rule-and-retirement-verdict) (what counts as unexpired).
+- **`EXECUTE` refuses `write-envelope=v1`** (the pass writes `v2`) as a `PiiRekeyPreflightException` before any
+  write; `DRY_RUN` runs in either mode.
+- **Runner.** A synchronous `ApplicationRunner`, so the application serves during the pass and a failure never
+  stops it. Properties: `serfira.maintenance.pii-rekey.enabled` (absent = no bean), `.mode` (`DRY_RUN`
+  default), `.batch-size` (500), `.lock-at-most-for` (`PT10M`); environment forms
+  `SERFIRA_MAINTENANCE_PIIREKEY_ENABLED` / `_MODE` / `_BATCHSIZE`.
+- **Retirement verdict per `kid`:** `ACTIVE`, `RETIRABLE` (no envelope, off-active hash, unexpired fingerprint
+  or unreadable row remains; `v1:` and `NULL` count under the legacy key), `NOT_RETIRABLE`, or
+  `MISSING_FROM_RING` for an unexpired fingerprint whose `kid` is not in the ring.
+- **`job_run` counters:** `DRY_RUN` and `EXECUTE` complete with 0 or the rows re-keyed and 0 failed; a
+  pre-flight abort records `FAILED/0/<blocking findings>` (the sum of four counts, so a row duplicated on NIK
+  and phone counts twice); a later abort records the rows committed so far and 1.
+- **Customer-row writes bypass JPA** (native `JdbcClient` SQL on the raw columns, as the `SYSTEM` actor), because
+  the entity holds only plaintext and dirty checking would never fire.
+Rulings: the resume cursor advances by the rows scanned, not rewritten, so an aborted run resumes without
+looping or skipping; the startup runner logs the message only for its own abort exceptions and the class name
+alone for anything else, because a unique-violation message quotes a lookup hash; every run logs one counts-only
+`pii-rekey census ...` line (with `executeWouldRun`, false when `EXECUTE` would refuse or abort), so a `DRY_RUN`
+shows the duplicate counts in advance; the summary line carries `unlabelledFingerprints`, and with no legacy key
+any unlabelled claim keeps every non-active key `NOT_RETIRABLE`.
+Verification: backend 149 suites / 1170 tests / 0 failed (`./gradlew check --rerun-tasks`, BUILD
+SUCCESSFUL; T28b added the census, row-verifier, retirement-report, runner and configuration suites,
+`PiiRekeyIT` and `IdempotencyKeyRotationIT`, which restart the application on one database under a different
+ring); frontend and demo unchanged (no change outside the backend and docs). ADR-025 D6 now forbids switching
+the active key only while a T28a instance runs.
 
 **Goal:**
 
@@ -771,7 +815,7 @@ the legacy key.
   - Rows already on the active key are skipped, so a re-run is a no-op and an interrupted run resumes.
   - `updated_by` is the `SYSTEM` user.
 - **`RequestFingerprint` key compatibility.**
-  - New migration V24 adds a nullable `idempotency_keys.request_hash_kid`. `NULL` means legacy: signed
+  - New migration V25 adds a nullable `idempotency_keys.request_hash_kid`. `NULL` means legacy: signed
     with the legacy key.
   - The claim records the active `kid`.
   - The replay comparison in `IdempotencyService` recomputes the fingerprint under the row's recorded
@@ -784,7 +828,7 @@ the legacy key.
   - unexpired `idempotency_keys` rows by `request_hash_kid`.
 
   It ends with a retirable / not-retirable verdict per `kid`, by the rule above.
-- **Docs:** ADR-025 addendum (retention rule, runner, V24), README operations runbook, Addendum §9.
+- **Docs:** ADR-025 addendum (retention rule, runner, V25), README operations runbook, Addendum §9.
 
 **Business Rules.**
 
@@ -857,7 +901,7 @@ requirements are scope notes, not estimates to implement from.
 | T39  | FE payments tab, settlement and write-off flows    | 8b     | 2   | T33; new `GET /contracts/{id}/payments`   | Payment-history read model + role-matrix row + OpenAPI; quote/execute modal with countdown and `STALE_SETTLEMENT_QUOTE`; write-off dialog with reason; link statement `ref_id` to the payment/settlement (T33 left it as a short id) |
 
 Sprint 8 = 14 pts (T36, T37, T38, T28a, T28b; a one-point stretch, with T28b the first to slip into 8b).
-Sprint 8b = 2 pts (T39), or 5 pts if T28b slips.
+Sprint 8b = 2 pts (T39); T28b did not slip.
 
 > **`iss`/`aud` + RS256 (CR-10) and the T7-D2 active-user check** were part of the old T21 carry-forward.
 > The active-user check is now folded into **T21a**. `iss`/`aud` validation and an RS256 migration stay
@@ -914,7 +958,7 @@ concern therefore reduces to:
 
 The 2026-09-29 code review and the 2026-09-30 external review (16 findings, CR-01…CR-16) are resolved or
 mapped to tasks. The full CR verdict table is in `tasks-archive.md`. Still-open mapping: CR-10 → deferred
-(RS256/`iss`/`aud`, needs a real issuer), **CR-11 → T28a/T28b** (Sprint 8), CR-15 → T27 (DONE). All others
+(RS256/`iss`/`aud`, needs a real issuer), **CR-11 → T28a/T28b** (Sprint 8, DONE), CR-15 → T27 (DONE). All others
 are DONE.
 
 ### Ambiguities
@@ -934,7 +978,7 @@ Sprint 7 (COMPLETE):
   T35 (CORS + ADR-023) ─► T32 (G2 shell, login, contract lifecycle)
       ─► T33 (G3 payment, schedule, statement, credit) ─► T34 (G5 demo)
 
-Sprint 8 (PLANNED, 14 pts; work order T36 → T37 → T38 → T28a → T28b):
+Sprint 8 (COMPLETE, 14 pts; work order T36 → T37 → T38 → T28a → T28b):
   ADR-026 (metrics, Accepted) ─► T36 (G1 metrics + /reports/outstanding) ─► T37 (G4 FE reports)
   T38 (G6 outbox writer + 6 events + publisher, ADR-027)
   T28a (PII key ring + v2 envelope, ADR-025) ─► T28b (re-keying + RequestFingerprint kid)   [CR-11]

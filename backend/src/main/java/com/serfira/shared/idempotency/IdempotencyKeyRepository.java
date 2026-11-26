@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -46,9 +47,9 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 	@Modifying
 	@Query(value = """
 			INSERT INTO idempotency_keys
-				(id, key, endpoint, request_hash, status, expires_at, request_id,
+				(id, key, endpoint, request_hash, request_hash_kid, status, expires_at, request_id,
 					created_at, created_by, updated_at, updated_by)
-			VALUES (:id, :key, :endpoint, :requestHash, :status, :expiresAt, :requestId,
+			VALUES (:id, :key, :endpoint, :requestHash, :requestHashKid, :status, :expiresAt, :requestId,
 					:now, :actor, :now, :actor)
 			ON CONFLICT (endpoint, key) DO NOTHING
 			""", nativeQuery = true)
@@ -56,6 +57,7 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 			@Param("key") String key,
 			@Param("endpoint") String endpoint,
 			@Param("requestHash") String requestHash,
+			@Param("requestHashKid") String requestHashKid,
 			@Param("status") String status,
 			@Param("expiresAt") OffsetDateTime expiresAt,
 			@Param("requestId") String requestId,
@@ -63,6 +65,26 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
 			@Param("actor") UUID actor);
 
 	Optional<IdempotencyKey> findByEndpointAndKey(String endpoint, String key);
+
+	/**
+	 * Claims a replay could still compare, by the key id their fingerprint was computed under (T28b). Unexpired
+	 * mirrors {@code IdempotencyService}: {@code expires_at} null or in the future. A null kid is a claim recorded
+	 * before key ids existed.
+	 */
+	@Query(value = """
+			SELECT request_hash_kid AS kid, count(*) AS total
+			FROM idempotency_keys
+			WHERE expires_at IS NULL OR expires_at > :now
+			GROUP BY request_hash_kid
+			""", nativeQuery = true)
+	List<KidCount> countUnexpiredByRequestHashKid(@Param("now") OffsetDateTime now);
+
+	interface KidCount {
+
+		String getKid();
+
+		long getTotal();
+	}
 
 	/**
 	 * Deletes up to {@code limit} rows whose retention window has already passed (F4/T18, TS §2.5),

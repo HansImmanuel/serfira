@@ -1,20 +1,25 @@
 package com.serfira.shared.idempotency;
 
+import com.serfira.shared.security.PiiEnvelopeVersion;
+import com.serfira.shared.security.PiiKey;
+import com.serfira.shared.security.PiiKeyRing;
 import com.serfira.shared.security.PiiSecuritySupport;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit tests for {@link RequestFingerprint} — the documented refinement of TS §2.5 (ADR-007).
  *
- * <p>Keys are bound once and deliberately not reset: the static bridge is JVM-global and shared with
- * the cached {@code @SpringBootTest} contexts (same reasoning as {@code PiiHasherTest}).
+ * <p>The static bridge is JVM-global and shared with the cached {@code @SpringBootTest} contexts, so the
+ * class binds its own a/b keys and {@link #restoreTestProfileRing()} puts the test-profile ring back.
  */
 class RequestFingerprintTest {
 
@@ -22,6 +27,12 @@ class RequestFingerprintTest {
 	static void bindKeys() {
 		PiiSecuritySupport.configure("a".repeat(32).getBytes(StandardCharsets.UTF_8),
 				"b".repeat(32).getBytes(StandardCharsets.UTF_8));
+	}
+
+	@AfterAll
+	static void restoreTestProfileRing() {
+		PiiSecuritySupport.configure("0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.UTF_8),
+				"abcdef0123456789abcdef0123456789".getBytes(StandardCharsets.UTF_8));
 	}
 
 	@Test
@@ -37,6 +48,30 @@ class RequestFingerprintTest {
 	void differsForDifferentCanonicalPayloads() {
 		assertThat(RequestFingerprint.of("{\"tenor_months\":\"12\"}"))
 				.isNotEqualTo(RequestFingerprint.of("{\"tenor_months\":\"13\"}"));
+	}
+
+	@Test
+	void underTheActiveKidEqualsOf() {
+		String canonical = "{\"tenor_months\":\"12\"}";
+
+		assertThat(RequestFingerprint.under("k1", canonical)).isEqualTo(RequestFingerprint.of(canonical));
+	}
+
+	@Test
+	void underAnotherKidDiffers() {
+		PiiSecuritySupport.configure(new PiiKeyRing(
+				List.of(PiiKey.of("k1", "a".repeat(32).getBytes(StandardCharsets.UTF_8),
+								"b".repeat(32).getBytes(StandardCharsets.UTF_8)),
+						PiiKey.of("k2", "c".repeat(32).getBytes(StandardCharsets.UTF_8),
+								"d".repeat(32).getBytes(StandardCharsets.UTF_8))),
+				"k2", "k1", PiiEnvelopeVersion.V2));
+		try {
+			String canonical = "{\"tenor_months\":\"12\"}";
+
+			assertThat(RequestFingerprint.under("k1", canonical)).isNotEqualTo(RequestFingerprint.of(canonical));
+		} finally {
+			bindKeys();
+		}
 	}
 
 	@Test

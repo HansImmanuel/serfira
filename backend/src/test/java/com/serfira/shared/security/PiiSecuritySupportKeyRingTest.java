@@ -169,6 +169,66 @@ class PiiSecuritySupportKeyRingTest {
 				.containsExactly(hmac(K1_HMAC, "3171012501900001"));
 	}
 
+	@Test
+	void ringIntrospection() {
+		assertThat(PiiSecuritySupport.activeKid()).isEqualTo("k2");
+		assertThat(PiiSecuritySupport.legacyKid()).isEqualTo(java.util.Optional.of("k1"));
+		assertThat(PiiSecuritySupport.ringKids()).containsExactly("k2", "k1");
+		assertThat(PiiSecuritySupport.writeEnvelope()).isEqualTo(PiiEnvelopeVersion.V2);
+	}
+
+	@Test
+	void hmacHexUnderAKidMatchesThatKidsCandidate() {
+		String value = "3171012501900001";
+
+		assertThat(PiiSecuritySupport.hmacHex("k1", value)).isEqualTo(PiiSecuritySupport.hmacCandidates(value).get(1));
+		assertThat(PiiSecuritySupport.hmacHex("k2", value)).isEqualTo(PiiSecuritySupport.hmacHex(value));
+	}
+
+	@Test
+	void hmacHexUnderAKidOutsideTheRingFailsLoudly() {
+		assertThatThrownBy(() -> PiiSecuritySupport.hmacHex("k9", "x"))
+				.isInstanceOf(IllegalStateException.class)
+				.hasMessageContaining("k9")
+				.hasMessageContaining("not in the key ring");
+	}
+
+	@Test
+	void hmacHexUnderAnInvalidKidDoesNotEchoIt() {
+		String notAKid = "3171-0125-0190-0001";
+
+		assertThatThrownBy(() -> PiiSecuritySupport.hmacHex(notAKid, "x"))
+				.isInstanceOf(IllegalStateException.class)
+				.satisfies(failure -> assertThat(failure.getMessage()).doesNotContain(notAKid));
+	}
+
+	@Test
+	void sealingKidNamesTheKeyThatSealedAnEnvelope() {
+		assertThat(PiiSecuritySupport.sealingKid(PiiSecuritySupport.encrypt("x"))).contains("k2");
+		PiiSecuritySupport.configure(ring("k1", "k1"));
+		String underK1 = PiiSecuritySupport.encrypt("x");
+		PiiSecuritySupport.configure(ring("k2", "k1"));
+		assertThat(PiiSecuritySupport.sealingKid(underK1)).contains("k1");
+		String v1 = LegacyV1Envelope.seal(K1_AES, "x");
+		assertThat(PiiSecuritySupport.sealingKid(v1)).contains("k1");
+		assertThat(PiiSecuritySupport.sealingKid("v2:k9:QUFBQQ==")).isEmpty();
+		assertThat(PiiSecuritySupport.sealingKid("v2:K1:QUFBQQ==")).isEmpty();
+		assertThat(PiiSecuritySupport.sealingKid("garbage")).isEmpty();
+		PiiSecuritySupport.configure(ring("k2", null));
+		assertThat(PiiSecuritySupport.sealingKid(v1)).isEmpty();
+	}
+
+	@Test
+	void isActiveV2Envelope() {
+		PiiSecuritySupport.configure(ring("k1", "k1"));
+		String underK1 = PiiSecuritySupport.encrypt("x");
+		PiiSecuritySupport.configure(ring("k2", "k1"));
+
+		assertThat(PiiSecuritySupport.isActiveV2Envelope(PiiSecuritySupport.encrypt("x"))).isTrue();
+		assertThat(PiiSecuritySupport.isActiveV2Envelope(underK1)).isFalse();
+		assertThat(PiiSecuritySupport.isActiveV2Envelope(LegacyV1Envelope.seal(K1_AES, "x"))).isFalse();
+	}
+
 	private static String hmac(byte[] key, String value) {
 		try {
 			Mac mac = Mac.getInstance("HmacSHA256");
