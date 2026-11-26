@@ -332,7 +332,7 @@ nol, selain itu `FAILED`. Start/finish dicatat dalam transaksi terpisah dari wri
 
 `reconciliation_exception`: `contract_id, check_date, check_type, expected_amount, actual_amount, diff_amount, status, resolved_note, resolved_by, resolved_at`.
 
-`outbox_events`: `aggregate_type, aggregate_id, event_type, payload_json, status, created_at, sent_at, retry_count`.
+`outbox_events`: `aggregate_type, aggregate_id, event_type, payload_json, status, created_at, sent_at, retry_count`. Katalog event, kunci payload, urutan (id UUIDv7 monoton) dan semantik publisher: ADR-027 (T38).
 
 ## 2. API Surface (ringkasan)
 
