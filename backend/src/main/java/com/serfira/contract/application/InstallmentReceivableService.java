@@ -1,5 +1,6 @@
 package com.serfira.contract.application;
 
+import com.serfira.contract.application.event.ContractClosedPayload;
 import com.serfira.contract.domain.ClosedReason;
 import com.serfira.contract.domain.Contract;
 import com.serfira.contract.domain.ContractStateException;
@@ -9,6 +10,9 @@ import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.InstallmentRepository;
 import com.serfira.penalty.application.EffectivePenaltyPort;
 import com.serfira.penalty.application.InstallmentEffectivePenalty;
+import com.serfira.shared.outbox.OutboxAggregateType;
+import com.serfira.shared.outbox.OutboxEventType;
+import com.serfira.shared.outbox.OutboxWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -45,12 +49,14 @@ public class InstallmentReceivableService implements InstallmentReceivablePort {
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
 	private final EffectivePenaltyPort effectivePenalty;
+	private final OutboxWriter outbox;
 
 	public InstallmentReceivableService(ContractRepository contracts, InstallmentRepository installments,
-			EffectivePenaltyPort effectivePenalty) {
+			EffectivePenaltyPort effectivePenalty, OutboxWriter outbox) {
 		this.contracts = contracts;
 		this.installments = installments;
 		this.effectivePenalty = effectivePenalty;
+		this.outbox = outbox;
 	}
 
 	@Override
@@ -142,6 +148,10 @@ public class InstallmentReceivableService implements InstallmentReceivablePort {
 		if (contract.close(ClosedReason.MATURITY, resolvedAt)) {
 			LOGGER.info("Auto-closed contract {} as MATURITY (all {} installments paid)",
 					contract.getContractNo(), schedule.size());
+			// ADR-027: the one MATURITY emission site — payment, credit application and a penalty waiver that
+			// clears the last amount all close here, so each close writes exactly one ContractClosed.
+			outbox.append(OutboxAggregateType.CONTRACT, contract.getId(), OutboxEventType.ContractClosed,
+					ContractClosedPayload.of(contract));
 		}
 	}
 

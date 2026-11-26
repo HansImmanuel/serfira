@@ -1,5 +1,6 @@
 package com.serfira.contract.application;
 
+import com.serfira.contract.application.event.ContractClosedPayload;
 import com.serfira.contract.domain.ClosedReason;
 import com.serfira.contract.domain.Contract;
 import com.serfira.contract.domain.ContractStateException;
@@ -8,6 +9,9 @@ import com.serfira.contract.domain.InstallmentStatus;
 import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.InstallmentRepository;
 import com.serfira.shared.error.StaleSettlementQuoteException;
+import com.serfira.shared.outbox.OutboxAggregateType;
+import com.serfira.shared.outbox.OutboxEventType;
+import com.serfira.shared.outbox.OutboxWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -45,10 +49,13 @@ public class SettlementCloseService implements SettlementClosePort {
 
 	private final ContractRepository contracts;
 	private final InstallmentRepository installments;
+	private final OutboxWriter outbox;
 
-	public SettlementCloseService(ContractRepository contracts, InstallmentRepository installments) {
+	public SettlementCloseService(ContractRepository contracts, InstallmentRepository installments,
+			OutboxWriter outbox) {
 		this.contracts = contracts;
 		this.installments = installments;
+		this.outbox = outbox;
 	}
 
 	@Override
@@ -89,6 +96,12 @@ public class SettlementCloseService implements SettlementClosePort {
 		boolean closed = contract.close(ClosedReason.SETTLEMENT, command.executedAt());
 		LOGGER.info("Closed contract {} by SETTLEMENT ({} installment(s) settled, closed={})",
 				contract.getContractNo(), settledByInstallment.size(), closed);
+		if (closed) {
+			// ADR-027: the settlement executor wrote SettlementExecuted just before calling here, so the
+			// publisher emits SettlementExecuted, then this ContractClosed.
+			outbox.append(OutboxAggregateType.CONTRACT, contract.getId(), OutboxEventType.ContractClosed,
+					ContractClosedPayload.of(contract));
+		}
 		return new SettlementCloseResult(settledByInstallment);
 	}
 

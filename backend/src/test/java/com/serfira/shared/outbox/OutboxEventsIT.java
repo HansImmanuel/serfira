@@ -12,6 +12,7 @@ import com.serfira.contract.application.ContractCommandService;
 import com.serfira.contract.domain.AssetType;
 import com.serfira.contract.domain.InterestScheme;
 import com.serfira.payment.PaymentClockTestConfiguration;
+import com.serfira.penalty.application.LockedDailyServicingJob;
 import com.serfira.shared.clock.Clock;
 import com.serfira.shared.clock.FixedClock;
 import com.serfira.shared.security.AppRole;
@@ -61,6 +62,7 @@ class OutboxEventsIT {
 	static final String CUSTOMER_PHONE = "081299990077";
 	static final String CUSTOMER_ADDRESS = "Jalan Outbox Sentinel 77";
 	static final String VOID_REASON = "VOID-REASON-SENTINEL";
+	static final String WRITE_OFF_REASON = "WRITE-OFF-REASON-SENTINEL";
 
 	private static final String PERIOD_TOTAL_12 = "1573333.33";
 
@@ -78,6 +80,9 @@ class OutboxEventsIT {
 
 	@Autowired
 	ContractCommandService contracts;
+
+	@Autowired
+	LockedDailyServicingJob dailyJob;
 
 	private final AtomicInteger plates = new AtomicInteger();
 	private UUID actorId;
@@ -202,6 +207,103 @@ class OutboxEventsIT {
 				.hasSize(1);
 	}
 
+	// --- ContractActivated / ContractClosed / ContractWrittenOff -----------------------------------------
+
+	@Test
+	void activationWritesOneContractActivated() {
+		UUID contractId = createAndActivate(12);
+
+		List<Map<String, Object>> rows = rows(contractId);
+		assertThat(rows).hasSize(1);
+		assertThat(rows.get(0)).containsEntry("event_type", "ContractActivated").containsEntry("aggregate_type", "CONTRACT");
+		JsonNode payload = payload(rows.get(0));
+		assertThat(keys(payload)).containsExactlyInAnyOrder("schema_version", "contract_id", "contract_no",
+				"start_date", "principal", "tenor_months", "interest_scheme");
+		assertThat(payload.get("principal").asText()).isEqualTo("16000000.00");
+		assertThat(payload.get("start_date").asText()).isEqualTo("2026-01-31");
+		assertThat(payload.get("tenor_months").asInt()).isEqualTo(12);
+		assertThat(payload.get("interest_scheme").asText()).isEqualTo("FLAT");
+	}
+
+	@Test
+	void repeatingActivationWritesNoSecondEvent() {
+		UUID contractId = createAndActivate(12);
+
+		contracts.activate(contractId, null);
+
+		assertThat(rows(contractId)).hasSize(1);
+	}
+
+	@Test
+	void aPaymentThatMaturesTheContractWritesPaymentReceivedThenContractClosed() throws Exception {
+		UUID contractId = createAndActivate(1);
+
+		pay(contractId, "pay-matures", installmentTotal(contractId, 1));
+
+		assertThat(eventsForContract(contractId))
+				.containsExactly("ContractActivated", "PaymentReceived", "ContractClosed");
+		Map<String, Object> closed = rows(contractId).stream()
+				.filter(row -> "ContractClosed".equals(row.get("event_type"))).findFirst().orElseThrow();
+		JsonNode payload = payload(closed);
+		assertThat(keys(payload)).containsExactlyInAnyOrder("schema_version", "contract_id", "contract_no",
+				"closed_reason", "closed_at");
+		assertThat(payload.get("closed_reason").asText()).isEqualTo("MATURITY");
+	}
+
+	@Test
+	void aCreditApplicationThatMaturesTheContractWritesContractClosed() throws Exception {
+		UUID contractId = createAndActivate(2);
+		String secondTotal = installmentTotal(contractId, 2);
+		// Period 1 is due, period 2 is not: the second period's share lands as EXCESS credit (ADR-009).
+		String both = new BigDecimal(installmentTotal(contractId, 1)).add(new BigDecimal(secondTotal)).toPlainString();
+		pay(contractId, "pay-into-credit", both);
+		assertThat(eventsForContract(contractId)).doesNotContain("ContractClosed");
+
+		LocalDate secondDue = jdbc.queryForObject(
+				"select due_date from installment where contract_id = ? and period_no = 2", LocalDate.class, contractId);
+		fixedClock().setDate(secondDue);
+		dailyJob.run(secondDue);
+		MvcResult apply = mockMvc.perform(post("/api/v1/contracts/" + contractId + "/credit/apply")
+						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", "apply-matures")
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"amount\":" + secondTotal + "}"))
+				.andReturn();
+
+		assertThat(apply.getResponse().getStatus()).isEqualTo(200);
+		assertThat(eventsForContract(contractId).stream().filter("ContractClosed"::equals)).hasSize(1);
+		assertThat(jdbc.queryForObject("select closed_reason from contract where id = ?", String.class, contractId))
+				.isEqualTo("MATURITY");
+	}
+
+	@Test
+	void writeOffWritesContractWrittenOffWithoutTheReason() throws Exception {
+		UUID contractId = createAndActivate(12);
+
+		MvcResult result = writeOff(contractId, "write-off-1");
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(201);
+		List<Map<String, Object>> writtenOff = rows(contractId).stream()
+				.filter(row -> "ContractWrittenOff".equals(row.get("event_type"))).toList();
+		assertThat(writtenOff).hasSize(1);
+		JsonNode payload = payload(writtenOff.get(0));
+		assertThat(keys(payload)).containsExactlyInAnyOrder("schema_version", "contract_id", "contract_no",
+				"written_off_at", "total_written_off", "installment_count");
+		assertThat(payload.get("total_written_off").isString()).isTrue();
+		assertThat((String) writtenOff.get(0).get("payload")).doesNotContain(WRITE_OFF_REASON);
+		assertThat(eventsForContract(contractId)).doesNotContain("ContractClosed");
+	}
+
+	@Test
+	void aReplayedWriteOffKeyWritesNoSecondRow() throws Exception {
+		UUID contractId = createAndActivate(12);
+
+		writeOff(contractId, "write-off-replay");
+		writeOff(contractId, "write-off-replay");
+
+		assertThat(eventsForContract(contractId).stream().filter("ContractWrittenOff"::equals)).hasSize(1);
+	}
+
 	// --- helpers ------------------------------------------------------------------------------------------
 
 	UUID createDraft(int tenorMonths) {
@@ -237,6 +339,15 @@ class OutboxEventsIT {
 						.header("Idempotency-Key", idempotencyKey)
 						.contentType(MediaType.APPLICATION_JSON)
 						.content(body))
+				.andReturn();
+	}
+
+	MvcResult writeOff(UUID contractId, String idempotencyKey) throws Exception {
+		return mockMvc.perform(post("/api/v1/contracts/" + contractId + "/write-off")
+						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", idempotencyKey)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"reason\":\"" + WRITE_OFF_REASON + "\"}"))
 				.andReturn();
 	}
 

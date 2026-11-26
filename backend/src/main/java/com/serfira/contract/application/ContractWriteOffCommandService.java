@@ -26,6 +26,10 @@ import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
 import com.serfira.shared.observability.LogContext;
+import com.serfira.shared.outbox.OutboxAggregateType;
+import com.serfira.shared.outbox.OutboxEventType;
+import com.serfira.shared.outbox.OutboxWriter;
+import com.serfira.contract.application.event.ContractWrittenOffPayload;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,12 +96,13 @@ public class ContractWriteOffCommandService {
 	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
 	private final AuditContext auditContext;
+	private final OutboxWriter outbox;
 	private final Clock clock;
 
 	public ContractWriteOffCommandService(ContractRepository contracts, InstallmentRepository installments,
 			InstallmentBillingPort billing, com.serfira.penalty.application.PenaltyAccrualPort penalty,
 			EffectivePenaltyPort effectivePenalty, IdempotencyService idempotency, LedgerPostingService ledger,
-			AuditContext auditContext, Clock clock) {
+			AuditContext auditContext, OutboxWriter outbox, Clock clock) {
 		this.contracts = contracts;
 		this.installments = installments;
 		this.billing = billing;
@@ -106,6 +111,7 @@ public class ContractWriteOffCommandService {
 		this.idempotency = idempotency;
 		this.ledger = ledger;
 		this.auditContext = auditContext;
+		this.outbox = outbox;
 		this.clock = clock;
 	}
 
@@ -200,6 +206,10 @@ public class ContractWriteOffCommandService {
 
 		LOGGER.info("Wrote off contract {} (id={}, {} installment(s), total {})",
 				contract.getContractNo(), contractId, writtenOff.size(), totals.total());
+		// ADR-027: the write-off reason is free text and never enters the payload; a replay writes nothing.
+		outbox.append(OutboxAggregateType.CONTRACT, contractId, OutboxEventType.ContractWrittenOff,
+				ContractWrittenOffPayload.of(contractId, contract.getContractNo(), writtenOffAt, totals.total(),
+						writtenOff.size()));
 		return new WriteOffResponse(contractId, contract.getContractNo(), contract.getStatus().name(),
 				contract.getWriteOffReason(), writtenOffAt, totals.total(), writtenOff);
 	}
