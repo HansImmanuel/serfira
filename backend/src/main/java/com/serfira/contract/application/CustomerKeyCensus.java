@@ -13,9 +13,10 @@ import java.util.TreeMap;
 /**
  * Read-only tally of the customer PII rows against the active key (T28b): how many are on target, how many still
  * hold each ring key, and which rows block a re-key (unreadable, or one customer stored under two keys). Holds only
- * counts and hashes of rows already seen; it never prints an envelope or a value.
+ * counts and hashes of rows already seen; it never prints an envelope or a value. Public so a run's outcome can be
+ * read outside the package; only the package builds one.
  */
-final class CustomerKeyCensus {
+public final class CustomerKeyCensus {
 
 	private final long scannedRows;
 	private final SortedMap<String, Long> rowsByKid;
@@ -65,15 +66,15 @@ final class CustomerKeyCensus {
 		return rowsByKid;
 	}
 
-	long v1Rows() {
+	public long v1Rows() {
 		return v1Rows;
 	}
 
-	long rowsToRekey() {
+	public long rowsToRekey() {
 		return rowsToRekey;
 	}
 
-	long rowsOffActiveHashes() {
+	public long rowsOffActiveHashes() {
 		return rowsOffActiveHashes;
 	}
 
