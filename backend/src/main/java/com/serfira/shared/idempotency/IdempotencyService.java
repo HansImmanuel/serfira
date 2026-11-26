@@ -8,6 +8,7 @@ import com.serfira.shared.error.BadRequestException;
 import com.serfira.shared.error.ConflictException;
 import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import com.serfira.shared.observability.CorrelationId;
+import com.serfira.shared.security.PiiSecuritySupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -73,7 +74,8 @@ public class IdempotencyService {
 			Class<T> responseType, Supplier<T> operation) {
 		Objects.requireNonNull(operation, "operation");
 		String key = requireKey(rawKey);
-		String fingerprint = RequestFingerprint.of(canonicalRequestJson);
+		String activeKid = PiiSecuritySupport.activeKid();
+		String fingerprint = RequestFingerprint.under(activeKid, canonicalRequestJson);
 
 		OffsetDateTime now = clock.now();
 		int retentionDays = systemParameters.requireInt(SystemParameterKeys.IDEMPOTENCY_KEY_RETENTION_DAYS);
@@ -82,14 +84,15 @@ public class IdempotencyService {
 		// Correlation id of the originating request (T20, Addendum §10), so a replayed retry can be traced
 		// back to the request that first created the resource. Null off a request thread (e.g. a job).
 		String requestId = CorrelationId.current();
-		int claimed = keys.claim(UUID.randomUUID(), key, endpoint, fingerprint, IdempotencyKey.STATUS_IN_PROGRESS,
+		int claimed = keys.claim(UUID.randomUUID(), key, endpoint, fingerprint, activeKid, IdempotencyKey.STATUS_IN_PROGRESS,
 				expiresAt, requestId, now, actor);
 
 		if (claimed == 0) {
 			// The key already names a claim. Inside the retention window it is a retry (replay or
 			// conflict, never a second execution); past the window it is rejected before the supplier
 			// runs, because a key is single-use forever and is never re-run (ADR-017, option A).
-			return replayOrRejectExpired(endpoint, key, fingerprint, now, responseType);
+			return replayOrRejectExpired(endpoint, key, canonicalRequestJson, activeKid, fingerprint, now,
+					responseType);
 		}
 
 		T response = operation.get();
@@ -101,8 +104,8 @@ public class IdempotencyService {
 		return IdempotentResult.executed(response);
 	}
 
-	private <T> IdempotentResult<T> replayOrRejectExpired(String endpoint, String key, String fingerprint,
-			OffsetDateTime now, Class<T> responseType) {
+	private <T> IdempotentResult<T> replayOrRejectExpired(String endpoint, String key, String canonicalRequestJson,
+			String activeKid, String activeFingerprint, OffsetDateTime now, Class<T> responseType) {
 		IdempotencyKey existing = keys.findByEndpointAndKey(endpoint, key)
 				.orElseThrow(() -> new IllegalStateException(
 						"idempotency row disappeared for endpoint '" + endpoint + "'"));
@@ -114,6 +117,17 @@ public class IdempotencyService {
 			throw new IdempotencyKeyExpiredException(
 					"Idempotency-Key has expired on " + endpoint + "; use a fresh key for a new request");
 		}
+		// Compare under the key the claim was hashed with, which a rotation may since have moved off the active
+		// one. A claim recorded before key ids existed was hashed under the legacy key (ADR-025).
+		String recordedKid = existing.getRequestHashKid();
+		if (recordedKid == null) {
+			recordedKid = PiiSecuritySupport.legacyKid().orElseThrow(() -> new IllegalStateException(
+					"an idempotency claim recorded before key ids needs the legacy PII key; "
+							+ "set 'serfira.security.pii.legacy-kid' (ADR-025)"));
+		}
+		String fingerprint = recordedKid.equals(activeKid)
+				? activeFingerprint
+				: RequestFingerprint.under(recordedKid, canonicalRequestJson);
 		if (!Objects.equals(existing.getRequestHash(), fingerprint)) {
 			// TS §2.5: same key with a different request is a client conflict, never a second execution.
 			throw new ConflictException("Idempotency-Key was already used for a different request on " + endpoint);

@@ -21,7 +21,12 @@ public final class RequestFingerprint {
 
 	/** Keyed digest of a canonical JSON payload. The payload itself is never persisted or logged. */
 	public static String of(String canonicalJson) {
+		return under(PiiSecuritySupport.activeKid(), canonicalJson);
+	}
+
+	/** Keyed digest under the ring key {@code kid} — how a fingerprint recorded under that key is recomputed. */
+	public static String under(String kid, String canonicalJson) {
 		Objects.requireNonNull(canonicalJson, "canonicalJson");
-		return PiiSecuritySupport.hmacHex(canonicalJson);
+		return PiiSecuritySupport.hmacHex(kid, canonicalJson);
 	}
 }

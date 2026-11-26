@@ -175,7 +175,7 @@ without losing data.
 - T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
 - T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — DONE
 - T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — DONE
-- T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
+- T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — IN PROGRESS
 
 **Exit:**
 
@@ -725,7 +725,7 @@ unfindable (CR-11). Record the scheme in **ADR-025**.
 
 ### T28b — PII/HMAC re-keying pass and `RequestFingerprint` key compatibility (CR-11) (3 pts)
 
-Status: TODO
+Status: IN PROGRESS
 Estimate: 3 pts
 
 **Goal:**

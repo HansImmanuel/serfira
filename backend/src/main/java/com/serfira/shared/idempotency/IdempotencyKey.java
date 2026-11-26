@@ -48,6 +48,13 @@ public class IdempotencyKey extends Auditable {
 	@Column(name = "request_hash", length = 64)
 	private String requestHash;
 
+	/**
+	 * The PII key id {@code request_hash} was computed under (T28b, ADR-025). Null on a claim recorded before key
+	 * ids existed, which was hashed under the legacy key.
+	 */
+	@Column(name = "request_hash_kid", length = 16, updatable = false)
+	private String requestHashKid;
+
 	@Column(name = "response_json", columnDefinition = "text")
 	private String responseJson;
 
@@ -84,6 +91,10 @@ public class IdempotencyKey extends Auditable {
 
 	public String getRequestHash() {
 		return requestHash;
+	}
+
+	public String getRequestHashKid() {
+		return requestHashKid;
 	}
 
 	public String getResponseJson() {
