@@ -427,10 +427,20 @@ Settlement menggunakan `settlement_quote` sebagai snapshot dan `settlement` + im
 
 ## 14. Reporting Definitions
 
-- **Outstanding:** principal residual + recognized interest residual + effective penalty residual.
-- **AR:** outstanding dari installment yang due pada as-of date.
-- **NPL:** outstanding kontrak dengan DPD > 90 / total active outstanding.
-- **Collection rate:** regular-payment cash applied to installments due during period / recognized installment receivable due during period. Settlement cash ditampilkan sebagai metric terpisah.
+Definisi matematis lengkap (scope, periode, cohort, pengecualian, format rasio) ada di **ADR-026**; baris di
+bawah adalah ringkasannya.
+
+- **Outstanding:** principal residual + recognized interest residual + effective penalty residual, seluruh
+  installment kontrak ACTIVE (= total portofolio laporan aging).
+- **AR:** outstanding dari installment kontrak ACTIVE dengan `due_date ≤ as_of`. Ini termasuk yang masih dalam
+  grace period, jadi AR **bukan** "overdue receivable".
+- **NPL:** kontrak ACTIVE yang punya ≥ 1 installment dengan `outstanding > 0` dan DPD > 90. Numerator =
+  **seluruh** outstanding kontrak itu, termasuk pokok yang belum jatuh tempo (bukan hanya bucket >90), dibagi
+  total active outstanding.
+- **Collection rate:** month-to-date `[tanggal 1, as_of]`. Cohort = installment dengan due date di periode
+  itu (kontrak non-DRAFT). Numerator = alokasi payment `POSTED` non-`EXCESS` ke cohort, bukan
+  `paid_amount`, karena credit application non-cash tidak dihitung. Denominator = recognized receivable
+  cohort dikurangi `settled_amount`. Settlement cash (`cash_received`) ditampilkan sebagai metric terpisah.
 - **Aging bucket dan `as_of` (ADR-013, menutup A-6/A-7):** bucket dihitung **per installment** — setiap
   installment kontrak ACTIVE dengan `outstanding > 0` dikelompokkan ke Current/1–30/31–60/61–90/>90
   berdasarkan DPD-nya sendiri (`DM §1.4`), dan `amount` bucket-nya adalah `outstanding` installment itu.

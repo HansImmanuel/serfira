@@ -155,5 +155,12 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
       test / 23 file, backend 121 suite / 939 test (branch `t34-demo-script`)
 
 **Sprint 7 selesai.** Alur operator utama berjalan di browser dan dapat diulang lewat `node scripts/demo.mjs`.
-Berikutnya Sprint 8: T28a/T28b (rotasi kunci PII/HMAC), T36 (metrik dashboard), T37 (laporan FE), T38
-(outbox publisher).
+
+Sprint 8 (reporting, outbox & rotasi kunci PII) — **direncanakan 2026-11-26**, 14 pts (stretch 1 poin).
+Definisi metrik di ADR-026:
+
+- [ ] T36 — G1 metrik reporting + `GET /reports/outstanding`
+- [ ] T37 — G4 halaman laporan aging & outstanding + nama customer di API aging
+- [ ] T38 — G6 outbox writer transaksional, enam event domain, publisher berbasis log
+- [ ] T28a — PII key ring + envelope `v2` (ADR-025)
+- [ ] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint`

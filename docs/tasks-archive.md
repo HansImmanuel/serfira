@@ -1024,3 +1024,455 @@ each scanner (shown in the PR description, not committed). No unit/IT changes.
 **Risks.** OWASP Dependency-Check downloads the NVD feed and can be slow or flaky on a cold cache, and a new
 high-severity CVE in a transitive dep can red the build without a code change; the reviewed suppression file
 plus NVD caching are the mitigations.
+
+## Completed task detail — Sprint 7 (Frontend Core & Demo: T35, T32, T33, T34)
+
+Moved out of `tasks.md` on 2026-11-26 at Sprint 8 planning. Sprint 7 is closed (T35 PR #22, T32 PR #23,
+T33 PR #24, T34 PR #25); these are its goal/exit header, scope bodies and close-out notes. The one-line index
+stays in `tasks.md` → Completed Work.
+
+**Goal (05_SPRINT_PLAN.md Sprint 7):** the main operator flow runs in a browser — login → create contract
+→ activate → record payment → read statement — and the demo is repeatable.
+
+**Scope (13 pts):**
+
+- T35 — Browser-client CORS boundary + ADR-023 (1 pt) — **DONE**
+- T32 — G2: app shell, login, contract list/detail/create/activate (5 pts) — **DONE**
+- T33 — G3: payment form, installment table, statement, credit tab (5 pts) — **DONE**
+- T34 — G5: demo script, seed data, README close-out (2 pts) — **DONE**
+
+**Exit:** login works against the real backend; a DRAFT contract can be created, activated, paid and read
+back from the browser; the statement renders ledger-literal rows; the demo script runs end-to-end from a
+clean database; a frontend CI job (install, lint, typecheck, unit, build) is green; authorization stays
+server-side and the UI only hides what the role cannot do.
+
+**Dependency order:** T35 → T32 → T33 → T34.
+
+> **Re-planned 2026-11-19.** Sprint 7 keeps the sprint plan's G2/G3/G5 and adds T35, the browser-client
+> prerequisite that the sprint plan left uncosted (CORS was deferred to G2). **T28 (key rotation) moves to
+> Sprint 8 as T28a/T28b:** it has no frontend dependency, and carrying it here would put the sprint at
+> 17 pts. The payments-history tab and the settlement/write-off dialogs move to T39 (Sprint 8b) because
+> the payments list has no backend read model yet.
+
+Business rules live in `06_FRONTEND_SPEC.md` §1–§3, `04_GAPS_ADDENDUM.md` §3.4 and the cited ADRs; these
+tasks point to them and do not restate them.
+
+### T35 — Browser-client CORS boundary and ADR-023 (1 pt)
+
+Status: DONE
+Estimate: 1 pt
+Implementation note (2026-11-19, branch `t35-cors-adr-023`): CORS lives in
+`ResourceServerSecurityConfiguration` as a `CorsConfigurationSource` bean wired with `.cors(...)` as the
+first DSL call, so an untokened preflight is answered by the `CorsFilter` instead of falling through to
+`denyAll()`. `AllowedOrigins` validates the comma-separated property once at startup and rejects
+wildcards, blank entries, paths, queries, fragments, user info, out-of-range and default ports, and
+non-canonical spelling (including non-canonical IPv6); the message names the offending entry.
+`allowCredentials=false`, methods `GET,POST`, allowed headers
+`Authorization`/`Content-Type`/`Idempotency-Key`/`X-Request-Id`, exposed `X-Request-Id`,
+max age 1800 s. Main properties ship an explicit empty default; Compose and the test profile set
+`http://localhost:3000`. ADR-023 records the boundary (direct calls, in-memory tokens, roles as UX only,
+no `/me`, unverified decode) and the Next.js 16.4.6 pin with its OSV check. One behaviour the review
+pinned: a non-preflight request from a disallowed origin is rejected by Spring's `CorsFilter` with 403 and
+the fixed body `Invalid CORS request` *before* authentication, not with the endpoint's 401. Tests: new
+`AllowedOriginsTest` (8), `CorsIT` (6), `CorsDeniedByDefaultIT` (1). Verified with
+`./gradlew test --tests "*Cors*" --tests "*AllowedOriginsTest"` and then the full `./gradlew test` =
+**120 suites / 926 tests / 0 failed**; `EndpointRoleMatrixIT` unchanged and green.
+
+Review remediation (2026-11-21, PR #22): Compose now uses the unset-only default
+`${SERFIRA_SECURITY_CORS_ALLOWED_ORIGINS-http://localhost:3000}`, so an explicitly empty value is
+preserved and denies every browser origin instead of silently falling back to localhost (ADR-023 D4).
+Verified with `docker compose config`: unset renders `http://localhost:3000`; an empty env-file value
+renders `""` (the old `:-` form rendered localhost for the same input). `AllowedOrigins` now re-serializes
+IPv6 literals the way a browser does and rejects non-canonical spellings (`[0:0:0:0:0:0:0:1]`, uppercase
+or leading-zero hex, a `::` run that is not the first longest, embedded dotted IPv4, zone ids) without DNS;
+`[::1]` and `[::ffff:7f00:1]` stay accepted. `AllowedOriginsTest` grew 8 -> 11. The review suggestion to
+put a localhost default in the main properties was not applied: ADR-023 D4 and this task's risk note
+require the empty default, Compose and the test profile carry the dev origin, and the README documents the
+`bootRun` variable. Verified: focused CORS suite 18 tests / 0 failed, full `./gradlew test` = **120 suites
+/ 929 tests / 0 failed**, `./gradlew check` green.
+
+**Goal:** Let the browser application on its own origin call the API without opening the API to arbitrary
+origins, and record the browser-client security boundary before frontend code exists.
+
+**Scope.**
+
+- CORS in the security chain: allowed origins from `serfira.security.cors.allowed-origins`
+  (comma-separated, default empty = deny), methods `GET,POST`, headers
+  `Authorization, Content-Type, Idempotency-Key, X-Request-Id`, exposed header `X-Request-Id`,
+  `allowCredentials=false`, and a bounded preflight max age.
+- Dev, test and Compose values allow only `http://localhost:3000`; a production profile without the
+  property allows nothing.
+- **ADR-023** records the browser-client boundary: bearer access token + refresh token in memory
+  (06_FRONTEND_SPEC §1.1/§1.4), no cookies so no CSRF and no credentialed CORS; roles read from the JWT
+  `roles` claim with no `/me` endpoint; security headers owned by Next.js plus Spring Security defaults,
+  not a new backend dependency; rate limiting stays deferred. It also records the pinned frontend stack
+  version and the CVE check behind it (Next.js 16.4.6; OSV returns no advisory for that version on
+  2026-11-19).
+- Docs: replace the CORS-versus-proxy open line in `06_FRONTEND_SPEC.md` §4 with the decided answer;
+  update `02_TECH_SPEC.md` §2.6 if it names the boundary, `README.md` (environment) and
+  `.kiro/steering/tech.md`.
+
+**Business Rules.** ADR-015 (default deny), ADR-022 D7 (the auth endpoints are `permitAll`, but a bearer
+token is still validated), 06_FRONTEND_SPEC §1.4 (the three public auth paths never carry an access
+token). CORS is a browser control, never an authorization mechanism: the role matrix stays the
+enforcement.
+
+**Implementation Notes.** CORS belongs in `ResourceServerSecurityConfiguration` through a
+`CorsConfigurationSource` bean; do not weaken the security chain ad hoc. The auth paths are not exempt
+from CORS. `X-Request-Id` already exists (T20) — expose it so the browser can log it. Verify the Boot 4 /
+Spring Security 7 CORS API with Context7 before coding. `allowCredentials=false` is what makes an empty
+default safe; a wildcard origin plus credentials must be impossible by configuration.
+
+**Dependencies:** none (T7/ADR-015 and T21b/ADR-022 are DONE).
+
+**Acceptance Criteria.**
+
+- A preflight from an allowed origin returns 200 with the expected `Access-Control-Allow-*` headers.
+- A disallowed origin receives no `Access-Control-Allow-Origin`; the browser blocks the call.
+- Credentials are not allowed; no configuration combination produces `*` with credentials.
+- The property absent means no origin is allowed; dev/test/Compose allow only `http://localhost:3000`.
+- ADR-023 exists and the documents listed above match the implementation.
+
+**Tests.** Narrowest first: MockMvc tests for the allowed preflight, the disallowed origin, an actual
+POST from an allowed origin, the `/auth/login` preflight, and the empty default. Then
+`EndpointRoleMatrixIT` and `./gradlew check` stay green (CORS must not change authorization).
+
+**Risks.** A permissive default would silently widen the browser boundary; keep it empty and put the dev
+origin only in the dev/test profiles. Spring Security 7's CORS support is version-sensitive — confirm the
+API rather than copying an older recipe.
+
+### T32 — G2: app shell, login and contract lifecycle (5 pts)
+
+Status: DONE
+Estimate: 5 pts
+Implementation note (2026-11-20, branch `t32-nextjs-shell`, stacked on `t35-cors-adr-023`): scaffolded
+`frontend/` with `create-next-app@16.4.6` (TypeScript, Tailwind v4, ESLint, App Router, no `src/`, `@/*`)
+and shadcn/ui (`--base radix -p nova`, the Tailwind-v4/`cn` model), adding TanStack Query v5, React Hook
+Form + Zod and Vitest + React Testing Library (jsdom). Node is pinned to **24.16.0** in `frontend/.nvmrc`
+(CI reads it) with `engines.node >= 22.0.0` because the shadcn CLI's `cn` package needs Node 22+; the
+Next.js floor (20.9.0) is still met. The OSV re-check was repeated: `next@latest` = 16.4.6, zero advisories
+(any severity) for 16.4.6 and `latest` — recorded in ADR-023 D9. `tsconfig` target is ES2020 (the decimal
+helpers use BigInt literals); `typecheck` = `next typegen && tsc --noEmit`.
+
+`lib/api.ts` is the only envelope-aware layer: it unwraps `{data, error}` once, never attaches a bearer to
+`PUBLIC_AUTH_PATHS`, rotates the pair **once** on a 401 and replays the request through a private
+`alreadyRetried` flag (so a second 401 cannot loop), and shares one in-flight refresh between concurrent
+401s because rotation is single-use; a failed refresh clears the session and hard-redirects to `/login`.
+`lib/session.ts` keeps both tokens in module memory only (no storage, cookie, URL or log) and retains the
+typed username for the header because `sub` is an `app_user` UUID. `lib/auth.ts` owns login/logout
+(logout revokes best-effort and always forgets locally); `lib/navigation.ts` isolates the one hard
+navigation so the session logic stays testable.
+
+Screens: `/login` (401/423 envelope messages), the `(dashboard)` shell (client guard, sidebar, header,
+logout), `/contracts` (status filter, `q` search, pagination, `sort=created_at,desc`, DRAFT `outstanding`
+as "–"), `/contracts/new` (Zod incl. NIK 16 digits, phone 9–15, money exactly scale 2, rate exactly 2
+decimal places; `planned_start_date`; one `Idempotency-Key` per mount), `/contracts/[id]` (header, badge,
+activation dialog with no date input, Jadwal/Kredit/Ledger tabs), and a minimal
+`/contracts/[id]/statement` so the Ledger link is not dead (date-range/ref-type filters and payment links
+remain T33). Write actions (`Buat Kontrak`, `Aktifkan`) are hidden for non-`ADMIN_OPERASIONAL`; that is UX
+only and the backend matrix still answers 403.
+
+Money never touches a float: `lib/decimal.ts` does validation, comparison, percent→fraction and the two
+derived schedule sums with BigInt string arithmetic; `InstallmentTable` derives `recognized_total` and
+`resolved_amount` exactly as `InstallmentBalance` defines them and documents that. Display formatting is
+isolated in `lib/format.ts` (`id-ID`, `Asia/Jakarta`, missing value = "–").
+
+CI: new independent `frontend` job (`npm ci` → lint → typecheck → test → build, Node from `.nvmrc`). The
+gitleaks generic-key rule gained one path-only allowlist for `frontend/(node_modules|.next|coverage|out)`,
+mirroring T27's build-output precedent; tracked frontend files are still scanned. `npm audit` reports 0
+high/critical and 4 moderate, all through the shadcn CLI's `ts-morph`/`minimatch` chain (dev-only); JS
+dependency scanning stays a deferred follow-up as the task records.
+
+Verification: `npm ci`, `npm run lint` (0 problems), `npm run typecheck`, `npm test` (**79 tests / 12
+files**, 2026-11-20) and `npm run build` (8 routes) pass; backend `./gradlew test --rerun-tasks` remains
+**120 suites / 926 tests / 0 failed**. The branch was based on `t35-cors-adr-023` because T35 was its
+dependency; T35 has since merged as PR #22 (`cff44de`), and `main` is merged back into this branch to clear
+PR #23's conflicts.
+
+Review remediation note (2026-11-25, same branch, PR #23): the nine Qodo findings were verified against the
+frontend, the backend matcher table and the specs; all nine were valid and are fixed here.
+(1) **Stale refresh overwrote a newer session**: a session **generation** in `lib/session.ts` is captured by
+every request and refresh, so a rotation or late response from a replaced session is rejected with
+`SESSION_CHANGED` instead of overwriting the newer operator; concurrent 401s in one session still share one
+refresh and a stale flight cannot block a newer login.
+(2) **MANAJEMEN saw the Credit tab** and (3) **the statement navigation**: both are now rendered and queried
+only for `ADMIN_OPERASIONAL`/`FINANCE` (tab, link and query `enabled`), with an access-denied page for a
+direct URL; contract detail stays available to `MANAJEMEN`.
+(4) **Money formatting lost precision** and (5) **money input exceeded `NUMERIC(19,2)`**: money and rates are
+**exact decimal strings** on the wire (ADR-024: `BigDecimalStringModule` + `OpenApiConfiguration` in the
+backend, `Money = string` and BigInt formatting in the frontend), and operator input is bounded to
+`NUMERIC(19,2)` (17 integer digits, scale 2) before submit.
+(6) **A production build silently used localhost**: it now fails without an explicit
+`NEXT_PUBLIC_API_BASE_URL`; CI builds against `https://ci-build.invalid`.
+(7) **Logout left the Query cache**: `app/providers.tsx` cancels outstanding queries and clears the cache on
+login/logout, and logout clears tokens/snapshot/cache synchronously before the `keepalive` revocation.
+(8) **Phone validation disagreed with the backend**: input mirrors `PiiHasher.normalizePhone` (strip
+non-digits, `0`→`62`) before the 9–15 digit check.
+(9) **`crypto.randomUUID()` failed outside a secure context**: the `Idempotency-Key` uses it when available
+and otherwise an RFC 4122 v4 value from `getRandomValues()`, never `Math.random()`.
+Verification: `npm ci`, `npm run lint`, `npm run typecheck`, `npm test` (**17 files / 108 tests**, 2026-11-25)
+and `npm run build` pass; the build exits 1 with the documented message when the env var is absent. Backend
+`./gradlew check` = **121 suites / 932 tests / 0 failed** (2026-11-25, after `main` was merged in; 929 before
+the merge). ADR-024, `02_TECH_SPEC.md` §2.2, `06_FRONTEND_SPEC.md` §3.1/§4 and the frontend README document
+the wire format, session and build rules.
+
+**Goal:** Stand up the Next.js application and deliver the first complete operator journey: sign in, see
+the contract book, create a DRAFT contract, open its detail and activate it.
+
+**Scope.**
+
+- `frontend/` scaffold per 06_FRONTEND_SPEC §1.2: Next.js 16 App Router (`16.4.6`, React 19) + TypeScript,
+  Tailwind + shadcn/ui, TanStack Query v5, React Hook Form + Zod, npm scripts and a pinned Node version
+  (≥ 20.9.0, which Next.js 16 requires).
+- `lib/api.ts`: `apiFetch` unwraps `{data, error}` exactly once (FE §1.3); `PUBLIC_AUTH_PATHS` never carry
+  an access token.
+- `lib/auth.ts`: in-memory access + refresh tokens, one in-flight refresh promise (FE §1.4); a 401
+  refreshes and replays once; a failed refresh clears both tokens and redirects to `/login`.
+- `/login` (FE §2.1): username/password, 401 message, 423 `ACCOUNT_LOCKED` message from the envelope.
+- `(dashboard)` layout: sidebar/navbar/auth guard; role decoded from the JWT `roles` claim (ADR-023);
+  write actions hidden or disabled for non-`ADMIN_OPERASIONAL` — UX only.
+- `/contracts` (FE §2.2): table, status filter, `q` search, pagination, `created_at DESC` default,
+  `outstanding` shown as "–" for DRAFT.
+- `/contracts/new` (FE §2.3): every field + Zod validation; "Tanggal Mulai" maps to `planned_start_date`;
+  `Idempotency-Key` generated once on mount and reused across retries; redirect to the detail page.
+- `/contracts/[id]` (FE §2.4): header, status badge, activation action (no date input) and the tabs whose
+  backend contracts already exist — Jadwal, Kredit, Ledger/statement link. The Pembayaran tab and the
+  settlement/write-off actions are T39.
+- Shared components: `MoneyDisplay` (id-ID, no decimals), `DateDisplay`, `ErrorAlert`,
+  `LoadingSpinner`, `ContractStatusBadge`, and `InstallmentTable` (FE §2.5, reused by T33).
+- CI: a `frontend` job in `.github/workflows/ci.yml` — `npm ci`, lint, typecheck, unit test, build —
+  independent of the Gradle jobs; add `frontend/node_modules`, `.next` and coverage to `.gitignore`, and
+  confirm `gitleaks dir .` stays clean (extend the path allowlist only for those build outputs, following
+  T27's precedent).
+
+**Business Rules.** 06_FRONTEND_SPEC §1–§3; ADR-006 (activation uses `planned_start_date`, is idempotent
+by state machine and takes no date input); ADR-007 (mandatory `Idempotency-Key`; a replay returns the
+stored DRAFT snapshot); ADR-015 (server-side authorization is the enforcement); ADR-022 D7 (the auth
+endpoints never carry an access token). PII is already masked by the backend — do not reconstruct or
+display raw NIK/phone.
+
+**Implementation Notes.** The wire format is snake_case; keep a thin `types/` mapping instead of
+sprinkling field names. No BFF/proxy: CORS is decided in T35 and the browser calls the API directly
+(FE §4). Next.js 16.4.6 is pinned by the spec with an exact version — re-check OSV before scaffolding and
+record the result in ADR-023; never take a different major silently, and if a new HIGH/CRITICAL advisory
+appears, move to the patched release (or the documented backport line) and say so. Node is pinned to a
+version ≥ 20.9.0.
+Money arrives from `BigDecimal`; parse it with a decimal-safe helper, never `parseFloat` for values that
+are re-submitted. Keep `frontend/` out of the Docker image and Compose; `npm run dev` is the demo path
+(T34). The frontend CI job is part of the deliverable, not an afterthought.
+
+**Dependencies:** T35; T7, T21a and T21b (DONE).
+
+**Acceptance Criteria.**
+
+- `npm ci && npm run lint && npm run typecheck && npm run test && npm run build` passes locally and in CI.
+- Login keeps both tokens in memory only; a reload forces a new login (documented behaviour).
+- An expired access token triggers exactly one refresh; concurrent 401s share that refresh.
+- The contract list, filters, search and pagination match the API; DRAFT shows "–" for outstanding.
+- Create → detail → activate works end-to-end; a retried create replays instead of duplicating.
+- A non-`ADMIN_OPERASIONAL` user sees read-only screens and cannot trigger a write from the UI; the
+  backend still answers 403 if the call is forced.
+- No token or PII reaches `localStorage`, `sessionStorage`, console logs or URLs.
+
+**Tests.** Vitest + React Testing Library for the pure logic and the risky paths: `apiFetch`
+envelope/error mapping and public-auth header suppression, `auth` single-flight refresh and
+refresh-failure logout, the create-form Zod schemas, role gating, and money/date formatting. Component
+tests for list loading/empty/error states. E2E belongs to T34. Backend suites unchanged;
+`./gradlew check` stays green.
+
+**Risks.** This is the first non-JVM code in the repo, so the Node pin and the CI job are part of the
+scope. `roles` in the JWT is UX data only — never authorization. Refresh-token rotation makes parallel
+refreshes destructive, so the single-flight promise is load-bearing. JS dependency scanning is not
+covered by OWASP Dependency-Check; `npm audit` is a candidate follow-up, not part of this task.
+
+### T33 — G3: payment, installments, statement and credit (5 pts)
+
+Status: DONE
+Estimate: 5 pts
+Decision (2026-11-25): the scope below and FE §2.6 list a "Tanggal Bayar" (paid-at, max now) and a
+"Catatan" (note) input, but `PaymentRequest` accepts only `contract_id`, `amount`, `channel`: `paid_at` is
+always the server clock (TS §2.0) and `payment` has no note column. Decided with the owner: **drop both
+inputs, no backend change**; the success view shows the server's `paid_at`. FE §2.6 is updated. FE §2.7's
+"Kontrak Ref" link has no target route yet (no `GET /payments/{id}`), so the statement shows a short `ref_id`
+and the link is T39 scope.
+Implementation note (2026-11-25, branch `t33-payment-statement-credit`; plan
+`docs/superpowers/plans/2026-11-25-t33-payment-statement-credit.md`): frontend only. New `types/payment.ts`,
+`lib/schemas/payment.ts` (positive scale-2 amount within `NUMERIC(19,2)`, four channels) and
+`hooks/usePayment.ts` (`useCreatePayment` posts with the caller's `Idempotency-Key` and invalidates the
+`["contract", id]` prefix plus `["contracts"]`). `RecordPaymentForm` keeps one key per mount and reuses it on
+every retry; a spent key (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`) disables submit and asks the operator to check
+the statement and choose "Mulai form baru", which remounts the form with a new key — the form never rotates a
+key on its own because the first attempt may have committed. `PaymentResult` renders the server's allocation
+lines in API order with period labels (`installmentLabels.ts`), the server `paid_at`, and an excess-credit
+warning. `RecordPaymentView` (route `/contracts/[id]/payments/new`, behind `RequireWrite`, which gained an
+optional message/back link) shows no form for a non-ACTIVE contract; the detail header shows "Catat
+Pembayaran" for `ADMIN_OPERASIONAL` on ACTIVE. `useStatement` takes `{refType, from, to}` and builds the API
+query (`statementPath`); `StatementView` adds Dari/Sampai/Ref type/Reset, resets to page 0 on a filter change,
+and blocks an inverted range without a request; the ref column shows `ref_type` + a short `ref_id`.
+`ApplyCreditDialog` (`ADMIN_OPERASIONAL`, ACTIVE, balance > 0) sends `{}` for a blank amount (apply all) or a
+validated amount ≤ the balance, under a per-operation `Idempotency-Key` (backend now requires it, ADR-017 addendum); `CreditPanel` labels
+applications by period. Test setup gained jsdom no-op pointer-capture/scroll polyfills so Radix Select can be driven in tests.
+The installment table itself is T32's and is reused unchanged.
+Verification: `npm run lint` (0 problems), `npm run typecheck`, `npm test` = **172 tests / 23 files / 0
+failed**, `NEXT_PUBLIC_API_BASE_URL=https://ci-build.invalid npm run build` (lists
+`/contracts/[id]/payments/new`); backend `./gradlew check` = 121 suites / 932 tests / 0 failed. Manual check in
+the browser against the Compose stack as `admin`: created and activated a test contract with a past start
+date, posted an overpayment → allocation to periods 1–2 (penalty → interest → principal) plus EXCESS with the
+warning; schedule, header outstanding and statement refreshed without a reload; apply-credit with nothing due
+showed `CREDIT_NOT_APPLICABLE` inline; the statement `ref_type=PAYMENT` filter reached the API.
+Review remediation (2026-11-25, final whole-branch review): (1) **a payment that closed the contract hid its
+own result** — the refetched CLOSED status was checked before the posted payment, so a maturity-closing
+payment showed "only ACTIVE contracts"; `RecordPaymentView` now renders the result first, regardless of the
+later contract state or a failed refetch, and `PaymentResult` drops "Catat pembayaran lain" and the
+apply-credit advice once the contract is no longer ACTIVE. (2) Credit apply now invalidates on settle, so a
+failed (possibly committed) apply reloads the balance before the next attempt, and (3) the dialog cannot be
+closed while the apply is pending. (4) A ref-type change still applies while the date range is inverted, so
+the table always matches the visible select. Each fix has a regression test that failed first. Verified:
+lint, typecheck, `npm test` = **178 tests / 23 files / 0 failed**, build; re-checked in the browser by paying a
+1-month test contract to completion (result shown, contract CLOSED).
+
+Second review remediation (2026-11-25, PR #24, CodeRabbit plus an independent review; every finding was
+verified against the code and specs first). (1) **Credit apply was not retry-safe (P1)**: TS §2.2 requires an
+`Idempotency-Key` on credit application but T14 shipped none, so a committed apply with a lost response could be
+applied again. The backend now wraps the apply in `IdempotencyService` inside its single transaction (claim,
+credit consumption, installment resolution, journal), with replay, 409 `CONFLICT` for a different body, 409
+`IDEMPOTENCY_KEY_EXPIRED` and a required header (ADR-017 addendum; the retention-window limitation is
+recorded there). The dialog keeps one key per logical operation across close/reopen, retries with the same key,
+mints a new one only after a success or an explicit "Mulai form baru", and stays mounted (with its error) when
+the refreshed balance reaches zero or the credit reload fails. (2) **Payment cache** is invalidated on settle,
+so an ambiguous failure refreshes every screen; the retry still reuses its key. (3) **Statement** no longer
+keeps the previous page as placeholder data: a new filter or page shows the loading state, never stale rows,
+and the pager is disabled while a request is in flight. (4) **Payment result** treats the contract status as
+known only when the last refetch succeeded and finished; otherwise it offers no further payment or credit
+advice and says the status is unconfirmed. Also fixed: a failed background contract refetch no longer
+unmounts the payment form (and so its key) while a contract is cached, and an expired payment key no longer
+claims the form was used with different values. Follow-up on the same PR: the balance-exceeded rejection has its
+own code (`CREDIT_EXCEEDS_BALANCE`) so the UI no longer mistakes it for a spent key and the key stays usable;
+after a definite 4xx the live balance is the ceiling again; and an unresolved apply (outcome unknown or key
+spent) stays recoverable even when the apply closed the contract or emptied the balance, because the dialog is
+gated by role only and `canStartNew` gates just a new application (a fresh form on a non-ACTIVE contract cannot submit and says why; a retry of an unresolved operation can). Verified: lint, typecheck, `npm test` = **203 tests / 23
+files / 0 failed**, build; backend `./gradlew check` = 121 suites / 939 tests / 0 failed (7 new credit-apply idempotency tests). CI for PR #24 could not run (GitHub billing), so it is not
+evidence either way.
+
+**Goal:** Complete the day-to-day servicing screens: record a payment, read the schedule, read the
+statement and inspect customer credit.
+
+**Scope.**
+
+- `/contracts/[id]/payments/new` (FE §2.6): amount, channel, paid-at (max now), note; `Idempotency-Key`
+  generated on mount; the success view shows the allocation breakdown and an excess/credit warning, with
+  a link back to the contract.
+- Installment table (FE §2.5) on the contract detail from `GET /contracts/{id}/installments`: effective
+  penalty, recognized total, resolved amount, outstanding, status badge.
+- Statement page (FE §2.7) from `GET /contracts/{id}/statement`: ledger-literal debit/credit, ref type,
+  reversal flag, date-range and ref-type filters; no running balance.
+- Credit tab from `GET /contracts/{id}/credit`: available balance and application history; the
+  apply-credit action is `ADMIN_OPERASIONAL` only (`POST …/credit/apply`, `Idempotency-Key` required since the T33 review).
+- Cache invalidation after a payment so the schedule, detail and statement never show stale values.
+
+**Business Rules.** 06_FRONTEND_SPEC §2.5–§2.7; ADR-013 A-8 (the statement is ledger-literal, with no
+running balance); ADR-009/ADR-011 (allocation and recognition are backend-owned; the UI displays, never
+computes); ADR-015/ADR-022 (role gating). `paid_at` is the server clock (TS §2.0): the response value is
+authoritative and the form's date is only the operator's intent within the API contract.
+
+**Implementation Notes.** The statement endpoint is already paginated (`page`/`size`) and supports
+`ref_type` plus inclusive `from`/`to`; use those query parameters instead of filtering client-side. The
+idempotency key stays in form state across retries; disabling submit is UX, not the guarantee. Do not add
+a payments history tab here: it needs a backend read model and belongs to T39.
+
+**Dependencies:** T32.
+
+**Acceptance Criteria.**
+
+- A payment posted from the UI appears on the installment table and the statement without a manual
+  reload.
+- The success view shows the allocation lines and flags excess credit; a replay is harmless.
+- The statement shows exactly the backend rows (debit/credit literal); filters work and there is no
+  running balance.
+- The credit balance and history match `GET …/credit`; applying credit is hidden for non-admin roles.
+- No stale schedule, detail or statement data remains after a payment.
+
+**Tests.** Vitest/RTL: payment-form validation, idempotency-key stability across retries, allocation
+rendering, statement filter wiring and credit role gating. Backend suites unchanged; `./gradlew check`
+stays green.
+
+**Risks.** Money and date formatting (id-ID grouping, no decimals, Asia/Jakarta boundaries) is the most
+likely regression; keep it in `MoneyDisplay`/`DateDisplay` with tests. The payment form's "max now" must
+use the business zone, not the browser's.
+
+### T34 — G5: demo script, seed data and README close-out (2 pts)
+
+Status: DONE
+Estimate: 2 pts
+
+Decision (2026-11-25): (1) **Relative dates (user decision).** Addendum §18 described Contract A/B as
+"pre-seeded" with historical payments. The API cannot create that: `paid_at` is always the server clock,
+ADR-004 forbids raw-SQL PII, and activation rejects a start date more than one year back
+(`MAX_BACKDATED_ACTIVATION_YEARS = 1`). The script keeps §18's terms and golden values, backdates
+`planned_start_date` relative to today in Asia/Jakarta (A: today − 70 days; B: today − 1 month), and pays
+today. §18 is amended accordingly. (2) **Node, not bash/PowerShell:** a bash script needs `jq` to read JSON,
+which the Windows dev environment lacks, while Node is already required by the frontend. (3) **Re-runnable:**
+customers are reused (fixed NIK + phone), and each run uses a per-run asset `serial_no` without a plate, so
+invariant 18 (`DUPLICATE_CONTRACT`) never fires. Every write gets a fresh `Idempotency-Key`. (4) **Opt-in
+reset:** `--reset` runs `docker compose down -v`; without it the script never deletes the volume.
+
+Implementation note (2026-11-25, branch `t34-demo-script`; plan
+`docs/superpowers/plans/2026-11-25-t34-demo-script.md`): `scripts/demo/lib.mjs` holds the helpers (Jakarta
+business date, month-end-clamped date math, BigInt-cent money, the `{data, error}` client with a
+`DemoError` that carries method/path/status/raw body, per-request and per-attempt timeouts so a hung server
+still fails, and health polling), with 17 `node:test` tests.
+`scripts/demo.mjs` runs: health → admin login → Contract B (EFFECTIVE golden schedule; an on-time
+4,769,959.90 payment allocates interest 1,125,000.00 + principal 3,644,959.90 with no penalty;
+same-key replay returns the same `payment_no` and leaves the customer credit at zero) → Contract A (FLAT golden schedule; a 2,000,000.00 payment
+pays installment 1 as penalty → interest → principal, installment 1 `PAID`, installment 2 `PARTIALLY_PAID`, installment 3 `PENDING`) →
+the statement, paged and summarized per `ref_type` with Σ debit = Σ credit → aging → role split (finance:
+statement 200, payment 403; manager: aging 200, statement 403). No new seed rows and no backend or
+frontend source change. CI `compose-smoke` runs the helper tests and the script. Both READMEs document the
+demo, the demo users and the known limitations. Verification: `node scripts/demo.mjs --reset` exit 0 on a
+fresh volume; two further plain runs against the same database exit 0 with new contract numbers; the browser
+follow-along matches (Jadwal: installment 1 `PAID`, installment 2 `PARTIALLY_PAID` with Rp 1.214.320 owed);
+backend 121 suites / 939 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 203 tests / 23 files, lint and typecheck green; demo helpers 28/28. PR #25 review: `--up`/`--reset` refuse a non-loopback base URL before any Compose command, and money fields the API must return (excess, credit balances, outstanding) fail when absent instead of reading as zero. Observation: the
+Jadwal "Denda" column shows the *remaining* penalty (ADR-019), so a paid late installment shows Denda Rp 0 and
+Terbayar above Total Tagihan. This is pre-existing T32/T33 UX, documented under frontend Known limitations.
+
+**Goal:** Make the system demonstrable from a clean checkout in one repeatable sequence.
+
+**Scope.**
+
+- Extend `R__demo_seed.sql` only where the demo needs more than the seeded users; customer and contract
+  rows are created through the API (ADR-004: never raw SQL with plaintext PII). Prefer a script that
+  calls the API over new seed rows.
+- `scripts/demo.sh` (or `.ps1`): compose up → health → login as `admin` → create contract → activate →
+  pay → read installments and statement → (optional) aging report. A fresh idempotency key per step;
+  failures abort with the response body.
+- `frontend/README.md` and the root `README.md`: how to run backend + frontend, the demo users, the demo
+  sequence and the known limitations (in-memory tokens, reload = login).
+- Optional: a read-only pass as `manager`/`finance` to demonstrate the role split.
+
+**Business Rules.** PRD scenarios 1–2, ADR-004 (demo PII through the application), ADR-007
+(idempotency), 04_GAPS_ADDENDUM §15. The demo must not require manual SQL or a pre-populated volume.
+
+**Implementation Notes.** The demo is a repeatable script, not a screenshot: assert on HTTP status and a
+few key fields. Do not add a frontend container or Compose service in this task; `npm run dev` plus the
+Compose backend is the supported path until deployment is real. Keep the script secret-free: demo
+passwords come from the seeded demo profile.
+
+**Dependencies:** T33.
+
+**Acceptance Criteria.**
+
+- From an empty database and a fresh clone, the documented commands bring the stack up and the script
+  exits 0.
+- The script proves create → activate → payment → statement, and the browser flow can be followed in
+  parallel.
+- Re-running the script does not duplicate a contract (fresh key per run, or a unique payload per run)
+  and does not fail on an existing customer or asset.
+- README matches the actual commands and ports.
+
+**Tests.** The script is the test: run it against a clean Compose stack and record the output in the task
+close note. The T32/T33 frontend tests and `./gradlew check` stay green.
+
+**Risks.** Demo data that is only representable through SQL would violate ADR-004; if a scenario needs
+data the API cannot create, raise it instead of adding plaintext rows. The script is the first thing a
+reviewer runs — a stale README is a failed deliverable.
+
