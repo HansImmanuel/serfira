@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -50,6 +51,21 @@ public interface InstallmentRepository extends JpaRepository<Installment, UUID> 
 			order by c.contractNo, i.periodNo
 			""")
 	List<Installment> findActiveContractInstallments();
+
+	/**
+	 * Every installment due in {@code [from, to]} (inclusive) on a non-DRAFT contract (ACTIVE, CLOSED or
+	 * TERMINATED), with its contract fetched: the collection-rate cohort of the outstanding report (T36,
+	 * ADR-026 D1/D5). Bounded to one month of due dates by the caller; {@code idx_installment_due_date} (V24)
+	 * serves the range so the read never scans the whole schedule table.
+	 */
+	@Query("""
+			select i from Installment i
+			join fetch i.contract c
+			where i.dueDate between :from and :to
+				and c.status <> com.serfira.contract.domain.ContractStatus.DRAFT
+			order by c.contractNo, i.periodNo
+			""")
+	List<Installment> findDueBetweenOnNonDraftContracts(@Param("from") LocalDate from, @Param("to") LocalDate to);
 
 	/**
 	 * Outstanding totals per contract for a set of contracts, in one query.

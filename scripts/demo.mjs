@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Serfira end-to-end demo (T34, Addendum §18, PRD §5 scenarios 1, 2, 3 and 6).
+// Serfira end-to-end demo (T34, Addendum §18, PRD §5 scenarios 1, 2, 3 and 6; T36 outstanding report).
 //
 //   node scripts/demo.mjs            # against a stack that is already running
 //   node scripts/demo.mjs --up       # docker compose up --build -d first
@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import {
   DemoError,
   createApiClient,
+  isRatioOrNull,
   jakartaToday,
   minusDays,
   minusMonths,
@@ -291,6 +292,26 @@ async function aging(api, token) {
   const report = await api.request("GET", `${API}/reports/aging`, { token });
   check(requireCents(report.portfolio?.total_outstanding, "aging portfolio total_outstanding") > 0n, "aging total outstanding > 0");
   ok(`aging as of ${report.as_of}: total outstanding ${report.portfolio.total_outstanding}`);
+  return report;
+}
+
+// T36 / ADR-026: the outstanding report's total must equal the aging report's portfolio total (D2), AR is a
+// part of it (D3), and a ratio is a scale-4 decimal string or null (D7).
+async function outstanding(api, token, agingReport) {
+  const report = await api.request("GET", `${API}/reports/outstanding`, { token });
+  checkMoney(report.total_outstanding, agingReport.portfolio.total_outstanding, "outstanding total vs aging portfolio total");
+  check(
+    requireCents(report.accounts_receivable, "accounts_receivable") <= requireCents(report.total_outstanding, "total_outstanding"),
+    "accounts_receivable <= total_outstanding",
+  );
+  for (const [label, ratio] of [["npl.ratio", report.npl?.ratio], ["collection.rate", report.collection?.rate]]) {
+    check(isRatioOrNull(ratio), `${label} is a scale-4 decimal string or null, got ${typeof ratio} ${JSON.stringify(ratio)}`);
+  }
+  ok(
+    `outstanding as of ${report.as_of}: total ${report.total_outstanding} (= aging), AR ${report.accounts_receivable}, ` +
+      `NPL ${report.npl.contract_count} contract(s) ratio ${report.npl.ratio}, collection MTD ${report.collection.collected}` +
+      `/${report.collection.due} rate ${report.collection.rate}, settlement cash ${report.settlement_cash.amount}`,
+  );
 }
 
 async function roleSplit(api, contract) {
@@ -309,6 +330,8 @@ async function roleSplit(api, contract) {
   const managerToken = await login(api, USERS.manager);
   await api.request("GET", `${API}/reports/aging`, { token: managerToken });
   ok("manager: aging report → 200");
+  await api.request("GET", `${API}/reports/outstanding`, { token: managerToken });
+  ok("manager: outstanding report → 200");
   await api.request("GET", `${API}/contracts/${contract.id}/statement`, { token: managerToken, expectStatus: 403 });
   ok("manager: statement → 403");
 }
@@ -339,7 +362,8 @@ async function main() {
   const b = await contractB(api, adminToken, today, tag);
   const a = await contractA(api, adminToken, today, tag);
   await statement(api, adminToken, a);
-  await aging(api, adminToken);
+  const agingReport = await aging(api, adminToken);
+  await outstanding(api, adminToken, agingReport);
   if (!options.skipRoles) {
     await roleSplit(api, a);
   }

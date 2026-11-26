@@ -86,6 +86,19 @@ Aturan dependency:
   (`contract.domain.InstallmentAging`) dan formula outstanding (`contract.domain.InstallmentBalance`) adalah
   aturan domain milik `contract`; port mengekspos snapshot per installment yang sudah terhitung sehingga
   tidak ada formula kedua (ADR-013 A-7). Bucketing dan agregasi portofolio dilakukan di `reporting`.
+- Sejak T36 (ADR-026 D8), laporan outstanding (`GET /api/v1/reports/outstanding`) menyusun metriknya dari
+  port read-only milik modul pemilik data, masing-masing dalam transaksi read-only sendiri:
+  - `reporting → contract` lewat `AgingReportSourcePort` (snapshot yang sama dengan laporan aging, kini
+    membawa `due_date` untuk AR) dan `contract.application.CollectionCohortSourcePort` (angsuran yang jatuh
+    tempo di periode, recognized total neto penyesuaian denda dan `settled_amount`).
+  - `reporting → payment` lewat `payment.application.CollectedAllocationPort` (Σ alokasi POSTED non-`EXCESS`
+    pada kohort; dibaca dari `payment_allocation`, tidak pernah dari `installment.paid_amount`).
+  - `reporting → settlement` lewat `settlement.application.SettlementCashPort` (Σ `cash_received` menurut
+    tanggal bisnis `executed_at`, Asia/Jakarta).
+  Kalkulator metrik (`reporting.application.OutstandingMetricsCalculator`) murni dan hanya mengagregasi;
+  total outstanding dan NPL dihitung dari satu lintasan snapshot aging sehingga, atas data yang sama, kedua
+  laporan selalu sama. Port-port itu tidak berbagi snapshot database, jadi saat ada penulisan finansial
+  bersamaan satu respons bisa mencampur nilai dari titik waktu berbeda; laporan ini bukan ledger.
 - Sejak T12 (E1, ADR-018) modul `settlement` baru boleh bergantung ke `contract` dan `penalty`, keduanya
   satu arah lewat **application interface** modul pemilik data (`contract` dan `penalty` tidak tahu modul
   `settlement`):

@@ -248,6 +248,9 @@ public class ResourceServerSecurityConfiguration {
 								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)
 						.requestMatchers(HttpMethod.GET, "/api/v1/reports/aging")
 								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)
+						// Outstanding report (T36, ADR-026): the same three reporting roles (Addendum §3.4).
+						.requestMatchers(HttpMethod.GET, "/api/v1/reports/outstanding")
+								.hasAnyRole(ADMIN, FINANCE, MANAJEMEN)
 						// The statement is ADMIN_OPERASIONAL/FINANCE only (Addendum §3.4; MANAJEMEN -> 403).
 						// A single-segment "*" means "/api/v1/contracts/*" above does not match "/*/statement".
 						.requestMatchers(HttpMethod.GET, "/api/v1/contracts/*/statement")

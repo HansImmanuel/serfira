@@ -7,6 +7,7 @@ import {
   jakartaToday,
   minusDays,
   isLoopbackUrl,
+  isRatioOrNull,
   minusMonths,
   requireCents,
   runTag,
@@ -75,6 +76,18 @@ test("sumMoney adds without float drift", () => {
   assert.equal(sumMoney(["0.10", "0.20"]), "0.30");
   assert.equal(sumMoney(["1125000.00", "3644959.90"]), "4769959.90");
   assert.equal(sumMoney([]), "0.00");
+});
+
+test("isRatioOrNull accepts a scale-4 decimal string or null", () => {
+  for (const ratio of ["0.0000", "0.1234", "1.0000", "12.5000", null]) {
+    assert.equal(isRatioOrNull(ratio), true, `${JSON.stringify(ratio)} is a valid ratio`);
+  }
+});
+
+test("isRatioOrNull rejects JSON numbers, other types, other scales and malformed strings", () => {
+  for (const ratio of [0.1234, 1, 0, undefined, true, ["0.1234"], "0.123", "0.12345", "0.12", "1", ".1234", "-0.1234", "0,1234", " 0.1234", "abc", ""]) {
+    assert.equal(isRatioOrNull(ratio), false, `${typeof ratio} ${JSON.stringify(ratio)} is not a valid ratio`);
+  }
 });
 
 test("runTag is a UTC timestamp", () => {

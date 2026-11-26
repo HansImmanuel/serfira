@@ -262,6 +262,7 @@ with `POST /api/v1/auth/logout` (idempotent). Five consecutive failed logins loc
 | `POST` | `/api/v1/settlements`                 | Execute a quoted settlement (`Idempotency-Key` required)           |
 | `POST` | `/api/v1/contracts/{id}/write-off`    | Write off an active contract (`Idempotency-Key` required)          |
 | `GET`  | `/api/v1/reports/aging`               | Portfolio and per-contract aging buckets                           |
+| `GET`  | `/api/v1/reports/outstanding`         | ADR-026 metrics: outstanding, AR, NPL, collection rate             |
 
 Every mutation above is restricted to `ADMIN_OPERASIONAL`; read endpoints follow the role matrix
 (see Security below). Login, refresh and logout are open to all three business roles and are the only
