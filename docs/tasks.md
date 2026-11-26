@@ -17,20 +17,21 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `53a3890` (PR #25, T34 demo script, merged). **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `b6dfc24` (PR #28, T36 outstanding report, merged); T37 on `t37-report-pages`. **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
-implemented, and `node scripts/demo.mjs` proves the operator flow end to end against the Compose stack.
+implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
+operator flow end to end against the Compose stack.
 **Current sprint: Sprint 8 (IN PROGRESS, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (`t36-reporting-outstanding`); T37 is next.
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (`t37-report-pages`); T38 is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t36-reporting-outstanding`) = **126 suites / 968 tests / 0 failed** (T34 close 121/939; T36 added the
-outstanding report's unit tests, `OutstandingReportIT` and its role-matrix row). Frontend `npm test`
-(2026-11-25, branch `t34-demo-script`) = **203 tests / 23 files / 0 failed** (T33 close 178; PR #24's
-review fixes added the rest), plus green `npm run lint` and `npm run typecheck`; `npm run build` was green
-at T33 (the production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo
-helpers `node --test "scripts/demo/*.test.mjs"` = **28 tests / 0 failed**; `node scripts/demo.mjs --reset`
+`t37-report-pages`) = **126 suites / 969 tests / 0 failed** (T34 close 121/939; T36 added the
+outstanding report's tests; T37 the aging IT's customer-name case). Frontend `npm test` (2026-11-26, branch
+`t37-report-pages`) = **234 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar
+and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
+build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
+`node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
 exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
 for a GitHub billing reason, not a test failure.
 
@@ -64,6 +65,8 @@ for a GitHub billing reason, not a test failure.
   (the API still answers 403). T33 adds `/contracts/[id]/payments/new` (amount + channel; the server's
   `paid_at`; allocation and excess-credit result), statement `ref_type`/`from`/`to` filters sent to the
   API, and credit apply from the Kredit tab; every write invalidates the `["contract", id]` query prefix.
+  T37 adds `/reports/aging` and `/reports/outstanding` (a "Laporan" sidebar group for all three roles):
+  the summary row and cards are the API's values, formatted only, and the aging rows carry `customer_name`.
 - PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
   search (ADR-004); rotation is **T28a/T28b** (Sprint 8).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
@@ -126,6 +129,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T33   | Frontend G3: payment form + allocation result, statement filters, credit apply; no `paid_at`/note input     | 06_FRONTEND_SPEC §2.6–§2.7, `t33-payment-statement-credit` |
 | T34   | G5 demo: `scripts/demo.mjs` end-to-end API demo (relative dates), CI compose-smoke run, README close-out    | Addendum §18 (amended), `t34-demo-script`               |
 | T36   | G1 reporting metrics: `GET /reports/outstanding` (outstanding, AR, NPL, collection rate, settlement cash), V24 | ADR-026, `t36-reporting-outstanding`                    |
+| T37   | G4 report pages `/reports/aging` and `/reports/outstanding`; `customer_name` on aging rows                     | ADR-026, FE §2.9/§2.10, `t37-report-pages`              |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -159,7 +163,7 @@ without losing data.
 **Scope (14 pts — a deliberate one-point stretch over the 13-point ceiling):**
 
 - T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
-- T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — TODO
+- T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
 - T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — TODO
 - T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — TODO
 - T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
@@ -336,8 +340,33 @@ endpoint that reconciles with the aging report.
 
 ### T37 — G4: frontend report pages and customer name in the aging API (3 pts)
 
-Status: TODO
+Status: DONE
 Estimate: 3 pts
+
+Implementation note (2026-11-26, branch `t37-report-pages`; plan
+`docs/superpowers/plans/2026-11-26-t37-report-pages.md`): the aging rows carry `customer_name`, and the
+browser has `/reports/aging` and `/reports/outstanding` under a "Laporan" sidebar group for the three
+reporting roles. Decisions:
+- **Name through the `contract` port, as scalars.** `ContractRepository.findActiveContractCustomerNames()`
+  selects `c.id` and `cu.fullName` only, so no `Customer` is hydrated and NIK/phone are never decrypted to
+  label a row. `AgingReportSourceService` now reads at `REPEATABLE_READ`, so the installments, penalty
+  adjustments and names share one PostgreSQL snapshot; a missing name throws instead of dropping a row.
+- **`as_of` is never sent.** The read-only "Per tanggal" field shows the response's `as_of`; the backend
+  defaults to its own today, so a browser in another zone cannot ask for the wrong day (ADR-013 A-6).
+- **No browser arithmetic.** The summary row is the API's `portfolio`; the cards are the T36 values,
+  formatted only. Ratios use the new `formatRatioPercent` (`"0.0150"` → `1,50%`, BigInt, no float); a
+  `null` ratio renders the app's empty dash "–" (FE §2.10 updated). The NPL badge is `dpd_over_90` not
+  being a zero string (ADR-026 D4). The aging API sends an empty bucket as `"0"`, which the test covers.
+- **Shared table.** `AgingContractTable` serves both pages (portfolio summary row on the aging page, NPL
+  badge on the outstanding page). Cards and table are separate queries that load and fail independently.
+  While another page loads, the previous response stays as placeholder data so the summary row and
+  `as_of` stay on screen, but its rows render as skeletons, never as the new page's rows (final review).
+- **Verification:** backend `./gradlew check --rerun-tasks` = 126 suites / 969 tests / 0 failed (new
+  `AgingReportIT.everyRowCarriesTheCustomerNameAndNoOtherPii`). Frontend `npm test` = 234 tests / 27 files
+  / 0 failed; `lint`, `typecheck` and `build` (with `NEXT_PUBLIC_API_BASE_URL`) green. Demo helpers 30/30;
+  `node scripts/demo.mjs --up` exits 0. Both pages checked in the browser against the Compose stack as
+  `admin`, `finance` and `manager`: summary row = API `portfolio`, cards = API values, no request carries
+  `as_of`. The demo book has no contract past 90 DPD, so the NPL badge is proven by component tests only.
 
 **Goal:** Let an operator, finance user or manager read the aging and outstanding reports in the browser.
 The pages show numbers the backend computed and never compute their own.
@@ -367,7 +396,7 @@ The pages show numbers the backend computed and never compute their own.
 
 **Business Rules.**
 
-- ADR-026: what each card means; a `null` ratio displays as "—".
+- ADR-026: what each card means. Null-ratio display: FE §2.10.
 - ADR-013 A-6: `as_of` locked to today.
 - ADR-024 and FE §3.1: money and ratios stay decimal strings, and percentages are formatted with
   `lib/decimal.ts`/`lib/format.ts`, never `Number`/`parseFloat`.
@@ -392,7 +421,7 @@ snapshot with the customer name).
 - Both pages render against the Compose stack for `ADMIN_OPERASIONAL`, `FINANCE` and `MANAJEMEN`.
 - The aging page never sends an `as_of` other than today.
 - The summary row equals the API's portfolio buckets.
-- Every card shows the T36 value unchanged, apart from formatting. A `null` ratio renders "—".
+- Every card shows the T36 value unchanged, apart from formatting. A `null` ratio renders "–".
 - The NPL badge appears exactly on rows with `dpd_over_90 > 0`.
 - The aging API returns `customer_name` on every row. The existing aging IT and `EndpointRoleMatrixIT` stay
   green.

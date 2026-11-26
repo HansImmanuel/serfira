@@ -100,7 +100,8 @@ frontend/
 - `/auth/login`, `/auth/refresh` and `/auth/logout` never carry an access token.
 - `roles` from the JWT decides which buttons and tabs are shown (UX only). The backend's role matrix is the
   enforcement; a forced call still answers 403. Credit and the ledger statement are limited to
-  `ADMIN_OPERASIONAL`/`FINANCE`; `MANAJEMEN` sees contract detail and the schedule only.
+  `ADMIN_OPERASIONAL`/`FINANCE`; `MANAJEMEN` sees contract detail and the schedule only. The **Laporan**
+  pages (aging, outstanding) are offered to all three roles.
 
 ## Money and dates
 
@@ -124,7 +125,8 @@ Open http://localhost:3000, log in as `admin` / `Admin123!` (Addendum §18.3, de
 search for the contract number the script printed. The Jadwal tab shows installment 1 `PAID` and
 installment 2 `PARTIALLY_PAID`. The Ledger tab and **Rekening koran** show the activation, billing, penalty
 and payment rows. Logging in as `finance` or `manager` shows the role split: `manager` has no Kredit,
-Ledger or statement view.
+Ledger or statement view. **Laporan → Aging** and **Laporan → Outstanding** show the reports to all three
+users; the NPL badge marks contracts with an amount more than 90 days past due.
 
 ## Known limitations
 
@@ -132,8 +134,7 @@ Ledger or statement view.
 - **The Denda column shows the penalty still owed**, not the gross penalty charged (ADR-019). For a late
   installment that has been paid, Denda is `Rp 0` and Terbayar can exceed Total Tagihan, because the paid
   amount includes the penalty.
-- **Not built yet:** the payments-history tab and the settlement and write-off dialogs (T39), and the
-  dashboard and report pages (T36/T37).
+- **Not built yet:** the payments-history tab and the settlement and write-off dialogs (T39).
 - **No frontend container.** The supported path is `npm run dev` against the Compose backend; a
   production build needs `NEXT_PUBLIC_API_BASE_URL` (above).
 

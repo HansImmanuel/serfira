@@ -3,12 +3,15 @@ package com.serfira.contract.application;
 import com.serfira.contract.domain.Installment;
 import com.serfira.contract.domain.InstallmentAging;
 import com.serfira.contract.domain.InstallmentBalance;
+import com.serfira.contract.infrastructure.ContractCustomerName;
+import com.serfira.contract.infrastructure.ContractRepository;
 import com.serfira.contract.infrastructure.InstallmentRepository;
 import com.serfira.penalty.application.EffectivePenaltyPort;
 import com.serfira.penalty.application.InstallmentEffectivePenalty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -39,18 +42,27 @@ import java.util.stream.Collectors;
  * penalty}, 02_TECH_SPEC.md §1) in one batch call for all ACTIVE contracts (ADR-019 F3). A
  * fully-waived-but-otherwise-paid installment therefore nets to zero outstanding and no longer lands in an
  * aging bucket, agreeing with the payment-receivable snapshot instead of reporting gross penalty.
+ *
+ * <p>Each row also carries the customer's {@code full_name} (T37), read as scalars by
+ * {@link ContractRepository#findActiveContractCustomerNames()} so no PII column is decrypted. The read runs at
+ * {@code REPEATABLE_READ}: the installments, the penalty adjustments and the names are separate statements, and
+ * one PostgreSQL snapshot keeps them consistent, so a contract that closes mid-read cannot leave an installment
+ * without its name. A read-only transaction at this level never fails with a serialization error.
  */
 @Service
-@Transactional(readOnly = true)
+@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
 public class AgingReportSourceService implements AgingReportSourcePort {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(AgingReportSourceService.class);
 
 	private final InstallmentRepository installments;
+	private final ContractRepository contracts;
 	private final EffectivePenaltyPort effectivePenalty;
 
-	public AgingReportSourceService(InstallmentRepository installments, EffectivePenaltyPort effectivePenalty) {
+	public AgingReportSourceService(InstallmentRepository installments, ContractRepository contracts,
+			EffectivePenaltyPort effectivePenalty) {
 		this.installments = installments;
+		this.contracts = contracts;
 		this.effectivePenalty = effectivePenalty;
 	}
 
@@ -59,6 +71,10 @@ public class AgingReportSourceService implements AgingReportSourcePort {
 		Objects.requireNonNull(asOf, "asOf");
 		List<Installment> active = installments.findActiveContractInstallments();
 		Map<UUID, BigDecimal> adjustments = penaltyAdjustmentsByInstallment(active);
+		Map<UUID, String> customerNames = new HashMap<>();
+		for (ContractCustomerName name : contracts.findActiveContractCustomerNames()) {
+			customerNames.put(name.getContractId(), name.getFullName());
+		}
 		List<InstallmentAgingSnapshot> snapshots = new ArrayList<>(active.size());
 		for (Installment installment : active) {
 			BigDecimal adjustment = adjustments.getOrDefault(installment.getId(), BigDecimal.ZERO);
@@ -79,8 +95,13 @@ public class AgingReportSourceService implements AgingReportSourcePort {
 			}
 			int daysPastDue = InstallmentAging.daysPastDue(installment.getDueDate(),
 					installment.getContract().getGracePeriodDays(), asOf);
-			snapshots.add(new InstallmentAgingSnapshot(installment.getContract().getId(),
-					installment.getContract().getContractNo(), installment.getDueDate(), daysPastDue, outstanding));
+			UUID contractId = installment.getContract().getId();
+			String customerName = customerNames.get(contractId);
+			if (customerName == null) {
+				throw new IllegalStateException("no customer name for ACTIVE contract " + contractId);
+			}
+			snapshots.add(new InstallmentAgingSnapshot(contractId, installment.getContract().getContractNo(),
+					customerName, installment.getDueDate(), daysPastDue, outstanding));
 		}
 		return List.copyOf(snapshots);
 	}

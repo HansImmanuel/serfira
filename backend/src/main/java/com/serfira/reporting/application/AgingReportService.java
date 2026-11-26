@@ -82,7 +82,7 @@ public class AgingReportService {
 		Map<UUID, ContractAccumulator> byContract = new LinkedHashMap<>();
 		for (InstallmentAgingSnapshot snapshot : snapshots) {
 			ContractAccumulator accumulator = byContract.computeIfAbsent(snapshot.contractId(),
-					id -> new ContractAccumulator(id, snapshot.contractNo()));
+					id -> new ContractAccumulator(id, snapshot.contractNo(), snapshot.customerName()));
 			accumulator.breakdown().add(snapshot.daysPastDue(), snapshot.outstanding());
 		}
 		return List.copyOf(byContract.values());
@@ -96,7 +96,7 @@ public class AgingReportService {
 		int to = Math.min(from + size, total);
 		List<ContractAgingRow> rows = new ArrayList<>(to - from);
 		for (ContractAccumulator contract : perContract.subList(from, to)) {
-			rows.add(new ContractAgingRow(contract.contractId(), contract.contractNo(),
+			rows.add(new ContractAgingRow(contract.contractId(), contract.contractNo(), contract.customerName(),
 					AgingBucketsResponse.from(contract.breakdown())));
 		}
 		return PageResponse.of(rows, page, size, total, totalPages);
@@ -107,11 +107,13 @@ public class AgingReportService {
 
 		private final UUID contractId;
 		private final String contractNo;
+		private final String customerName;
 		private final AgingBreakdown breakdown = new AgingBreakdown();
 
-		private ContractAccumulator(UUID contractId, String contractNo) {
+		private ContractAccumulator(UUID contractId, String contractNo, String customerName) {
 			this.contractId = contractId;
 			this.contractNo = contractNo;
+			this.customerName = customerName;
 		}
 
 		private UUID contractId() {
@@ -120,6 +122,10 @@ public class AgingReportService {
 
 		private String contractNo() {
 			return contractNo;
+		}
+
+		private String customerName() {
+			return customerName;
 		}
 
 		private AgingBreakdown breakdown() {

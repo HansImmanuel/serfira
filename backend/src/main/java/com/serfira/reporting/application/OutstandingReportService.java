@@ -18,11 +18,12 @@ import java.util.UUID;
  * the data and hands their values to {@link OutstandingMetricsCalculator}. Read-only — the report writes nothing.
  *
  * <p>Not {@code @Transactional}: each port reads inside its own read-only transaction, as
- * {@link AgingReportService} does, so the reads share no database snapshot (and under READ COMMITTED not even
- * the statements of one port do). Any number of payments, voids, credit applications, settlements, penalty
- * accruals or adjustments can commit between them, so under concurrent financial writes one response can mix
- * values read at different points in time, and its metrics need not reconcile with each other. That is accepted
- * because the report is not a ledger (T36 implementation notes).
+ * {@link AgingReportService} does, so the ports share no database snapshot with each other. (The aging source
+ * port reads its own statements at REPEATABLE_READ, so they agree among themselves; the other ports read at
+ * READ COMMITTED, where not even one port's statements share a snapshot.) Any number of payments, voids, credit
+ * applications, settlements, penalty accruals or adjustments can commit between them, so under concurrent
+ * financial writes one response can mix values read at different points in time, and its metrics need not
+ * reconcile with each other. That is accepted because the report is not a ledger (T36 implementation notes).
  */
 @Service
 public class OutstandingReportService {

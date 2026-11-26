@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDate, formatDateTime, formatMoney } from "./format";
+import { EMPTY_VALUE, formatDate, formatDateTime, formatMoney, formatRatioPercent } from "./format";
 
 describe("formatMoney", () => {
   it("formats rupiah with id-ID grouping and no decimals", () => {
@@ -70,5 +70,36 @@ describe("formatDateTime", () => {
 
   it("renders a missing timestamp as the documented dash", () => {
     expect(formatDateTime(null)).toBe("–");
+  });
+});
+
+describe("formatRatioPercent", () => {
+  it("turns a scale-4 fraction into an id-ID percent with two decimals", () => {
+    expect(formatRatioPercent("0.0150")).toBe("1,50%");
+    expect(formatRatioPercent("0.4393")).toBe("43,93%");
+    expect(formatRatioPercent("0.0005")).toBe("0,05%");
+  });
+
+  it("renders zero and one hundred percent", () => {
+    expect(formatRatioPercent("0.0000")).toBe("0,00%");
+    expect(formatRatioPercent("1.0000")).toBe("100,00%");
+  });
+
+  it("groups thousands and never clamps above one", () => {
+    expect(formatRatioPercent("12.5000")).toBe("1.250,00%");
+  });
+
+  it("pads a fraction coarser than four places", () => {
+    expect(formatRatioPercent("0.015")).toBe("1,50%");
+  });
+
+  it("keeps every digit beyond float precision", () => {
+    expect(formatRatioPercent("123456789012345.0000")).toBe("12.345.678.901.234.500,00%");
+  });
+
+  it("renders a null ratio (zero denominator) and malformed input as the empty dash", () => {
+    for (const value of [null, undefined, "abc", "-0.0100", "0.12345", ""]) {
+      expect(formatRatioPercent(value)).toBe(EMPTY_VALUE);
+    }
   });
 });

@@ -357,14 +357,19 @@ browser. Rentang dengan tanggal awal setelah tanggal akhir ditolak di form tanpa
 ### 2.9 `/reports/aging` — Laporan Aging
 **Filter:** as-of date (default today). ADR-013 (menutup A-6): hanya `today` yang valid pada Phase 1, tidak
 ada rekonstruksi historis — nilai lain ditolak backend dengan `400 INVALID_AS_OF_DATE`. UI mengunci filter
-ke hari ini (read-only atau disabled) sampai historical `as_of` benar-benar didukung.
+ke hari ini sampai historical `as_of` benar-benar didukung: field "Per tanggal" read-only menampilkan `as_of`
+dari respons, dan request **tidak pernah mengirim** `as_of` (backend memakai hari ini, Asia/Jakarta), sehingga
+browser di zona waktu lain tidak bisa meminta tanggal yang salah (T37).
 
 **Tampilan:** tabel dengan kolom aging bucket, dihitung per installment lalu dijumlahkan per kontrak
 (ADR-013, menutup A-7):
 | Contract No | Customer | Outstanding | Current | 1-30 DPD | 31-60 DPD | 61-90 DPD | >90 DPD |
 |---|---|---|---|---|---|---|---|
 
-Hanya kontrak `ACTIVE` yang tampil. **Summary baris total** di atas tabel.
+Hanya kontrak `ACTIVE` yang tampil. Kolom Customer berasal dari `customer_name` baris aging (dibawa lewat port
+`contract`; NIK dan telepon tidak pernah muncul di laporan). **Summary baris total** di atas baris kontrak
+berasal dari `portfolio` respons, tidak pernah dijumlahkan dari halaman yang sedang tampil. Paging
+server-side (`page`, `size=20`).
 
 ---
 
@@ -372,7 +377,8 @@ Hanya kontrak `ACTIVE` yang tampil. **Summary baris total** di atas tabel.
 **Tampilan:** summary cards + tabel.
 
 Sumber: `GET /api/v1/reports/outstanding` (T36). Definisi ada di **ADR-026**. Browser tidak menghitung
-metrik apa pun: semua angka diformat apa adanya dari API, dan rasio `null` tampil sebagai "—".
+metrik apa pun: semua angka diformat apa adanya dari API (rasio lewat `formatRatioPercent`, `"0.0150"` →
+`1,50%`), dan rasio `null` tampil sebagai tanda kosong aplikasi "–" (`EMPTY_VALUE`).
 
 **Cards:**
 - Total Outstanding

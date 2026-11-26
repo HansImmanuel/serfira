@@ -148,7 +148,7 @@ class OutstandingMetricsCalculatorTest {
 
 	private static InstallmentAgingSnapshot owed(UUID contractId, LocalDate dueDate, int daysPastDue,
 			String outstanding) {
-		return new InstallmentAgingSnapshot(contractId, CONTRACT_NO, dueDate, daysPastDue, new BigDecimal(outstanding));
+		return new InstallmentAgingSnapshot(contractId, CONTRACT_NO, "Budi Santoso", dueDate, daysPastDue, new BigDecimal(outstanding));
 	}
 
 	private static CohortReceivableSnapshot cohort(String recognizedTotal, String settled) {
