@@ -198,7 +198,11 @@ class OutboxEventsIT {
 	void voidingAnAlreadyVoidedPaymentWritesNoSecondEvent() throws Exception {
 		UUID contractId = createAndActivate(12);
 		UUID paymentId = paymentId(pay(contractId, "pay-void-twice", PERIOD_TOTAL_12));
-		voidPayment(paymentId, "void-first", "{}");
+		// The first void must really happen, or the "fresh key" call below would perform it and the test would
+		// never reach the already-VOIDED no-op it is about.
+		assertThat(voidPayment(paymentId, "void-first", "{}").getResponse().getStatus()).isEqualTo(200);
+		assertThat(rows(paymentId).stream().filter(row -> "PaymentVoided".equals(row.get("event_type"))))
+				.hasSize(1);
 
 		MvcResult again = voidPayment(paymentId, "void-second-fresh-key", "{}");
 

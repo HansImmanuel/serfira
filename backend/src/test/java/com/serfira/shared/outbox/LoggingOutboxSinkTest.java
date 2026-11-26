@@ -28,6 +28,7 @@ class LoggingOutboxSinkTest {
 
 	private final Logger logger = (Logger) LoggerFactory.getLogger(LoggingOutboxSink.class);
 	private final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+	private Level previousLevel;
 
 	private final UUID aggregateId = UUID.randomUUID();
 	private final OutboxEvent event = new OutboxEvent(UUID.randomUUID(), OutboxAggregateType.CONTRACT, aggregateId,
@@ -37,12 +38,14 @@ class LoggingOutboxSinkTest {
 	void attach() {
 		appender.start();
 		logger.addAppender(appender);
+		previousLevel = logger.getLevel();
 		logger.setLevel(Level.INFO);
 	}
 
 	@AfterEach
 	void detach() {
 		logger.detachAppender(appender);
+		logger.setLevel(previousLevel);
 	}
 
 	@Test

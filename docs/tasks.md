@@ -460,7 +460,8 @@ Decisions:
   `SettlementExecuted` each precede the `ContractClosed` they cause. Assumes no backward wall-clock step
   between the two writes (ADR-027 D4). No migration.
 - **One MATURITY site.** `ContractClosed` is written in `closeWhenEveryInstallmentIsPaid` and
-  `SettlementCloseService`; the first also covers a penalty waiver that clears the last amount.
+  `SettlementCloseService`; the first also covers a penalty waiver that clears the last amount (defensive:
+  the penalty-first waterfall means no API flow reaches it today, so a unit test pins it).
 - **`PaymentVoidPort.applyVoidRecomputation` now returns whether it reopened** a MATURITY close, for
   `contract_reopened`.
 - **Publisher:** scheduler → `LockedOutboxPublisherJob` (lock `outbox-publisher`, every 5 s) →
@@ -831,6 +832,8 @@ Sprint 8b = 2 pts (T39), or 5 pts if T28b slips.
 | Fix TS §7 repo structure (X-9)                                                              | Documentation only.                                                                                                                                        |
 | Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | Deployment concern. No deployment exists yet.                                                                                                              |
 | `outbox_events` retention for `SENT` rows                                                   | T38 drains events but never deletes them. Same shape as T18's keyset delete; revisit once a real broker or a volume concern exists. |
+| Outbox retry backoff for a broker sink                                                      | T38 retries a refused event every tick (10 × 5 s ≈ 50 s, then `FAILED`; manual re-drive in ADR-027 D5). Fine for the log sink, which practically cannot fail; a broker outage longer than a minute would fail every event written in it. Add backoff (e.g. a `next_attempt_at`) with the broker. |
+| Outbox claim guard for rows an instance cannot read                                         | A row with an `event_type`/`aggregate_type` unknown to an older instance (rolling deploy) fails the entity-mapped claim on every tick and never reaches `FAILED` (ADR-027 D5). Single instance today; needs a per-row guard before a multi-version deployment. |
 | Historical `as_of` / metric trend snapshots                                                 | ADR-013 A-6 and ADR-026 keep reports at today only; trends need a snapshot store.                                                                         |
 | `refresh_token` retention / cleanup job                                                     | Rotation inserts a row per refresh and revoked rows are never deleted (~96 rows per user per day at a 15-minute access token). Same shape as T18's keyset delete on `expires_at`, own ShedLock lock, one `job_run` row. Not needed for T21b; schedule it with the reporting work. |
 

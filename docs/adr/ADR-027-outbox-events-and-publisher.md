@@ -39,7 +39,9 @@ payload starts with `schema_version: 1`. The event id is the outbox row id.
 
 - The MATURITY close has one site, so one emission point covers a closing payment, a closing credit
   application, and a penalty waiver that clears the last amount owed (`InstallmentStatusRecomputeService`
-  reuses the same method).
+  reuses the same method). The waiver case is defensive: the allocation waterfall pays penalty first, so no
+  API flow leaves penalty as the only amount owed today (see `PenaltyAdjustmentIT`). It is pinned by a unit
+  test on the shared site, not end to end.
 - A write-off emits `ContractWrittenOff` only; it is not a `close()`.
 - An idempotent replay (ADR-017) returns the stored response without running the operation, so it writes
   nothing. A repeat activation of an ACTIVE contract, and a void of an already-VOIDED payment, are no-ops
@@ -91,6 +93,16 @@ event id and must not rely on cross-aggregate order for correctness.
   failure, so a refused event retries on the next tick instead of spending its budget in one loop.
 - **At-least-once.** A crash after the sink accepted an event but before the `SENT` commit re-delivers it.
   Consumers deduplicate by event id. Order is best-effort once a row has been retried.
+- **Re-driving a `FAILED` row** is a manual operation once the sink's cause is fixed:
+  `UPDATE outbox_events SET status = 'PENDING', retry_count = 0 WHERE id = …` (or `WHERE status = 'FAILED'`).
+  The next tick publishes it; consumers deduplicate if an earlier attempt did reach them. The retry budget
+  (`max-retries` 10 at a five-second cadence, about 50 seconds) has no backoff. That suits the log sink, which
+  practically cannot fail; a broker sink needs backoff before it ships (Deferred).
+- **A row that cannot be loaded blocks the claim.** The claim maps rows to the `OutboxEvent` entity, so a row
+  this instance cannot read — for example an `event_type` added by a newer version during a rolling deploy —
+  fails the whole batch on every tick, before any per-event retry, and never reaches `FAILED` or `job_run`.
+  It is visible only as the scheduler's error log. With a single instance today this cannot happen; a
+  multi-version deployment needs a per-row guard first (Deferred).
 
 ### D6 — `job_run` policy
 

@@ -8,8 +8,6 @@ import org.springframework.data.repository.query.Param;
 
 public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> {
 
-	List<OutboxEvent> findByAggregateIdOrderByCreatedAtAscIdAsc(UUID aggregateId);
-
 	/**
 	 * Locks and returns up to {@code limit} {@code PENDING} rows in publish order (ADR-027). {@code SKIP LOCKED}
 	 * makes a concurrent claimer take the next rows instead of waiting for, or re-reading, these.
