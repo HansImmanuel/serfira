@@ -9,6 +9,7 @@ import com.serfira.ledger.application.LedgerPostingService;
 import com.serfira.ledger.domain.LedgerRefType;
 import com.serfira.payment.api.PaymentResponse;
 import com.serfira.payment.api.VoidPaymentRequest;
+import com.serfira.payment.application.event.PaymentVoidedPayload;
 import com.serfira.payment.domain.AllocationType;
 import com.serfira.payment.domain.Payment;
 import com.serfira.payment.domain.PaymentAllocation;
@@ -25,6 +26,9 @@ import com.serfira.shared.error.PaymentNotVoidableException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
+import com.serfira.shared.outbox.OutboxAggregateType;
+import com.serfira.shared.outbox.OutboxEventType;
+import com.serfira.shared.outbox.OutboxWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -89,12 +93,13 @@ public class PaymentVoidApplicationService {
 	private final ContractCreditPort contractCredit;
 	private final LedgerPostingService ledger;
 	private final IdempotencyService idempotency;
+	private final OutboxWriter outbox;
 	private final Clock clock;
 
 	public PaymentVoidApplicationService(PaymentRepository payments, PaymentAllocationRepository allocations,
 			PaymentVoidIdempotencyRepository voidIdempotency, PaymentVoidPort contractVoid,
 			ContractCreditPort contractCredit, LedgerPostingService ledger, IdempotencyService idempotency,
-			Clock clock) {
+			OutboxWriter outbox, Clock clock) {
 		this.payments = payments;
 		this.allocations = allocations;
 		this.voidIdempotency = voidIdempotency;
@@ -102,6 +107,7 @@ public class PaymentVoidApplicationService {
 		this.contractCredit = contractCredit;
 		this.ledger = ledger;
 		this.idempotency = idempotency;
+		this.outbox = outbox;
 		this.clock = clock;
 	}
 
@@ -168,7 +174,8 @@ public class PaymentVoidApplicationService {
 		//    contract set each installment's paid_at to its first surviving resolving payment.
 		Map<UUID, BigDecimal> recomputedPaid = remainingResolvedByInstallment(affectedInstallmentIds);
 		Map<UUID, OffsetDateTime> earliestResolving = earliestResolvingByInstallment(affectedInstallmentIds);
-		contractVoid.applyVoidRecomputation(contractId, recomputedPaid, earliestResolving, voidedAt);
+		boolean contractReopened =
+				contractVoid.applyVoidRecomputation(contractId, recomputedPaid, earliestResolving, voidedAt);
 
 		// 3. Reverse the payment's EXCESS credit when it is still entirely AVAILABLE; reject (409) otherwise.
 		Set<UUID> excessAllocationIds = excessAllocationIds(paymentAllocations);
@@ -177,6 +184,11 @@ public class PaymentVoidApplicationService {
 		// 4. Post the one mirrored reversal journal (reuses the original PAYMENT (ref_type, ref_id)).
 		ledger.postReversal(LedgerRefType.PAYMENT, payment.getId(), voidedAt,
 				"Void of payment " + payment.getPaymentNo());
+
+		// ADR-027: only a performed reversal reaches this point; the already-VOIDED no-op above and an
+		// idempotent replay write no event. The void reason is free text and stays out of the payload.
+		outbox.append(OutboxAggregateType.PAYMENT, payment.getId(), OutboxEventType.PaymentVoided,
+				PaymentVoidedPayload.of(payment, contractReopened));
 
 		LOGGER.info("Voided payment {} (id={}, contract={})", payment.getPaymentNo(), payment.getId(), contractId);
 		return PaymentResponse.fromVoided(payment, paymentAllocations);

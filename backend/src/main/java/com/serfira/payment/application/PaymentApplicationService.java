@@ -15,6 +15,7 @@ import com.serfira.ledger.domain.LedgerPostingLine;
 import com.serfira.ledger.domain.LedgerRefType;
 import com.serfira.payment.api.PaymentRequest;
 import com.serfira.payment.api.PaymentResponse;
+import com.serfira.payment.application.event.PaymentReceivedPayload;
 import com.serfira.payment.domain.AllocationType;
 import com.serfira.payment.domain.Payment;
 import com.serfira.payment.domain.PaymentAllocation;
@@ -35,6 +36,9 @@ import com.serfira.shared.error.IdempotencyKeyExpiredException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
+import com.serfira.shared.outbox.OutboxAggregateType;
+import com.serfira.shared.outbox.OutboxEventType;
+import com.serfira.shared.outbox.OutboxWriter;
 import com.serfira.shared.money.DecimalBounds;
 import com.serfira.shared.observability.LogContext;
 
@@ -120,12 +124,13 @@ public class PaymentApplicationService {
 	private final DocumentNumberGenerator documentNumbers;
 	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
+	private final OutboxWriter outbox;
 	private final Clock clock;
 
 	public PaymentApplicationService(PaymentRepository payments, PaymentAllocationRepository allocations,
 			InstallmentReceivablePort receivables, InstallmentBillingPort billing, PenaltyAccrualPort penalty,
 			ContractCreditPort contractCredit, DocumentNumberGenerator documentNumbers,
-			IdempotencyService idempotency, LedgerPostingService ledger, Clock clock) {
+			IdempotencyService idempotency, LedgerPostingService ledger, OutboxWriter outbox, Clock clock) {
 		this.payments = payments;
 		this.allocations = allocations;
 		this.receivables = receivables;
@@ -135,6 +140,7 @@ public class PaymentApplicationService {
 		this.documentNumbers = documentNumbers;
 		this.idempotency = idempotency;
 		this.ledger = ledger;
+		this.outbox = outbox;
 		this.clock = clock;
 	}
 
@@ -197,6 +203,10 @@ public class PaymentApplicationService {
 				.map(line -> PaymentAllocation.of(payment, line))
 				.toList());
 		allocations.flush();
+		// ADR-027: written before the resolution, which may close the contract, so a closing payment's
+		// PaymentReceived precedes its ContractClosed. A replay never reaches this method, so it writes nothing.
+		outbox.append(OutboxAggregateType.PAYMENT, payment.getId(), OutboxEventType.PaymentReceived,
+				PaymentReceivedPayload.of(payment, snapshot.contractNo(), allocation.excessAmount()));
 
 		receivables.applyPaymentResolution(snapshot.contractId(), resolvedByInstallment(allocation), paidAt);
 		ledger.post(LedgerPosting.of(LedgerRefType.PAYMENT, payment.getId(), paidAt,

@@ -71,7 +71,7 @@ public class PaymentVoidService implements PaymentVoidPort {
 	}
 
 	@Override
-	public void applyVoidRecomputation(UUID contractId, Map<UUID, BigDecimal> recomputedPaidByInstallment,
+	public boolean applyVoidRecomputation(UUID contractId, Map<UUID, BigDecimal> recomputedPaidByInstallment,
 			Map<UUID, OffsetDateTime> earliestResolvingByInstallment, OffsetDateTime voidedAt) {
 		Objects.requireNonNull(contractId, "contractId");
 		Objects.requireNonNull(recomputedPaidByInstallment, "recomputedPaidByInstallment");
@@ -105,10 +105,11 @@ public class PaymentVoidService implements PaymentVoidPort {
 					credit == null ? null : credit.earliestAppliedAt());
 			installment.resetPaidAmountForVoid(fromPayments.add(fromCredit), resolvedAt);
 		}
-		reopenIfNoLongerMatured(contractId, schedule);
+		boolean reopened = reopenIfNoLongerMatured(contractId, schedule);
 		// Flush now (as InstallmentReceivableService does) so a broken recomputation or an incoherent reopen
 		// fails inside the void use case, rolling back the payment status flip and the reversal journal too.
 		installments.flush();
+		return reopened;
 	}
 
 	/**
@@ -117,19 +118,21 @@ public class PaymentVoidService implements PaymentVoidPort {
 	 * A contract that is still fully paid (the void only reduced an over-resolved installment that stayed
 	 * {@code PAID}) is left closed. The reopen is a no-op on an already-{@code ACTIVE} contract.
 	 */
-	private void reopenIfNoLongerMatured(UUID contractId, List<Installment> schedule) {
+	private boolean reopenIfNoLongerMatured(UUID contractId, List<Installment> schedule) {
 		if (schedule.isEmpty() || allPaid(schedule)) {
-			return;
+			return false;
 		}
 		Contract contract = contracts.findById(contractId)
 				.orElseThrow(() -> new ContractNotFoundException(contractId));
 		if (contract.isActive()) {
-			return;
+			return false;
 		}
 		if (contract.reopenFromMaturity()) {
 			LOGGER.info("Reopened contract {} to ACTIVE after a payment void undid its MATURITY close",
 					contract.getContractNo());
+			return true;
 		}
+		return false;
 	}
 
 	private static boolean allPaid(List<Installment> schedule) {
