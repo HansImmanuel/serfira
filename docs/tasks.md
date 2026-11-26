@@ -17,19 +17,18 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `b6dfc24` (PR #28, T36 outstanding report, merged); T37 on `t37-report-pages`. **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `974ce81` (PR #29, T37 report pages, merged); T38 on `t38-outbox-events`. **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
 operator flow end to end against the Compose stack.
 **Current sprint: Sprint 8 (IN PROGRESS, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (`t37-report-pages`); T38 is next.
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (`t38-outbox-events`); T28a is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t37-report-pages`) = **126 suites / 969 tests / 0 failed** (T34 close 121/939; T36 added the
-outstanding report's tests; T37 the aging IT's customer-name case). Frontend `npm test` (2026-11-26, branch
-`t37-report-pages`) = **234 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar
-and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
+`t38-outbox-events`) = **136 suites / 1017 tests / 0 failed** (T37 close 126/969; T38 added nine outbox
+suites and `SchedulingThreadIT`). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
+**236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
 exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
@@ -76,6 +75,10 @@ for a GitHub billing reason, not a test failure.
   Addendum §18 contracts through the API with dates relative to today, checks the golden schedules, pays
   (PRD scenarios 1, 2, 3 and 6), reads the statement (Σ debit = Σ credit) and the aging report, and checks
   the role split. Only the demo users are seeded.
+- Outbox (T38, ADR-027): `PaymentReceived`, `PaymentVoided`, `ContractActivated`, `ContractClosed`,
+  `ContractWrittenOff` and `SettlementExecuted` are written to `outbox_events` in their business transaction,
+  PII-free, in write order (monotonic UUIDv7 ids). A ShedLock job (`outbox-publisher`, every 5 s) logs each
+  as one ECS line and marks it `SENT`; failures retry and end `FAILED`.
 
 Full per-task implementation notes for DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
@@ -130,6 +133,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T34   | G5 demo: `scripts/demo.mjs` end-to-end API demo (relative dates), CI compose-smoke run, README close-out    | Addendum §18 (amended), `t34-demo-script`               |
 | T36   | G1 reporting metrics: `GET /reports/outstanding` (outstanding, AR, NPL, collection rate, settlement cash), V24 | ADR-026, `t36-reporting-outstanding`                    |
 | T37   | G4 report pages `/reports/aging` and `/reports/outstanding`; `customer_name` on aging rows                     | ADR-026, FE §2.9/§2.10, `t37-report-pages`              |
+| T38   | G6 outbox: six PII-free domain events written in their transaction; ShedLock log publisher, retries, `FAILED` | ADR-027, `t38-outbox-events`                            |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -164,7 +168,7 @@ without losing data.
 
 - T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
 - T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
-- T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — TODO
+- T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — DONE
 - T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — TODO
 - T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
 
@@ -443,8 +447,38 @@ snapshot with the customer name).
 
 ### T38 — G6: transactional outbox writer, six domain events and a log-based publisher (3 pts)
 
-Status: TODO
+Status: DONE
 Estimate: 3 pts
+
+Implementation note (2026-11-26, branch `t38-outbox-events`; plan
+`docs/superpowers/plans/2026-11-26-t38-outbox-events.md`): `shared.outbox.OutboxWriter` (`MANDATORY`) writes
+the six events at their transitions, with dedicated PII-free payload records; ADR-027 holds the catalogue.
+Decisions:
+- **Write order: `created_at`, then the id.** `created_at` is stamped per persist from the application clock;
+  when two events of one transaction tie on it (always under the tests' `FixedClock`), the writer's per-process
+  monotonic UUIDv7 (`OutboxEventIds`) breaks the tie in write order, so `PaymentReceived` and
+  `SettlementExecuted` each precede the `ContractClosed` they cause. Assumes no backward wall-clock step
+  between the two writes (ADR-027 D4). No migration.
+- **One MATURITY site.** `ContractClosed` is written in `closeWhenEveryInstallmentIsPaid` and
+  `SettlementCloseService`; the first also covers a penalty waiver that clears the last amount (defensive:
+  the penalty-first waterfall means no API flow reaches it today, so a unit test pins it).
+- **`PaymentVoidPort.applyVoidRecomputation` now returns whether it reopened** a MATURITY close, for
+  `contract_reopened`.
+- **Publisher:** scheduler → `LockedOutboxPublisherJob` (lock `outbox-publisher`, every 5 s) →
+  `OutboxBatchPublisher` (`REQUIRES_NEW`, `FOR UPDATE SKIP LOCKED`) → `OutboxSink` (`LoggingOutboxSink`, one
+  ECS line per event with `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `payload`). A tick stops
+  after a batch with a failure, so a refused event retries on the next tick; at `max-retries` (10) it is
+  `FAILED`. Only a tick with failures writes a `job_run` row.
+Verification: backend 136 suites / 1017 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 236 tests / 27 files (unchanged code); demo helpers 30/30;
+`node scripts/demo.mjs --reset` exit 0, and the app logged one `Published outbox event` line per event (2
+`ContractActivated`, 2 `PaymentReceived`; the replay and the refused finance payment wrote none), all `SENT`
+within one or two 5-second ticks on a `serfira-scheduling-` thread,
+with no demo customer name, NIK or phone. Mutation checks: `REQUIRED` instead of `MANDATORY`, the settlement
+event written after the close, and a claim without `SKIP LOCKED` each fail their test. Review fix: the ShedLock
+keep-alive `ScheduledExecutorService` bean had switched off Boot's task scheduler, so every `@Scheduled` job ran
+on the single `shedlock-keep-alive` thread, which would have stalled the publisher for the whole nightly run and
+blocked lock renewals while a job ran. `JobSchedulingConfiguration` now defines a three-thread
+`serfira-scheduling-` `TaskScheduler`; `SchedulingThreadIT` pins it.
 
 **Goal:** Make domain events durable and observable without Kafka.
 
@@ -798,6 +832,8 @@ Sprint 8b = 2 pts (T39), or 5 pts if T28b slips.
 | Fix TS §7 repo structure (X-9)                                                              | Documentation only.                                                                                                                                        |
 | Declare DB role privileges (no `TRUNCATE` / `DISABLE TRIGGER` for the app role)             | Deployment concern. No deployment exists yet.                                                                                                              |
 | `outbox_events` retention for `SENT` rows                                                   | T38 drains events but never deletes them. Same shape as T18's keyset delete; revisit once a real broker or a volume concern exists. |
+| Outbox retry backoff for a broker sink                                                      | T38 retries a refused event every tick (10 × 5 s ≈ 50 s, then `FAILED`; manual re-drive in ADR-027 D5). Fine for the log sink, which practically cannot fail; a broker outage longer than a minute would fail every event written in it. Add backoff (e.g. a `next_attempt_at`) with the broker. |
+| Outbox claim guard for rows an instance cannot read                                         | A row with an `event_type`/`aggregate_type` unknown to an older instance (rolling deploy) fails the entity-mapped claim on every tick and never reaches `FAILED` (ADR-027 D5). Single instance today; needs a per-row guard before a multi-version deployment. |
 | Historical `as_of` / metric trend snapshots                                                 | ADR-013 A-6 and ADR-026 keep reports at today only; trends need a snapshot store.                                                                         |
 | `refresh_token` retention / cleanup job                                                     | Rotation inserts a row per refresh and revoked rows are never deleted (~96 rows per user per day at a 15-minute access token). Same shape as T18's keyset delete on `expires_at`, own ShedLock lock, one `job_run` row. Not needed for T21b; schedule it with the reporting work. |
 

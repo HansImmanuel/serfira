@@ -369,10 +369,15 @@ DO NOTHING` di dalam transaksi bisnis (`Propagation.MANDATORY`), `status` bernil
 
 ### 2.7 Outbox Pattern
 
-- Event domain (`PaymentReceived`, `ContractClosed`, dll) ditulis ke tabel `outbox_events`
-  dalam transaksi yang sama dengan bisnis.
-- Publisher terpisah mengirim ke Kafka lalu mark SENT.
-- Tabel `outbox_events` boleh dibuat sejak foundation, tetapi publisher/Kafka tetap ditunda ke Fase 3. Fase 1–2 tidak membutuhkan Kafka.
+- Enam event domain (`PaymentReceived`, `PaymentVoided`, `ContractActivated`, `ContractClosed`,
+  `ContractWrittenOff`, `SettlementExecuted`) ditulis ke tabel `outbox_events` dalam transaksi yang sama
+  dengan bisnis, lewat `OutboxWriter` (`Propagation.MANDATORY`). Katalog, payload (tanpa PII dan tanpa teks
+  bebas) dan urutan dalam satu transaksi: ADR-027 (T38).
+- Publisher terpisah (job ShedLock `outbox-publisher`, default tiap 5 detik) meng-claim baris `PENDING`
+  dengan `FOR UPDATE SKIP LOCKED`, menulis satu baris log terstruktur per event, lalu mark `SENT`; gagal →
+  `retry_count` naik, setelah batas maksimum → `FAILED`. Pengiriman at-least-once; konsumen men-dedup
+  berdasarkan event id.
+- Sekarang sink-nya log (ECS); Kafka nanti cukup mengganti bean `OutboxSink`.
 
 ## 3. Design Ledger (double-entry)
 

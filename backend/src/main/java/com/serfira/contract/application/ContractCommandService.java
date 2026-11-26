@@ -38,6 +38,10 @@ import com.serfira.shared.money.DecimalBounds;
 import com.serfira.shared.observability.LogContext;
 import com.serfira.shared.security.PiiHasher;
 import com.serfira.shared.security.PiiValidator;
+import com.serfira.shared.outbox.OutboxAggregateType;
+import com.serfira.shared.outbox.OutboxEventType;
+import com.serfira.shared.outbox.OutboxWriter;
+import com.serfira.contract.application.event.ContractActivatedPayload;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -103,12 +107,13 @@ public class ContractCommandService {
 	private final SystemParameterService systemParameters;
 	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
+	private final OutboxWriter outbox;
 	private final Clock clock;
 
 	public ContractCommandService(ContractRepository contracts, CustomerRepository customers, AssetRepository assets,
 			InstallmentRepository installments, DocumentNumberGenerator documentNumbers,
 			SystemParameterService systemParameters, IdempotencyService idempotency,
-			LedgerPostingService ledger, Clock clock) {
+			LedgerPostingService ledger, OutboxWriter outbox, Clock clock) {
 		this.contracts = contracts;
 		this.customers = customers;
 		this.assets = assets;
@@ -117,6 +122,7 @@ public class ContractCommandService {
 		this.systemParameters = systemParameters;
 		this.idempotency = idempotency;
 		this.ledger = ledger;
+		this.outbox = outbox;
 		this.clock = clock;
 	}
 
@@ -207,6 +213,10 @@ public class ContractCommandService {
 
 			LOGGER.info("Activated contract {} (id={}, installments={})",
 					contract.getContractNo(), contractId, schedule.size());
+			// ADR-027: only the DRAFT → ACTIVE transition reaches this point; the idempotent repeat above
+			// returns first, so a second activation writes no second event.
+			outbox.append(OutboxAggregateType.CONTRACT, contractId, OutboxEventType.ContractActivated,
+					ContractActivatedPayload.of(contract));
 
 		
 			return ContractResponse.from(contract, outstandingOf(contractId));

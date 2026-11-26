@@ -65,8 +65,9 @@ public interface PaymentVoidPort {
 	 *                                         resolved by any POSTED payment
 	 * @param voidedAt                         business instant of the void (unused by the recomputation
 	 *                                         itself, kept for symmetry with the resolution mutators)
+	 * @return {@code true} when the recomputation reopened a {@code MATURITY}-closed contract to {@code ACTIVE}
 	 * @throws IllegalStateException if an installment of the map is not part of the contract's schedule
 	 */
-	void applyVoidRecomputation(UUID contractId, Map<UUID, BigDecimal> recomputedPaidByInstallment,
+	boolean applyVoidRecomputation(UUID contractId, Map<UUID, BigDecimal> recomputedPaidByInstallment,
 			Map<UUID, OffsetDateTime> earliestResolvingByInstallment, OffsetDateTime voidedAt);
 }
