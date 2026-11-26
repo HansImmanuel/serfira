@@ -93,7 +93,9 @@ public class DevKeyProductionGuardConfiguration {
 			if (configuredValue == null || configuredValue.isBlank()) {
 				return false;
 			}
-			byte[] configured = decodeOrNull(configuredValue);
+			// Trimmed exactly as the key loader trims (PiiKeyRingProperties): a dev key with a trailing
+			// newline, as a secret mounted from a file has, is still the dev key.
+			byte[] configured = decodeOrNull(configuredValue.trim());
 			if (configured == null) {
 				// Malformed base64 belongs to the key owner; it must not look like a valid key here.
 				return false;

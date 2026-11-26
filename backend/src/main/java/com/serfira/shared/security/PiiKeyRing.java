@@ -88,7 +88,12 @@ public final class PiiKeyRing {
 	}
 
 	private PiiKey requireMember(String kid, String role) {
-		PiiKey key = kid == null ? null : keys.get(kid);
+		if (!PiiKey.isValidKid(kid)) {
+			// Never echo a value that is not a key id: it may be a key pasted into the wrong variable.
+			throw new IllegalStateException("the " + role
+					+ " PII key id is not a valid key id (1-16 lowercase letters or digits)");
+		}
+		PiiKey key = keys.get(kid);
 		if (key == null) {
 			throw new IllegalStateException("the " + role + " PII key id '" + kid + "' is not in the key ring");
 		}

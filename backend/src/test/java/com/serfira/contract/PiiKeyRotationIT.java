@@ -145,6 +145,18 @@ class PiiKeyRotationIT {
 	}
 
 	@Test
+	void contractCreateReusesTheV1Customer() {
+		long before = customerCount();
+		UUID legacyId = rotated.getBean(CustomerSearchService.class).findByRawNik(Y_NIK).orElseThrow().id();
+
+		UUID reused = createContract(rotated.getBean(ContractCommandService.class), Y_NIK, Y_PHONE, "B2005BB")
+				.customer().id();
+
+		assertThat(reused).isEqualTo(legacyId);
+		assertThat(customerCount()).isEqualTo(before);
+	}
+
+	@Test
 	void aDifferentPhoneForAK1NikIsStillAConflict() {
 		assertThatThrownBy(() -> createContract(rotated.getBean(ContractCommandService.class), Y_NIK,
 				"08129999999", "B2002BB"))

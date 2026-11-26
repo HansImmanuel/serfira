@@ -97,6 +97,21 @@ class PiiKeyRingConfigurationTest {
 	}
 
 	@Test
+	void anActiveOrLegacyKidThatIsNotAKeyIdIsNeverEchoed() {
+		// An operator who pastes a key into the kid variable must not find that key in the startup log.
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						"serfira.security.pii.active-kid=" + K2_ENCRYPTION)
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("active")
+						.doesNotContain(K2_ENCRYPTION));
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						"serfira.security.pii.legacy-kid=" + K2_HMAC)
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("legacy")
+						.doesNotContain(K2_HMAC));
+	}
+
+	@Test
 	void anUnknownLegacyKidFails() {
 		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
 						"serfira.security.pii.legacy-kid=k0")

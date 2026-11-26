@@ -76,7 +76,10 @@ A `kid` is 1–16 lowercase letters or digits (`^[a-z0-9]{1,16}$`). Spring's env
 - Two matching rows mean one person stored under two key ids. The lookup fails with the row count only, instead
   of picking one.
 - Concurrent creates both hash under the active key, so the unique indexes on `nik_hash` / `phone_lookup` still
-  catch a race.
+  catch a race, as long as every instance has the same active key. During a rolling switch (D6 step 2), an
+  old instance writes `k1` hashes while a new one writes `k2` hashes. Two concurrent creates of the same new
+  person, one on each, can then insert a cross-`kid` duplicate. Lookups refuse that duplicate loudly, and so
+  does T28b's pre-flight.
 
 ### D5 — Startup validation
 
@@ -98,7 +101,8 @@ Every message names the property and its environment variable, never the value. 
 1. **Add** the new entry (`keys.<new>.*`) on every instance and deploy, still on the old `active-kid`. From
    now on every instance can read the new key before any instance writes with it.
 2. **Switch** `active-kid` to the new `kid` and deploy. New rows are `v2:<new>:…` with new-key hashes, and old
-   rows still read and match.
+   rows still read and match. Switch every instance together, or pause customer creation during the switch:
+   a window with mixed active keys can insert a cross-`kid` duplicate (D4).
 3. **Re-key** with T28b's pass, which moves every row to the active key.
 4. **Retire** the old entry only by T28b's retention rule, never on time alone.
 

@@ -304,8 +304,9 @@ itself as their credential.
   ```
   SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY=<base64 32-byte key>
   SERFIRA_SECURITY_PII_KEYS_<KID>_HMACKEY=<base64 >=32-byte key>
-  SERFIRA_SECURITY_PII_ACTIVEKID=<kid>     # default k1
-  SERFIRA_SECURITY_PII_LEGACYKID=<kid>     # reads pre-ring v1 rows; default k1
+  SERFIRA_SECURITY_PII_ACTIVEKID=<kid>     # default k1 while the flat pair is set; otherwise required
+  SERFIRA_SECURITY_PII_LEGACYKID=<kid>     # reads pre-ring v1 rows; default k1 while the flat pair is
+                                           # set, otherwise none: set it if any v1 rows remain
   ```
 
   `<KID>` is 1–16 lowercase letters or digits (uppercase in the variable name). **Do not switch the

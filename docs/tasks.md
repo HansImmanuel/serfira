@@ -26,7 +26,7 @@ operator flow end to end against the Compose stack.
 definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (`t28a-pii-key-ring`); T28b is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t28a-pii-key-ring`) = **140 suites / 1077 tests / 0 failed** (T38 close 136/1019 after its review fix; T28a
+`t28a-pii-key-ring`) = **140 suites / 1080 tests / 0 failed** (T38 close 136/1019 after its review fix; T28a
 added the key-ring, envelope, configuration and rotation suites). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
 **236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
@@ -616,10 +616,13 @@ Rulings: the two existing tests that asserted a `v1:` prefix now assert `v2:k1:`
 single-hash finders `findByNikHash`/`findByPhoneLookup` stay for tests; the at-most-one check lives in
 `contract.application.CustomerLookup`, because Spring Data's exception translation rewraps an exception thrown
 in a repository default method. ADR-004 and Addendum §9 now name the real `SERFIRA_SECURITY_PII_*` variables.
-Verification: backend 140 suites / 1077 tests / 0 failed (`./gradlew check --rerun-tasks`; T28a added
+Verification: backend 140 suites / 1080 tests / 0 failed (`./gradlew check --rerun-tasks`; T28a added
 `PiiKeyRingTest`, `PiiSecuritySupportKeyRingTest`, `PiiKeyRingConfigurationTest` and `PiiKeyRotationIT`, which
 writes under `k1` in one application context and reads, finds, reuses and 409s in a second context with `k2`
-active on the same database); frontend and demo unchanged (no change outside the backend and docs).
+active on the same database); frontend and demo unchanged (no change outside the backend and docs). Review
+fixes: the dev-key guard trims like the key loader (a dev key with a trailing newline no longer passes); an
+active/legacy kid that is not a key id is never echoed (it may be a pasted key); `v1` create-reuse is asserted;
+README and ADR-025 D4/D6 corrected on the kid defaults and the mixed-active-key window during a rolling switch.
 **Do not switch the active key in any environment until T28b ships** (ADR-025 D6).
 
 **Goal:** Let the PII encryption and HMAC keys rotate without making existing rows unreadable or

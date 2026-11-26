@@ -1,5 +1,6 @@
 package com.serfira.shared.security;
 
+import java.util.Map;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
@@ -8,6 +9,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.core.env.MapPropertySource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -203,6 +205,29 @@ class DevKeyProductionGuardTest {
 					assertThat(message).contains(
 							"serfira.security.pii.keys.k2.hmac-key (set SERFIRA_SECURITY_PII_KEYS_K2_HMACKEY)");
 					assertThat(message).doesNotContain(DEV_PII_HMAC).doesNotContain("keys.k2.encryption-key");
+				});
+	}
+
+	@Test
+	void aDevKeyWithSurroundingWhitespaceIsStillADevKey() {
+		// The key loader trims before decoding, so the guard must too: a trailing newline (a secret mounted
+		// from a file) must not let the public key through, for the flat pair or for a ring member.
+		// A raw property source: withPropertyValues trims, which would hide exactly this case.
+		runner.withInitializer(context -> {
+					context.getEnvironment().setActiveProfiles("prod");
+					context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("raw", Map.of(
+							JWT_PROPERTY, PRODUCTION_JWT,
+							PII_ENCRYPTION_PROPERTY, DEV_PII_ENCRYPTION + "\n",
+							PII_HMAC_PROPERTY, PRODUCTION_PII_HMAC,
+							"serfira.security.pii.keys.k2.encryption-key", RING_PII_ENCRYPTION,
+							"serfira.security.pii.keys.k2.hmac-key", " " + DEV_PII_HMAC + " ")));
+				})
+				.run(context -> {
+					String message = fullMessage(context.getStartupFailure());
+
+					assertThat(message).contains(PII_ENCRYPTION_PROPERTY + " (set SERFIRA_SECURITY_PII_ENCRYPTION_KEY)")
+							.contains("serfira.security.pii.keys.k2.hmac-key (set SERFIRA_SECURITY_PII_KEYS_K2_HMACKEY)");
+					assertThat(message).doesNotContain(DEV_PII_ENCRYPTION).doesNotContain(DEV_PII_HMAC);
 				});
 	}
 
