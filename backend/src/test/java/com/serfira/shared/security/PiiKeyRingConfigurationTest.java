@@ -73,6 +73,80 @@ class PiiKeyRingConfigurationTest {
 	}
 
 	@Test
+	void pointingTheLegacyKeyAtTheNewActiveKeyDoesNotStartInV1Mode() {
+		// The loophole this closes: active = legacy = k2 in v1 mode would strand every existing k1 v1 row and write
+		// new v1 rows that no pre-T28a instance can read.
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						K2_ENCRYPTION_PROPERTY + K2_ENCRYPTION, K2_HMAC_PROPERTY + K2_HMAC,
+						"serfira.security.pii.active-kid=k2", "serfira.security.pii.legacy-kid=k2")
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.write-envelope")
+						.contains("serfira.security.pii.legacy-kid"));
+	}
+
+	@Test
+	void aKeysOnlyRingWithoutALegacyKidIsToldToSetIt() {
+		// Pointing at v2 here would leave every existing v1 row unreadable; the missing setting is legacy-kid.
+		runner.withPropertyValues("serfira.security.pii.keys.k1.encryption-key=" + K1_ENCRYPTION,
+						"serfira.security.pii.keys.k1.hmac-key=" + K1_HMAC, "serfira.security.pii.active-kid=k1")
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.legacy-kid")
+						.contains("SERFIRA_SECURITY_PII_LEGACYKID")
+						.doesNotContain("write-envelope"));
+	}
+
+	@Test
+	void aKeysOnlyRingWithLegacyKidK1StartsInV1Mode() {
+		runner.withPropertyValues("serfira.security.pii.keys.k1.encryption-key=" + K1_ENCRYPTION,
+						"serfira.security.pii.keys.k1.hmac-key=" + K1_HMAC, "serfira.security.pii.active-kid=k1",
+						"serfira.security.pii.legacy-kid=k1")
+				.run(context -> {
+					assertThat(context).hasNotFailed();
+					assertThat(PiiSecuritySupport.encrypt("x")).startsWith("v1:");
+				});
+	}
+
+	@Test
+	void aRingEntrySetToAValueOfItsOwnFailsNamingTheExpectedPropertiesNotTheValue() {
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						"serfira.security.pii.keys.k2=" + K2_ENCRYPTION)
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.keys.<kid>.encryption-key")
+						.contains("SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY")
+						.doesNotContain(K2_ENCRYPTION));
+	}
+
+	@Test
+	void anInvalidKidFailsNamingTheEntry() {
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						"serfira.security.pii.keys.key-2.encryption-key=" + K2_ENCRYPTION,
+						"serfira.security.pii.keys.key-2.hmac-key=" + K2_HMAC)
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.keys.key-2")
+						.doesNotContain(K2_ENCRYPTION));
+	}
+
+	@Test
+	void aWrongLengthFlatKeyFailsNamingItsVariable() {
+		runner.withPropertyValues(FLAT_ENCRYPTION + base64("too-short"), FLAT_HMAC + K1_HMAC)
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.encryption-key")
+						.contains("SERFIRA_SECURITY_PII_ENCRYPTION_KEY")
+						.contains("32 bytes"));
+	}
+
+	@Test
+	void sharedKeyMaterialFailsNamingBothProperties() {
+		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
+						K2_ENCRYPTION_PROPERTY + K2_ENCRYPTION, K2_HMAC_PROPERTY + K1_HMAC)
+				.run(context -> assertThat(fullMessage(context.getStartupFailure()))
+						.contains("serfira.security.pii.hmac-key")
+						.contains("serfira.security.pii.keys.k2.hmac-key")
+						.contains("SERFIRA_SECURITY_PII_KEYS_K2_HMACKEY")
+						.doesNotContain(K1_HMAC));
+	}
+
+	@Test
 	void anUnknownWriteEnvelopeFailsNamingTheProperty() {
 		runner.withPropertyValues(FLAT_ENCRYPTION + K1_ENCRYPTION, FLAT_HMAC + K1_HMAC,
 						"serfira.security.pii.write-envelope=v3")

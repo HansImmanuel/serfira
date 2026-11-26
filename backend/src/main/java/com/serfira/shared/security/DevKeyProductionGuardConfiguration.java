@@ -62,13 +62,12 @@ public class DevKeyProductionGuardConfiguration {
 
 		List<GuardedKey> configuredKeys = new ArrayList<>();
 		configuredKeys.add(new GuardedKey("serfira.security.jwt.secret-base64", "SERFIRA_SECURITY_JWT_SECRET_BASE64",
-				environment.getProperty("serfira.security.jwt.secret-base64"), DEV_JWT_SECRET_BASE64));
+				environment.getProperty("serfira.security.jwt.secret-base64")));
 		// Every PII ring member (T28a, ADR-025): the flat k1 pair and each serfira.security.pii.keys.<kid> entry.
 		for (PiiKeyRingProperties.ConfiguredKey key : PiiKeyRingProperties.configuredKeys(environment)) {
 			configuredKeys.add(new GuardedKey(key.encryptionProperty(), key.encryptionEnvironmentVariable(),
-					key.encryptionValue(), DEV_PII_ENCRYPTION_KEY));
-			configuredKeys.add(new GuardedKey(key.hmacProperty(), key.hmacEnvironmentVariable(),
-					key.hmacValue(), DEV_PII_HMAC_KEY));
+					key.encryptionValue()));
+			configuredKeys.add(new GuardedKey(key.hmacProperty(), key.hmacEnvironmentVariable(), key.hmacValue()));
 		}
 
 		List<String> offenders = configuredKeys.stream()
@@ -84,9 +83,16 @@ public class DevKeyProductionGuardConfiguration {
 		return new DevKeysValidated();
 	}
 
-	/** A guarded property, the environment variable that overrides it, and its public dev value. */
-	private record GuardedKey(
-			String property, String environmentVariable, String configuredValue, String devValue) {
+	/**
+	 * Every public value in {@code docker-compose.yml}. Each guarded key is compared with all of them, not only
+	 * with the dev value of its own role: the dev HMAC key is 32 bytes and so a valid AES key, and the dev JWT
+	 * secret is long enough to be an HMAC key, so a swapped or misplaced dev value is just as public.
+	 */
+	private static final List<String> DEV_VALUES =
+			List.of(DEV_JWT_SECRET_BASE64, DEV_PII_ENCRYPTION_KEY, DEV_PII_HMAC_KEY);
+
+	/** A guarded property and the environment variable that overrides it. */
+	private record GuardedKey(String property, String environmentVariable, String configuredValue) {
 
 		boolean isDevDefault() {
 			// Blank is a missing key, not a dev key: the owning configuration reports that better.
@@ -100,7 +106,8 @@ public class DevKeyProductionGuardConfiguration {
 				// Malformed base64 belongs to the key owner; it must not look like a valid key here.
 				return false;
 			}
-			return MessageDigest.isEqual(configured, Base64.getDecoder().decode(devValue));
+			return DEV_VALUES.stream()
+					.anyMatch(devValue -> MessageDigest.isEqual(configured, Base64.getDecoder().decode(devValue)));
 		}
 
 		private static byte[] decodeOrNull(String value) {

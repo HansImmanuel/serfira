@@ -93,16 +93,19 @@ The ring refuses to start when:
 - a `kid` breaks D2;
 - an encryption key is not exactly 32 bytes, or an HMAC key is shorter than 32 bytes;
 - two different `kid`s share an encryption key or an HMAC key;
-- an entry has only one of its two keys;
+- an entry has only one of its two keys, or is set to a value of its own instead of its two keys;
 - a value is not base64.
 
-Every message names the property and its environment variable, never the value. The dev-key production guard
-(ADR-022 D13) checks every ring member against the public Compose keys, not only the flat pair.
+Every message names the property and its environment variable, never the value. `PiiKey` validates in its
+canonical constructor too, so no code path can build an entry that skips these checks. The dev-key production
+guard (ADR-022 D13) checks every ring member, not only the flat pair, and compares each key with **all** the
+public Compose values: the dev HMAC key is a valid AES key and the dev JWT secret a valid HMAC key, so a swapped
+or misplaced dev value is just as public.
 
 ### D6 — Rotation runbook
 
 0. **Finish the D7 transition first.** `write-envelope` must be `v2` before step 2 (startup refuses `v1` writes
-   under a non-legacy active key).
+   unless both the active and the legacy key are `k1`). Keep `legacy-kid` at `k1` throughout.
 1. **Add** the new entry (`keys.<new>.*`) on every instance and deploy, still on the old `active-kid`. From
    now on every instance can read the new key before any instance writes with it.
 2. **Switch** `active-kid` to the new `kid` and deploy. New rows are `v2:<new>:…` with new-key hashes, and old
@@ -136,9 +139,12 @@ away. The rollout therefore has two phases:
    From then on new rows are `v2:<active>:…`.
 
 Rules that enforce it:
-- `v1` writes are refused at startup unless the active key is the legacy key. A `v1` envelope has no `kid` and
-  is read under the legacy key, so a `v1` write under another key would be unreadable. A rotation (D6 step 2)
-  therefore cannot begin before phase 2.
+- `v1` writes are refused at startup unless the active key and the legacy key are both `k1`. A `v1` envelope has
+  no `kid`, and every `v1:` row on disk was sealed under `k1`, the only key a pre-T28a version knows. Requiring
+  only "active = legacy" is not enough: `active-kid=k2` with `legacy-kid=k2` would strand the existing `k1` rows
+  and write new `v1:` rows that no older instance can read and that nothing can tell apart from the `k1` rows. A
+  rotation (D6 step 2) therefore cannot begin before phase 2. With no legacy key at all, the refusal says
+  `legacy-kid` is missing rather than suggesting `v2`, since `v2` would leave the existing `v1:` rows unreadable.
 - Setting `write-envelope` back to `v1` does not convert `v2` rows that already exist. After phase 2, a rollback
   below T28a makes those rows unreadable. Phase 2 is the point of no return, and it is a deliberate operator
   step.

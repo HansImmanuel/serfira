@@ -183,6 +183,6 @@ Definisi metrik di ADR-026:
       tetap terbaca dengan legacy key, dan lookup NIK/telepon mencocokkan hash di bawah semua kunci ring.
       Startup menolak kid tak dikenal, panjang kunci salah, material kunci ganda, atau dev key di production.
       `PiiKeyRotationIT` menulis di bawah `k1` lalu membaca, mencari, memakai ulang dan 409 di context kedua
-      dengan `k2` aktif. Verifikasi: backend 140 suite / 1087 test (branch `t28a-pii-key-ring`). Jangan ganti
+      dengan `k2` aktif. Verifikasi: backend 140 suite / 1100 test (branch `t28a-pii-key-ring`). Jangan ganti
       kunci aktif sebelum T28b
 - [ ] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint`

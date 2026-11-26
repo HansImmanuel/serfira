@@ -48,7 +48,7 @@ class DevKeyProductionGuardTest {
 	private static final String RING_PII_ENCRYPTION = "c2Vjb25kLXJpbmctcGlpLWVuY3J5cHRpb24ta2V5LTAx";
 	private static final String RING_PII_HMAC = "c2Vjb25kLXJpbmctcGlpLWhtYWMta2V5LW5vdC1kZXYtMDE=";
 
-	private static final String JWT_PROPERTY ="serfira.security.jwt.secret-base64";
+	private static final String JWT_PROPERTY = "serfira.security.jwt.secret-base64";
 	private static final String PII_ENCRYPTION_PROPERTY = "serfira.security.pii.encryption-key";
 	private static final String PII_HMAC_PROPERTY = "serfira.security.pii.hmac-key";
 
@@ -228,6 +228,36 @@ class DevKeyProductionGuardTest {
 					assertThat(message).contains(PII_ENCRYPTION_PROPERTY + " (set SERFIRA_SECURITY_PII_ENCRYPTION_KEY)")
 							.contains("serfira.security.pii.keys.k2.hmac-key (set SERFIRA_SECURITY_PII_KEYS_K2_HMACKEY)");
 					assertThat(message).doesNotContain(DEV_PII_ENCRYPTION).doesNotContain(DEV_PII_HMAC);
+				});
+	}
+
+	@Test
+	void swappedDevPiiKeysInARingMemberRefuseToStart() {
+		// The dev HMAC key is 32 bytes, so it is a valid AES key: a dev value in the other role is still public.
+		runner.withInitializer(context -> context.getEnvironment().setActiveProfiles("prod"))
+				.withPropertyValues(productionProperties(null, null))
+				.withPropertyValues(
+						"serfira.security.pii.keys.k2.encryption-key=" + DEV_PII_HMAC,
+						"serfira.security.pii.keys.k2.hmac-key=" + DEV_PII_ENCRYPTION)
+				.run(context -> {
+					String message = fullMessage(context.getStartupFailure());
+
+					assertThat(message)
+							.contains("serfira.security.pii.keys.k2.encryption-key (set SERFIRA_SECURITY_PII_KEYS_K2_ENCRYPTIONKEY)")
+							.contains("serfira.security.pii.keys.k2.hmac-key (set SERFIRA_SECURITY_PII_KEYS_K2_HMACKEY)");
+					assertThat(message).doesNotContain(DEV_PII_ENCRYPTION).doesNotContain(DEV_PII_HMAC);
+				});
+	}
+
+	@Test
+	void theDevJwtSecretAsAPiiHmacKeyRefusesToStart() {
+		runner.withInitializer(context -> context.getEnvironment().setActiveProfiles("prod"))
+				.withPropertyValues(productionProperties(PII_HMAC_PROPERTY, DEV_JWT))
+				.run(context -> {
+					String message = fullMessage(context.getStartupFailure());
+
+					assertThat(message).contains(PII_HMAC_PROPERTY + " (set SERFIRA_SECURITY_PII_HMAC_KEY)");
+					assertThat(message).doesNotContain(DEV_JWT);
 				});
 	}
 

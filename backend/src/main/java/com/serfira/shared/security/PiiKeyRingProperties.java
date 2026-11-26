@@ -1,11 +1,13 @@
 package com.serfira.shared.security;
 
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
+import org.springframework.boot.context.properties.bind.BindException;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.core.env.Environment;
@@ -66,8 +68,9 @@ final class PiiKeyRingProperties {
 
 	/**
 	 * The raw configured entries: the flat pair first as {@code k1} (when either half is non-blank), then
-	 * {@code keys.*} by {@code kid}. Never throws on a value — the dev-key guard reads these too and leaves
-	 * malformed configuration to {@link #load}.
+	 * {@code keys.*} by {@code kid}. Never rejects a key value — the dev-key guard reads these too and leaves
+	 * malformed values to {@link #load}. The one failure is a {@code keys.*} tree of the wrong shape (an entry set
+	 * to a value of its own instead of its two halves), reported naming the expected properties.
 	 */
 	static List<ConfiguredKey> configuredKeys(Environment environment) {
 		List<ConfiguredKey> configured = new ArrayList<>();
@@ -78,9 +81,7 @@ final class PiiKeyRingProperties {
 					FLAT_ENCRYPTION_PROPERTY, "SERFIRA_SECURITY_PII_ENCRYPTION_KEY", flatEncryption,
 					FLAT_HMAC_PROPERTY, "SERFIRA_SECURITY_PII_HMAC_KEY", flatHmac));
 		}
-		Map<String, KeyProperties> ring = new TreeMap<>(Binder.get(environment)
-				.bind(KEYS_PROPERTY, Bindable.mapOf(String.class, KeyProperties.class))
-				.orElse(Map.of()));
+		Map<String, KeyProperties> ring = new TreeMap<>(bindRingEntries(environment));
 		ring.forEach((kid, key) -> {
 			String variablePrefix = "SERFIRA_SECURITY_PII_KEYS_" + kid.toUpperCase(Locale.ROOT) + "_";
 			configured.add(new ConfiguredKey(kid,
@@ -98,18 +99,39 @@ final class PiiKeyRingProperties {
 		}
 		boolean flatPairSet = configured.get(0).flat();
 		List<PiiKey> keys = new ArrayList<>();
+		List<byte[]> encryptionKeys = new ArrayList<>();
+		List<byte[]> hmacKeys = new ArrayList<>();
 		for (ConfiguredKey key : configured) {
 			if (flatPairSet && !key.flat() && key.kid().equals(PiiKeyRing.SINGLE_KID)) {
 				throw new IllegalStateException("PII key id 'k1' is configured twice: " + FLAT_ENCRYPTION_PROPERTY
 						+ " / " + FLAT_HMAC_PROPERTY + " already define it, so " + KEYS_PROPERTY
 						+ ".k1.* must not be set");
 			}
-			PiiKey.requireValidKid(key.kid());
+			if (!PiiKey.isValidKid(key.kid())) {
+				// The kid is part of a property name here, not a configured value, so naming it is safe.
+				throw new IllegalStateException("'" + KEYS_PROPERTY + "." + key.kid() + ".*' has an invalid key id: "
+						+ "a key id is 1-16 lowercase letters or digits; rename the " + KEYS_PROPERTY + "." + key.kid()
+						+ " entry (SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY / _HMACKEY)");
+			}
 			byte[] encryption = decode(key.encryptionValue(), key.encryptionProperty(),
 					key.encryptionEnvironmentVariable(), key.flat() ? MISSING_ENCRYPTION_KEY_MESSAGE : null,
 					"AES-256 key = 32 bytes");
+			if (encryption.length != PiiKey.AES_KEY_BYTES) {
+				throw new IllegalStateException("'" + key.encryptionProperty() + "' must decode to exactly "
+						+ PiiKey.AES_KEY_BYTES + " bytes (AES-256); set the " + key.encryptionEnvironmentVariable()
+						+ " environment variable");
+			}
 			byte[] hmac = decode(key.hmacValue(), key.hmacProperty(), key.hmacEnvironmentVariable(),
 					key.flat() ? MISSING_HMAC_KEY_MESSAGE : null, ">= 32 bytes");
+			if (hmac.length < PiiKey.AES_KEY_BYTES) {
+				throw new IllegalStateException("'" + key.hmacProperty() + "' must decode to at least "
+						+ PiiKey.AES_KEY_BYTES + " bytes (HMAC-SHA-256); set the " + key.hmacEnvironmentVariable()
+						+ " environment variable");
+			}
+			requireDistinct(encryptionKeys, encryption, configured, key, true);
+			requireDistinct(hmacKeys, hmac, configured, key, false);
+			encryptionKeys.add(encryption);
+			hmacKeys.add(hmac);
 			keys.add(PiiKey.of(key.kid(), encryption, hmac));
 		}
 		String activeKid = environment.getProperty(ACTIVE_KID_PROPERTY);
@@ -141,6 +163,41 @@ final class PiiKeyRingProperties {
 			default -> throw new IllegalStateException("'" + WRITE_ENVELOPE_PROPERTY
 					+ "' must be v1 or v2; set the SERFIRA_SECURITY_PII_WRITEENVELOPE environment variable");
 		};
+	}
+
+	/** Binds {@code keys.*}; an entry of the wrong shape fails naming the expected properties, never a value. */
+	private static Map<String, KeyProperties> bindRingEntries(Environment environment) {
+		try {
+			return Binder.get(environment)
+					.bind(KEYS_PROPERTY, Bindable.mapOf(String.class, KeyProperties.class))
+					.orElse(Map.of());
+		} catch (BindException e) {
+			// The cause is dropped: only the expected shape is reported, so no bound value can reach the log.
+			throw new IllegalStateException("every '" + KEYS_PROPERTY + ".<kid>' entry must set '" + KEYS_PROPERTY
+					+ ".<kid>.encryption-key' and '" + KEYS_PROPERTY + ".<kid>.hmac-key', not a value of its own; set "
+					+ "the SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY and SERFIRA_SECURITY_PII_KEYS_<KID>_HMACKEY "
+					+ "environment variables");
+		}
+	}
+
+	/**
+	 * Two ring entries may not share an encryption key or an HMAC key (ADR-025 D5). {@link PiiKeyRing} enforces the
+	 * same rule; checking here first lets the message name both properties.
+	 */
+	private static void requireDistinct(List<byte[]> seen, byte[] candidate, List<ConfiguredKey> configured,
+			ConfiguredKey current, boolean encryption) {
+		for (int i = 0; i < seen.size(); i++) {
+			if (MessageDigest.isEqual(seen.get(i), candidate)) {
+				ConfiguredKey earlier = configured.get(i);
+				String earlierProperty = encryption ? earlier.encryptionProperty() : earlier.hmacProperty();
+				String currentProperty = encryption ? current.encryptionProperty() : current.hmacProperty();
+				String currentVariable = encryption ? current.encryptionEnvironmentVariable()
+						: current.hmacEnvironmentVariable();
+				throw new IllegalStateException("'" + earlierProperty + "' and '" + currentProperty
+						+ "' share key material: every PII key id needs its own keys; set a new value in the "
+						+ currentVariable + " environment variable");
+			}
+		}
 	}
 
 	private static byte[] decode(String value, String property, String environmentVariable, String missingMessage,

@@ -11,9 +11,10 @@ import java.util.Optional;
  * search path (ADR-004, Addendum §9).
  *
  * <p>Raw identifiers are normalized and HMAC-hashed in-memory and the lookup value is what reaches the
- * query; the plaintext never touches SQL, logs, or the URL. Uniqueness of both lookup columns is enforced
- * by the database, so each lookup returns at most one customer. The lookup matches the hash under every PII
- * ring key (ADR-025), so a customer written before a key rotation is still found. The HTTP exposure of this service is
+ * query; the plaintext never touches SQL, logs, or the URL. The lookup matches the hash under every PII ring key
+ * (ADR-025), so a customer written before a key rotation is still found. The database enforces uniqueness of
+ * each lookup column per key only: if one person was stored under two key ids (a cross-key duplicate, ADR-025
+ * D4), a lookup throws {@link IllegalStateException} with the row count instead of picking one. The HTTP exposure of this service is
  * intentionally deferred until RBAC exists (default-deny, Sprint 6b); callers today are internal services.
  */
 @Service

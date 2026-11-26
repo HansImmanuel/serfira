@@ -42,7 +42,7 @@ class PiiSecuritySupportKeyRingTest {
 
 	private static PiiKeyRing ring(String activeKid, String legacyKid) {
 		return new PiiKeyRing(List.of(PiiKey.of("k1", K1_AES, K1_HMAC), PiiKey.of("k2", K2_AES, K2_HMAC)),
-				activeKid, legacyKid);
+				activeKid, legacyKid, PiiEnvelopeVersion.V2);
 	}
 
 	@Test

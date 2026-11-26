@@ -18,8 +18,10 @@ import java.util.Optional;
  * fail its GCM tag instead of decrypting.
  *
  * <p>The ring also fixes the envelope new values are written in ({@link PiiEnvelopeVersion}, ADR-025 D7). A
- * {@code v1} envelope carries no key id and is read under the legacy key, so {@code v1} writes require the active
- * key to be the legacy key.
+ * {@code v1} envelope carries no key id, and every {@code v1:} row on disk was sealed under the pre-ring key
+ * {@code k1}, the only key a pre-T28a version knows. So {@code v1} writes require the active key and the legacy
+ * key to both be {@code k1}: a {@code v1} row under any other key would be unreadable by that version, and
+ * indistinguishable from the {@code k1} rows to this one.
  */
 public final class PiiKeyRing {
 
@@ -31,18 +33,16 @@ public final class PiiKeyRing {
 	private final List<PiiKey> candidateOrder;
 	private final PiiEnvelopeVersion writeEnvelope;
 
-	/** A ring that writes {@code v2} envelopes; see {@link #PiiKeyRing(List, String, String, PiiEnvelopeVersion)}. */
-	public PiiKeyRing(List<PiiKey> keys, String activeKid, String legacyKid) {
-		this(keys, activeKid, legacyKid, PiiEnvelopeVersion.V2);
-	}
-
 	/**
+	 * There is deliberately no constructor that defaults the envelope: {@code v1} is what D7's compatibility needs
+	 * and {@code v2} is what rotation needs, so every caller states which one it writes.
+	 *
 	 * @param keys          the ring entries
 	 * @param activeKid     the key for new writes and hashes; must be in {@code keys}
 	 * @param legacyKid     the key that reads {@code v1:} envelopes, or {@code null} for none; must be in
 	 *                      {@code keys}
-	 * @param writeEnvelope the envelope new values are written in; {@code V1} requires {@code activeKid} to be
-	 *                      the {@code legacyKid}
+	 * @param writeEnvelope the envelope new values are written in; {@code V1} requires {@code activeKid} and
+	 *                      {@code legacyKid} to both be {@code k1}
 	 */
 	public PiiKeyRing(List<PiiKey> keys, String activeKid, String legacyKid, PiiEnvelopeVersion writeEnvelope) {
 		if (keys == null || keys.isEmpty()) {
@@ -79,11 +79,8 @@ public final class PiiKeyRing {
 		if (writeEnvelope == null) {
 			throw new IllegalStateException("the PII write envelope is required");
 		}
-		if (writeEnvelope == PiiEnvelopeVersion.V1 && (legacy == null || !legacy.kid().equals(active.kid()))) {
-			throw new IllegalStateException("v1 PII envelopes carry no key id and are read under the legacy key, so "
-					+ "they can only be written while the active key is the legacy key; set "
-					+ "'serfira.security.pii.write-envelope' to v2 (SERFIRA_SECURITY_PII_WRITEENVELOPE) once every "
-					+ "running version reads v2 (ADR-025 D7)");
+		if (writeEnvelope == PiiEnvelopeVersion.V1) {
+			requireV1Writable();
 		}
 		this.writeEnvelope = writeEnvelope;
 	}
@@ -117,6 +114,26 @@ public final class PiiKeyRing {
 	/** Every ring key, the active one first and the rest by ascending {@code kid}. */
 	public List<PiiKey> candidateOrder() {
 		return candidateOrder;
+	}
+
+	/**
+	 * {@code v1} writes are sealed under the active key but read back under the legacy key, and every existing
+	 * {@code v1:} row is under {@code k1}. Both must therefore be {@code k1}; moving the legacy key to a new active
+	 * key would strand the existing rows and write new {@code v1:} rows no pre-T28a version can read.
+	 */
+	private void requireV1Writable() {
+		if (legacy == null) {
+			throw new IllegalStateException("no legacy PII key is configured, so v1 PII envelopes can be neither read "
+					+ "nor written; set 'serfira.security.pii.legacy-kid' (SERFIRA_SECURITY_PII_LEGACYKID) to "
+					+ SINGLE_KID + ", the key that sealed the existing v1: rows (ADR-025 D7)");
+		}
+		if (!SINGLE_KID.equals(active.kid()) || !SINGLE_KID.equals(legacy.kid())) {
+			throw new IllegalStateException("v1 PII envelopes carry no key id and every v1: row is sealed under "
+					+ SINGLE_KID + ", so v1 writes need both 'serfira.security.pii.active-kid' and "
+					+ "'serfira.security.pii.legacy-kid' to be " + SINGLE_KID + "; to write under another key, set "
+					+ "'serfira.security.pii.write-envelope' to v2 (SERFIRA_SECURITY_PII_WRITEENVELOPE) once every "
+					+ "running version reads v2, and keep legacy-kid at " + SINGLE_KID + " (ADR-025 D7)");
+		}
 	}
 
 	private PiiKey requireMember(String kid, String role) {
