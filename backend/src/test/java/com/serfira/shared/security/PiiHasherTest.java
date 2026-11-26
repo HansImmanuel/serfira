@@ -46,6 +46,14 @@ class PiiHasherTest {
 	}
 
 	@Test
+	void candidatesNormalizeLikeTheHash() {
+		assertThat(PiiHasher.nikCandidates("3171-0125-0190-0001").get(0))
+				.isEqualTo(PiiHasher.hashNik("3171012501900001"));
+		assertThat(PiiHasher.phoneCandidates("+62 812-3456-789").get(0))
+				.isEqualTo(PiiHasher.hashPhone("08123456789"));
+	}
+
+	@Test
 	void hashDependsOnTheKey() {
 		String withOriginalKey = PiiHasher.hashNik("3171012501900001");
 		PiiSecuritySupport.configure(ENCRYPTION_KEY, "c".repeat(32).getBytes(StandardCharsets.UTF_8));

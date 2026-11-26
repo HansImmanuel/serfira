@@ -8,7 +8,7 @@ import jakarta.persistence.Converter;
  *
  * <p>Applied explicitly with {@code @Convert(converter = ...)} on {@code Customer.nik} and
  * {@code Customer.phone}. The entity consequently holds plaintext in memory (JPA lifecycle) while the
- * database only ever stores the {@code v1:...} ciphertext.
+ * database only ever stores the ciphertext envelope ({@code v2:<kid>:...} for new writes; ADR-025).
  */
 @Converter
 public class AesGcmStringAttributeConverter implements AttributeConverter<String, String> {

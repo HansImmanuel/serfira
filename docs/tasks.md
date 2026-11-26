@@ -169,7 +169,7 @@ without losing data.
 - T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
 - T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
 - T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — DONE
-- T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — TODO
+- T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — IN PROGRESS
 - T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
 
 **Exit:**
@@ -586,7 +586,7 @@ blocked lock renewals while a job ran. `JobSchedulingConfiguration` now defines 
 
 ### T28a — PII key ring and versioned `v2` envelope (CR-11) (2 pts)
 
-Status: TODO
+Status: IN PROGRESS
 Estimate: 2 pts
 
 **Goal:** Let the PII encryption and HMAC keys rotate without making existing rows unreadable or
