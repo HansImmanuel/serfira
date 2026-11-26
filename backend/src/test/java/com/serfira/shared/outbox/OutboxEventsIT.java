@@ -304,6 +304,68 @@ class OutboxEventsIT {
 		assertThat(eventsForContract(contractId).stream().filter("ContractWrittenOff"::equals)).hasSize(1);
 	}
 
+	// --- SettlementExecuted, ordering and the PII scan ----------------------------------------------------
+
+	@Test
+	void settlementWritesSettlementExecutedThenContractClosed() throws Exception {
+		UUID contractId = createAndActivate(12);
+
+		MvcResult result = settle(contractId, "settle-1");
+
+		assertThat(result.getResponse().getStatus()).isEqualTo(201);
+		UUID settlementId = UUID.fromString(data(result).get("settlement_id").asText());
+		// Same transaction, same FixedClock instant: only the time-ordered id can put these two in write order.
+		List<Map<String, Object>> pair = jdbc.queryForList("""
+				select event_type, aggregate_type, aggregate_id, created_at from outbox_events
+				where event_type in ('SettlementExecuted', 'ContractClosed') and payload_json ->> 'contract_id' = ?
+				order by created_at, id""", contractId.toString());
+		assertThat(pair).extracting(row -> row.get("event_type")).containsExactly("SettlementExecuted", "ContractClosed");
+		assertThat(pair.get(0)).containsEntry("aggregate_type", "SETTLEMENT").containsEntry("aggregate_id", settlementId);
+		assertThat(pair.get(1)).containsEntry("aggregate_type", "CONTRACT").containsEntry("aggregate_id", contractId);
+		assertThat(pair.get(0).get("created_at")).isEqualTo(pair.get(1).get("created_at"));
+
+		JsonNode executed = payload(rows(settlementId).get(0));
+		assertThat(keys(executed)).containsExactlyInAnyOrder("schema_version", "settlement_id", "settlement_no",
+				"contract_id", "quote_id", "cash_received", "credit_used", "rebate_amount", "admin_fee", "executed_at");
+		assertThat(executed.get("cash_received").isString()).isTrue();
+		assertThat(payload(rows(contractId).stream()
+				.filter(row -> "ContractClosed".equals(row.get("event_type"))).findFirst().orElseThrow())
+				.get("closed_reason").asText()).isEqualTo("SETTLEMENT");
+	}
+
+	@Test
+	void aReplayedSettlementKeyWritesNoSecondRow() throws Exception {
+		UUID contractId = createAndActivate(12);
+		UUID quoteId = quoteId(contractId);
+
+		execute(quoteId, "settle-replay");
+		execute(quoteId, "settle-replay");
+
+		assertThat(eventsForContract(contractId).stream().filter("SettlementExecuted"::equals)).hasSize(1);
+		assertThat(eventsForContract(contractId).stream().filter("ContractClosed"::equals)).hasSize(1);
+	}
+
+	@Test
+	void noPayloadCarriesCustomerDataOrFreeText() throws Exception {
+		// One flow of each of the six types, so the scan does not depend on test order.
+		UUID paid = createAndActivate(1);
+		UUID paymentId = paymentId(pay(paid, "pii-pay", installmentTotal(paid, 1)));
+		voidPayment(paymentId, "pii-void", "{\"reason\":\"" + VOID_REASON + "\"}");
+		writeOff(createAndActivate(12), "pii-write-off");
+		settle(createAndActivate(12), "pii-settle");
+
+		assertThat(jdbc.queryForList("select distinct event_type from outbox_events", String.class))
+				.containsExactlyInAnyOrder("ContractActivated", "PaymentReceived", "ContractClosed", "PaymentVoided",
+						"ContractWrittenOff", "SettlementExecuted");
+		Set<String> forbiddenKeys = Set.of("full_name", "name", "customer_name", "nik", "phone", "address",
+				"reason", "void_reason", "write_off_reason", "note");
+		for (String payload : jdbc.queryForList("select payload_json::text from outbox_events", String.class)) {
+			assertThat(payload).doesNotContain(CUSTOMER_NAME, CUSTOMER_NIK, CUSTOMER_PHONE, CUSTOMER_ADDRESS,
+					VOID_REASON, WRITE_OFF_REASON);
+			assertThat(keys(objectMapper.readTree(payload))).doesNotContainAnyElementsOf(forbiddenKeys);
+		}
+	}
+
 	// --- helpers ------------------------------------------------------------------------------------------
 
 	UUID createDraft(int tenorMonths) {
@@ -349,6 +411,33 @@ class OutboxEventsIT {
 						.contentType(MediaType.APPLICATION_JSON)
 						.content("{\"reason\":\"" + WRITE_OFF_REASON + "\"}"))
 				.andReturn();
+	}
+
+	UUID quoteId(UUID contractId) throws Exception {
+		MvcResult quote = mockMvc.perform(post("/api/v1/settlements/quote")
+						.header("Authorization", "Bearer " + adminToken)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"contract_id\":\"" + contractId + "\"}"))
+				.andReturn();
+		assertThat(quote.getResponse().getStatus()).isEqualTo(200);
+		return UUID.fromString(data(quote).get("quote_id").asText());
+	}
+
+	MvcResult execute(UUID quoteId, String idempotencyKey) throws Exception {
+		return mockMvc.perform(post("/api/v1/settlements")
+						.header("Authorization", "Bearer " + adminToken)
+						.header("Idempotency-Key", idempotencyKey)
+						.contentType(MediaType.APPLICATION_JSON)
+						.content("{\"quote_id\":\"" + quoteId + "\"}"))
+				.andReturn();
+	}
+
+	MvcResult settle(UUID contractId, String idempotencyKey) throws Exception {
+		return execute(quoteId(contractId), idempotencyKey);
+	}
+
+	JsonNode data(MvcResult result) throws Exception {
+		return objectMapper.readTree(result.getResponse().getContentAsString()).get("data");
 	}
 
 	UUID paymentId(MvcResult result) throws Exception {

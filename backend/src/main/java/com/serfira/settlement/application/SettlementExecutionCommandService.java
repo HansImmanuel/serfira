@@ -46,6 +46,10 @@ import com.serfira.shared.error.StaleSettlementQuoteException;
 import com.serfira.shared.idempotency.CanonicalRequestJson;
 import com.serfira.shared.idempotency.IdempotencyService;
 import com.serfira.shared.idempotency.IdempotentResult;
+import com.serfira.shared.outbox.OutboxAggregateType;
+import com.serfira.shared.outbox.OutboxEventType;
+import com.serfira.shared.outbox.OutboxWriter;
+import com.serfira.settlement.application.event.SettlementExecutedPayload;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -120,6 +124,7 @@ public class SettlementExecutionCommandService {
 	private final IdempotencyService idempotency;
 	private final LedgerPostingService ledger;
 	private final SystemParameterService systemParameters;
+	private final OutboxWriter outbox;
 	private final Clock clock;
 
 	public SettlementExecutionCommandService(SettlementQuoteRepository quotes, SettlementRepository settlements,
@@ -128,7 +133,7 @@ public class SettlementExecutionCommandService {
 			EffectivePenaltyPort effectivePenalty, ContractCreditPort contractCredit,
 			SettlementClosePort settlementClose, DocumentNumberGenerator documentNumbers,
 			IdempotencyService idempotency, LedgerPostingService ledger, SystemParameterService systemParameters,
-			Clock clock) {
+			OutboxWriter outbox, Clock clock) {
 		this.quotes = quotes;
 		this.settlements = settlements;
 		this.allocations = allocations;
@@ -143,6 +148,7 @@ public class SettlementExecutionCommandService {
 		this.idempotency = idempotency;
 		this.ledger = ledger;
 		this.systemParameters = systemParameters;
+		this.outbox = outbox;
 		this.clock = clock;
 	}
 
@@ -260,6 +266,11 @@ public class SettlementExecutionCommandService {
 						source.amount()))
 				.toList());
 		creditApplications.flush();
+
+		// ADR-027: written before the close below, which writes ContractClosed, so the publisher emits
+		// SettlementExecuted first. A replayed key never reaches this method.
+		outbox.append(OutboxAggregateType.SETTLEMENT, settlement.getId(), OutboxEventType.SettlementExecuted,
+				SettlementExecutedPayload.of(settlement));
 
 		// Close the contract and settle its open installments through the contract module's own path (D10):
 		// the settled amount per installment is the receivable the allocations cleared on it.
