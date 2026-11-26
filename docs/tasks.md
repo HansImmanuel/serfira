@@ -17,17 +17,17 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `974ce81` (PR #29, T37 report pages, merged); T38 on `t38-outbox-events`. **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `a6df34d` (PR #30, T38 outbox, merged); T28a on `t28a-pii-key-ring`. **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
 operator flow end to end against the Compose stack.
 **Current sprint: Sprint 8 (IN PROGRESS, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (`t38-outbox-events`); T28a is next.
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (`t28a-pii-key-ring`); T28b is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t38-outbox-events`) = **136 suites / 1017 tests / 0 failed** (T37 close 126/969; T38 added nine outbox
-suites and `SchedulingThreadIT`). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
+`t28a-pii-key-ring`) = **140 suites / 1100 tests / 0 failed** (T38 close 136/1019 after its review fix; T28a
+added the key-ring, envelope, configuration and rotation suites). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
 **236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
@@ -79,6 +79,10 @@ for a GitHub billing reason, not a test failure.
   `ContractWrittenOff` and `SettlementExecuted` are written to `outbox_events` in their business transaction,
   PII-free, in write order (monotonic UUIDv7 ids). A ShedLock job (`outbox-publisher`, every 5 s) logs each
   as one ECS line and marks it `SENT`; failures retry and end `FAILED`.
+- PII key ring (T28a, ADR-025): customer PII is sealed under the active key, as `v1:` until
+  `write-envelope=v2` and then `v2:<kid>:…`; both formats always read, and `v1:` rows read
+  under the legacy key; NIK/phone lookups match the hash under every ring key. The flat key pair is entry
+  `k1`; extra keys are `serfira.security.pii.keys.<kid>.*`. Re-keying and `RequestFingerprint` key ids are T28b.
 
 Full per-task implementation notes for DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
@@ -134,6 +138,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T36   | G1 reporting metrics: `GET /reports/outstanding` (outstanding, AR, NPL, collection rate, settlement cash), V24 | ADR-026, `t36-reporting-outstanding`                    |
 | T37   | G4 report pages `/reports/aging` and `/reports/outstanding`; `customer_name` on aging rows                     | ADR-026, FE §2.9/§2.10, `t37-report-pages`              |
 | T38   | G6 outbox: six PII-free domain events written in their transaction; ShedLock log publisher, retries, `FAILED` | ADR-027, `t38-outbox-events`                            |
+| T28a  | CR-11 PII key ring: `v2:<kid>` envelope, candidate lookups, ring validation + guard on every member         | ADR-025, `t28a-pii-key-ring`                            |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -169,7 +174,7 @@ without losing data.
 - T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
 - T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
 - T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — DONE
-- T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — TODO
+- T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — DONE
 - T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
 
 **Exit:**
@@ -586,8 +591,50 @@ blocked lock renewals while a job ran. `JobSchedulingConfiguration` now defines 
 
 ### T28a — PII key ring and versioned `v2` envelope (CR-11) (2 pts)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Implementation note (2026-11-26, branch `t28a-pii-key-ring`; plan
+`docs/superpowers/plans/2026-11-26-t28a-pii-key-ring.md`): `PiiSecuritySupport` now holds a validated
+`PiiKeyRing` (`PiiKey` = `kid` + AES key + HMAC key); ADR-025 records the scheme and the rotation runbook.
+Decisions:
+- **Configuration is additive.** The flat `encryption-key`/`hmac-key` pair is ring entry `k1`;
+  `serfira.security.pii.keys.<kid>.*` adds entries; `active-kid` and `legacy-kid` default to `k1` when the
+  flat pair is set. Compose, the test profile and the README's existing variables are unchanged.
+- **`kid` = 1–16 lowercase letters or digits**, so it round-trips through
+  `SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY` (Spring lowercases env map keys and splits on `_`).
+- **Two-phase write format (PR #31 review).** `serfira.security.pii.write-envelope` = `v1` (default) or `v2`.
+  This version reads both but writes `v1` until an operator sets `v2`, so a pre-T28a instance running alongside
+  it, or a rollback, can still read every row. `v1` writes are refused unless the active and the legacy key are
+  both `k1` (the key every `v1:` row is under), so a rotation needs `v2` first (ADR-025 D7).
+- **Envelope `v2:<kid>:<base64>`**, no AAD: a relabelled body fails its tag because no two ring keys share
+  material. `v1:` reads under the legacy key. Every failure is an `IllegalArgumentException` that never echoes
+  the envelope or its `kid` (a 16-digit NIK fits the `kid` syntax). No migration (`TEXT` columns since V2).
+- **Candidates.** `hmacHex` stays the active key (writers, `RequestFingerprint`); `PiiHasher.nikCandidates` /
+  `phoneCandidates` hash under every ring key, active first. `CustomerSearchService` and `resolveCustomer`
+  (including its phone comparison) match any candidate through `CustomerLookup`; two matching rows fail with
+  the count only.
+- **Startup** refuses an unknown active/legacy `kid`, a duplicate or invalid `kid`, a wrong key length, shared
+  key material, a half-configured entry, bad base64, and `keys.k1` alongside the flat pair; messages name the
+  property and variable, never the value. The dev-key guard checks every ring member.
+Rulings: the existing `v1:` prefix assertions are unchanged again, because the default is `v1` writes; the
+single-hash finders `findByNikHash`/`findByPhoneLookup` stay for tests; the at-most-one check lives in
+`contract.application.CustomerLookup`, because Spring Data's exception translation rewraps an exception thrown
+in a repository default method. ADR-004 and Addendum §9 now name the real `SERFIRA_SECURITY_PII_*` variables.
+Verification: backend 140 suites / 1100 tests / 0 failed (`./gradlew check --rerun-tasks`; T28a added
+`PiiKeyRingTest`, `PiiSecuritySupportKeyRingTest`, `PiiKeyRingConfigurationTest` and `PiiKeyRotationIT`, which
+writes under `k1` in one application context and reads, finds, reuses and 409s in a second context with `k2`
+active on the same database); frontend and demo unchanged (no change outside the backend and docs). Review
+fixes: the dev-key guard trims like the key loader (a dev key with a trailing newline no longer passes); an
+active/legacy kid that is not a key id is never echoed (it may be a pasted key); `v1` create-reuse is asserted;
+README and ADR-025 D4/D6 corrected on the kid defaults and the mixed-active-key window during a rolling switch.
+Second review: `v1` writes need active = legacy = `k1` (`active-kid=k2` + `legacy-kid=k2` no longer starts in
+`v1` mode); a ring with no legacy key is told `legacy-kid` is missing instead of being steered to `v2`; the
+dev-key guard compares every key with all three public Compose values (a swapped dev key no longer passes);
+a `keys.<kid>` entry of the wrong shape, an invalid `kid`, a wrong length and shared material each fail
+naming the property and variable; `PiiKey` validates in its canonical constructor and prints only its `kid`;
+the `PiiKeyRing` constructor without an explicit envelope is gone; two stale Javadocs corrected.
+**Do not switch the active key in any environment until T28b ships** (ADR-025 D6).
 
 **Goal:** Let the PII encryption and HMAC keys rotate without making existing rows unreadable or
 unfindable (CR-11). Record the scheme in **ADR-025**.

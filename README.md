@@ -39,7 +39,8 @@ layer cannot silently corrupt the books.
   date-sensitive logic (due dates, grace periods, month-end clamping, leap years) fully testable.
   → [ADR-003](docs/adr/ADR-003-injectable-clock.md)
 - **PII protected at rest.** National ID (NIK) and phone numbers are AES-256-GCM encrypted;
-  uniqueness and search use HMAC lookup columns. → [ADR-004](docs/adr/ADR-004-at-rest-pii-protection.md)
+  uniqueness and search use HMAC lookup columns. → [ADR-004](docs/adr/ADR-004-at-rest-pii-protection.md);
+  keys rotate through a key ring → [ADR-025](docs/adr/ADR-025-pii-key-ring.md)
 - **Decisions on record.** 24 [Architecture Decision Records](docs/adr/) with alternatives
   considered and rejected.
 
@@ -296,6 +297,27 @@ itself as their credential.
   SERFIRA_SECURITY_PII_HMAC_KEY=<base64 >=32-byte key>
   SERFIRA_SECURITY_JWT_SECRET_BASE64=<base64 >=32-byte key>
   ```
+
+  The PII pair is entry `k1` of a key ring ([ADR-025](docs/adr/ADR-025-pii-key-ring.md)). A rotation
+  adds keys and then switches the active one:
+
+  ```
+  SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY=<base64 32-byte key>
+  SERFIRA_SECURITY_PII_KEYS_<KID>_HMACKEY=<base64 >=32-byte key>
+  SERFIRA_SECURITY_PII_ACTIVEKID=<kid>     # default k1 while the flat pair is set; otherwise required
+  SERFIRA_SECURITY_PII_LEGACYKID=<kid>     # reads pre-ring v1 rows; default k1 while the flat pair is
+                                           # set, otherwise none: set it if any v1 rows remain
+  SERFIRA_SECURITY_PII_WRITEENVELOPE=v2    # default v1; see the upgrade note below
+  ```
+
+  `<KID>` is 1–16 lowercase letters or digits (uppercase in the variable name). **Do not switch the
+  active key until T28b ships**: idempotent replays across the switch would get `409`.
+
+  **Upgrading to T28a is two-phase** ([ADR-025 D7](docs/adr/ADR-025-pii-key-ring.md)). Deploy it as is:
+  it reads both envelope formats but still writes `v1`, so an older instance running alongside it, or a
+  rollback, still reads every row. Set `SERFIRA_SECURITY_PII_WRITEENVELOPE=v2` only after no pre-T28a
+  instance runs and you no longer need to roll back below T28a. After that, a rollback below T28a cannot
+  read the `v2` rows. Key rotation requires `v2`.
 
 - **No plaintext PII in SQL, logs, or URLs.** API responses return customer data masked.
 - **Browser boundary (CORS).** A browser client on another origin must be allowlisted explicitly:

@@ -1,6 +1,7 @@
 package com.serfira.shared.security;
 
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
@@ -10,7 +11,8 @@ import org.springframework.core.env.Environment;
 
 /**
  * Refuses to start a production deployment on the documented {@code docker-compose} development
- * keys (T21b, review CR-16).
+ * keys (T21b, review CR-16), checking every member of the PII key ring (T28a, ADR-025), not only the
+ * flat {@code k1} pair.
  *
  * <p>The compose file ships fixed, public key material so local development needs no setup. Those
  * values are in the repository, which makes them useless as secrets: anyone who has read the file
@@ -58,13 +60,15 @@ public class DevKeyProductionGuardConfiguration {
 			return new DevKeysValidated();
 		}
 
-		List<GuardedKey> configuredKeys = List.of(
-				new GuardedKey("serfira.security.jwt.secret-base64", "SERFIRA_SECURITY_JWT_SECRET_BASE64",
-						environment.getProperty("serfira.security.jwt.secret-base64"), DEV_JWT_SECRET_BASE64),
-				new GuardedKey("serfira.security.pii.encryption-key", "SERFIRA_SECURITY_PII_ENCRYPTION_KEY",
-						environment.getProperty("serfira.security.pii.encryption-key"), DEV_PII_ENCRYPTION_KEY),
-				new GuardedKey("serfira.security.pii.hmac-key", "SERFIRA_SECURITY_PII_HMAC_KEY",
-						environment.getProperty("serfira.security.pii.hmac-key"), DEV_PII_HMAC_KEY));
+		List<GuardedKey> configuredKeys = new ArrayList<>();
+		configuredKeys.add(new GuardedKey("serfira.security.jwt.secret-base64", "SERFIRA_SECURITY_JWT_SECRET_BASE64",
+				environment.getProperty("serfira.security.jwt.secret-base64")));
+		// Every PII ring member (T28a, ADR-025): the flat k1 pair and each serfira.security.pii.keys.<kid> entry.
+		for (PiiKeyRingProperties.ConfiguredKey key : PiiKeyRingProperties.configuredKeys(environment)) {
+			configuredKeys.add(new GuardedKey(key.encryptionProperty(), key.encryptionEnvironmentVariable(),
+					key.encryptionValue()));
+			configuredKeys.add(new GuardedKey(key.hmacProperty(), key.hmacEnvironmentVariable(), key.hmacValue()));
+		}
 
 		List<String> offenders = configuredKeys.stream()
 				.filter(GuardedKey::isDevDefault)
@@ -79,21 +83,31 @@ public class DevKeyProductionGuardConfiguration {
 		return new DevKeysValidated();
 	}
 
-	/** A guarded property, the environment variable that overrides it, and its public dev value. */
-	private record GuardedKey(
-			String property, String environmentVariable, String configuredValue, String devValue) {
+	/**
+	 * Every public value in {@code docker-compose.yml}. Each guarded key is compared with all of them, not only
+	 * with the dev value of its own role: the dev HMAC key is 32 bytes and so a valid AES key, and the dev JWT
+	 * secret is long enough to be an HMAC key, so a swapped or misplaced dev value is just as public.
+	 */
+	private static final List<String> DEV_VALUES =
+			List.of(DEV_JWT_SECRET_BASE64, DEV_PII_ENCRYPTION_KEY, DEV_PII_HMAC_KEY);
+
+	/** A guarded property and the environment variable that overrides it. */
+	private record GuardedKey(String property, String environmentVariable, String configuredValue) {
 
 		boolean isDevDefault() {
 			// Blank is a missing key, not a dev key: the owning configuration reports that better.
 			if (configuredValue == null || configuredValue.isBlank()) {
 				return false;
 			}
-			byte[] configured = decodeOrNull(configuredValue);
+			// Trimmed exactly as the key loader trims (PiiKeyRingProperties): a dev key with a trailing
+			// newline, as a secret mounted from a file has, is still the dev key.
+			byte[] configured = decodeOrNull(configuredValue.trim());
 			if (configured == null) {
 				// Malformed base64 belongs to the key owner; it must not look like a valid key here.
 				return false;
 			}
-			return MessageDigest.isEqual(configured, Base64.getDecoder().decode(devValue));
+			return DEV_VALUES.stream()
+					.anyMatch(devValue -> MessageDigest.isEqual(configured, Base64.getDecoder().decode(devValue)));
 		}
 
 		private static byte[] decodeOrNull(String value) {

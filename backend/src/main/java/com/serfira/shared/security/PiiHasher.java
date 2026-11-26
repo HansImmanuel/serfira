@@ -1,5 +1,6 @@
 package com.serfira.shared.security;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -27,6 +28,22 @@ public final class PiiHasher {
 	 */
 	public static String hashPhone(String rawPhone) {
 		return PiiSecuritySupport.hmacHex(normalizePhone(rawPhone));
+	}
+
+	/**
+	 * The NIK's lookup hash under every ring key, the active key first (ADR-025): the values a NIK lookup matches.
+	 * The first element equals {@link #hashNik}.
+	 */
+	public static List<String> nikCandidates(String rawNik) {
+		return PiiSecuritySupport.hmacCandidates(normalizeNik(rawNik));
+	}
+
+	/**
+	 * The phone's lookup hash under every ring key, the active key first (ADR-025): the values a phone lookup
+	 * matches. The first element equals {@link #hashPhone}.
+	 */
+	public static List<String> phoneCandidates(String rawPhone) {
+		return PiiSecuritySupport.hmacCandidates(normalizePhone(rawPhone));
 	}
 
 	/** Strips everything that is not a digit ({@code 3171-0125-0190-0001} → {@code 3171012501900001}). */
