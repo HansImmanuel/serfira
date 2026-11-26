@@ -44,3 +44,11 @@ export function useCanReadCredit(): boolean {
 export function useCanReadStatement(): boolean {
   return hasAnyRole(useSession().roles, CREDIT_AND_STATEMENT_ROLES);
 }
+
+/** Roles `ResourceServerSecurityConfiguration` allows on `GET /reports/aging` and `/reports/outstanding`. */
+const REPORT_ROLES = ["ADMIN_OPERASIONAL", "FINANCE", "MANAJEMEN"] as const;
+
+/** Whether to offer the report pages (UX only; the server answers 403 for any other role). */
+export function useCanReadReports(): boolean {
+  return hasAnyRole(useSession().roles, REPORT_ROLES);
+}
