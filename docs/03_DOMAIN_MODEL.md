@@ -352,6 +352,7 @@ nol, selain itu `FAILED`. Start/finish dicatat dalam transaksi terpisah dari wri
 | GET    | /api/v1/contracts/{id}/credit                          | saldo & histori credit                                                                                                                   |
 | POST   | /api/v1/contracts/{id}/credit/apply                    | aplikasikan credit                                                                                                                       |
 | GET    | /api/v1/contracts/{id}/statement                       | rekening koran kontrak                                                                                                                   |
+| GET    | /api/v1/contracts/{id}/payments                        | riwayat pembayaran kontrak (POSTED/VOIDED, alokasi)                                                                                      |
 | POST   | /api/v1/settlements/quote                              | simulasi pelunasan                                                                                                                       |
 | POST   | /api/v1/settlements                                    | eksekusi pelunasan                                                                                                                       |
 | POST   | /api/v1/contracts/{id}/write-off                       | write-off                                                                                                                                |

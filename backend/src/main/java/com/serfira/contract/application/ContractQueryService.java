@@ -48,7 +48,7 @@ import java.util.stream.Collectors;
  */
 @Service
 @Transactional(readOnly = true)
-public class ContractQueryService {
+public class ContractQueryService implements ContractLookupPort {
 
 	/**
 	 * Supported sort tokens, using the wire (snake_case) spelling documented for the API. Values are
@@ -101,6 +101,13 @@ public class ContractQueryService {
 				.toList();
 		return PageResponse.of(items, result.getNumber(), result.getSize(), result.getTotalElements(),
 				result.getTotalPages());
+	}
+
+	@Override
+	public void requireExists(UUID contractId) {
+		if (!contracts.existsById(contractId)) {
+			throw new ContractNotFoundException(contractId);
+		}
 	}
 
 	/** Detail of one contract, with its outstanding. */

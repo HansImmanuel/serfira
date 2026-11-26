@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -14,6 +15,12 @@ import java.util.UUID;
  * idempotency key" (V1 {@code uq_payment_idempotency}) are enforced by the database.
  */
 public interface PaymentRepository extends JpaRepository<Payment, UUID> {
+
+	/**
+	 * Every payment of one contract, any status, newest first: the history read (T39). {@code payment_no}
+	 * breaks a tie on {@code paid_at}, so the order is total.
+	 */
+	List<Payment> findByContractIdOrderByPaidAtDescPaymentNoDesc(UUID contractId);
 
 	/**
 	 * {@code Σ} payment amount for one contract in the given status, for the daily consistency check (F1,

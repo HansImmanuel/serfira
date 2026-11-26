@@ -32,8 +32,9 @@ import java.util.UUID;
  * principal is what the audit columns record.
  *
  * <p>No {@code Location} header is returned with the 201: the payment representation is the response
- * body, and there is no {@code GET /payments/{id}} yet (the statement/read surface is C5). Pointing a
- * header at a route that does not exist would be a lie a client could follow.
+ * body, and there is no {@code GET /payments/{id}}: a payment is read through the per-contract history,
+ * {@code GET /contracts/{id}/payments} ({@code ContractPaymentController}). Pointing a header at a route
+ * that does not exist would be a lie a client could follow.
  */
 @RestController
 @RequestMapping("/api/v1/payments")

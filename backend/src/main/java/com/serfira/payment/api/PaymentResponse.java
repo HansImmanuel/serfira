@@ -57,11 +57,6 @@ public record PaymentResponse(
 	 */
 	public static PaymentResponse fromVoided(Payment payment,
 			List<com.serfira.payment.domain.PaymentAllocation> allocations) {
-		BigDecimal excess = allocations.stream()
-				.filter(allocation -> allocation.getType() == com.serfira.payment.domain.AllocationType.EXCESS)
-				.map(com.serfira.payment.domain.PaymentAllocation::getAmount)
-				.reduce(BigDecimal.ZERO, BigDecimal::add)
-				.setScale(2, java.math.RoundingMode.UNNECESSARY);
 		return new PaymentResponse(
 				payment.getId(),
 				payment.getPaymentNo(),
@@ -70,7 +65,16 @@ public record PaymentResponse(
 				payment.getChannel(),
 				payment.getPaidAt(),
 				payment.getStatus(),
-				excess,
+				excessOf(allocations),
 				allocations.stream().map(PaymentAllocationResponse::from).toList());
+	}
+
+	/** The EXCESS held by a payment as one scale-2 figure; {@code 0.00} when it was fully applied. */
+	static BigDecimal excessOf(List<com.serfira.payment.domain.PaymentAllocation> allocations) {
+		return allocations.stream()
+				.filter(allocation -> allocation.getType() == com.serfira.payment.domain.AllocationType.EXCESS)
+				.map(com.serfira.payment.domain.PaymentAllocation::getAmount)
+				.reduce(BigDecimal.ZERO, BigDecimal::add)
+				.setScale(2, java.math.RoundingMode.UNNECESSARY);
 	}
 }

@@ -38,6 +38,9 @@ public interface PaymentAllocationRepository extends JpaRepository<PaymentAlloca
 	/** Every allocation row of one payment, for the void path (which installments it touched, its EXCESS). */
 	List<PaymentAllocation> findByPaymentId(UUID paymentId);
 
+	/** The allocation rows of several payments in one query, for the history read (T39): no N+1. */
+	List<PaymentAllocation> findByPaymentIdIn(Collection<UUID> paymentIds);
+
 	/**
 	 * {@code Σ} allocation amount (every type, EXCESS included) over the allocations of one contract's
 	 * payments in the given status, for the daily consistency check (F1, task T17, Addendum §7.1 check B,
