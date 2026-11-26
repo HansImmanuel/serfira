@@ -17,13 +17,13 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `b6dfc24` (PR #28, T36 outstanding report, merged); T37 on `t37-report-pages`. **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `974ce81` (PR #29, T37 report pages, merged); T38 in progress on `t38-outbox-events`. **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
 operator flow end to end against the Compose stack.
 **Current sprint: Sprint 8 (IN PROGRESS, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (`t37-report-pages`); T38 is next.
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is IN PROGRESS.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
 `t37-report-pages`) = **126 suites / 969 tests / 0 failed** (T34 close 121/939; T36 added the
@@ -164,7 +164,7 @@ without losing data.
 
 - T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
 - T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
-- T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — TODO
+- T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — IN PROGRESS
 - T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — TODO
 - T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — TODO
 
@@ -443,7 +443,7 @@ snapshot with the customer name).
 
 ### T38 — G6: transactional outbox writer, six domain events and a log-based publisher (3 pts)
 
-Status: TODO
+Status: IN PROGRESS
 Estimate: 3 pts
 
 **Goal:** Make domain events durable and observable without Kafka.
