@@ -63,17 +63,25 @@ payload starts with `schema_version: 1`. The event id is the outbox row id.
 
 ### D4 — Order inside one transaction
 
-Two events of one transaction share `created_at` (one `Clock.now()` instant), and the publisher claims
-`ORDER BY created_at, id`. The writer therefore assigns the id itself: a UUIDv7 that is strictly increasing
-within the process (`OutboxEventIds`: 48-bit milliseconds, a 12-bit counter, random tail; the millisecond
-never goes backwards). PostgreSQL compares `uuid` byte-wise, so `(created_at, id)` is write order:
-`PaymentReceived` before the `ContractClosed` it caused, and `SettlementExecuted` before its
+The publisher claims `ORDER BY created_at, id`. `created_at` is stamped per persist by the audit listener
+from the application clock (`AuditSupport.onCreate`): in production that is the wall clock at microsecond
+resolution, so two events of one transaction normally differ in `created_at` and sort in write order by it.
+They tie when the clock does not advance between the two persists — always under the tests' `FixedClock`,
+and possible at the clock's resolution. For ties the writer assigns the id itself: a UUIDv7 that is strictly
+increasing within the process (`OutboxEventIds`: 48-bit milliseconds, a 12-bit counter, random tail; its
+millisecond never goes backwards). PostgreSQL compares `uuid` byte-wise, so the id breaks every tie in write
+order: `PaymentReceived` before the `ContractClosed` it caused, and `SettlementExecuted` before its
 `ContractClosed`. No migration was needed.
+
+The guarantee assumes a wall clock that does not step backwards between two persists of one transaction. An
+NTP step back at that instant can publish `ContractClosed` before its cause; consumers already deduplicate by
+event id and must not rely on cross-aggregate order for correctness.
 
 ### D5 — Publisher and delivery semantics
 
 - `OutboxPublisherScheduler` (cron `serfira.jobs.outbox-publisher.cron`, default every 5 seconds,
-  Asia/Jakarta) → `LockedOutboxPublisherJob` (ShedLock lock `outbox-publisher`) → `OutboxPublisherJob`
+  Asia/Jakarta, on the shared `serfira-scheduling-` pool of `JobSchedulingConfiguration`, so it never waits
+  for the nightly jobs or for ShedLock's keep-alive thread) → `LockedOutboxPublisherJob` (ShedLock lock `outbox-publisher`) → `OutboxPublisherJob`
   (SYSTEM actor) → `OutboxBatchPublisher.publishBatch` (`REQUIRES_NEW`).
 - A batch claims up to `batch-size` (default 100) `PENDING` rows with `FOR UPDATE SKIP LOCKED`, hands each
   to the `OutboxSink`, and marks it `SENT` with `sent_at`. A sink failure increments `retry_count`; at

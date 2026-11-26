@@ -26,8 +26,8 @@ operator flow end to end against the Compose stack.
 definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (`t38-outbox-events`); T28a is next.
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t38-outbox-events`) = **135 suites / 1016 tests / 0 failed** (T37 close 126/969; T38 added nine outbox
-suites). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
+`t38-outbox-events`) = **136 suites / 1017 tests / 0 failed** (T37 close 126/969; T38 added nine outbox
+suites and `SchedulingThreadIT`). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
 **236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
@@ -454,9 +454,11 @@ Implementation note (2026-11-26, branch `t38-outbox-events`; plan
 `docs/superpowers/plans/2026-11-26-t38-outbox-events.md`): `shared.outbox.OutboxWriter` (`MANDATORY`) writes
 the six events at their transitions, with dedicated PII-free payload records; ADR-027 holds the catalogue.
 Decisions:
-- **Write order is pinned by the id.** Events of one transaction share `created_at`, so the writer assigns a
-  per-process monotonic UUIDv7 (`OutboxEventIds`) and `ORDER BY created_at, id` is write order:
-  `PaymentReceived` and `SettlementExecuted` each precede the `ContractClosed` they cause. No migration.
+- **Write order: `created_at`, then the id.** `created_at` is stamped per persist from the application clock;
+  when two events of one transaction tie on it (always under the tests' `FixedClock`), the writer's per-process
+  monotonic UUIDv7 (`OutboxEventIds`) breaks the tie in write order, so `PaymentReceived` and
+  `SettlementExecuted` each precede the `ContractClosed` they cause. Assumes no backward wall-clock step
+  between the two writes (ADR-027 D4). No migration.
 - **One MATURITY site.** `ContractClosed` is written in `closeWhenEveryInstallmentIsPaid` and
   `SettlementCloseService`; the first also covers a penalty waiver that clears the last amount.
 - **`PaymentVoidPort.applyVoidRecomputation` now returns whether it reopened** a MATURITY close, for
@@ -466,14 +468,16 @@ Decisions:
   ECS line per event with `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `payload`). A tick stops
   after a batch with a failure, so a refused event retries on the next tick; at `max-retries` (10) it is
   `FAILED`. Only a tick with failures writes a `job_run` row.
-Verification: backend 135 suites / 1016 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 236 tests / 27 files (unchanged code); demo helpers 30/30;
+Verification: backend 136 suites / 1017 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 236 tests / 27 files (unchanged code); demo helpers 30/30;
 `node scripts/demo.mjs --reset` exit 0, and the app logged one `Published outbox event` line per event (2
-`ContractActivated`, 2 `PaymentReceived`; the replay and the refused finance payment wrote none), all `SENT`,
+`ContractActivated`, 2 `PaymentReceived`; the replay and the refused finance payment wrote none), all `SENT`
+within one or two 5-second ticks on a `serfira-scheduling-` thread,
 with no demo customer name, NIK or phone. Mutation checks: `REQUIRED` instead of `MANDATORY`, the settlement
-event written after the close, and a claim without `SKIP LOCKED` each fail their test. Observation (pre-existing,
-not changed): the ShedLock keep-alive `ScheduledExecutorService` bean switches off Boot's task scheduler, so
-every `@Scheduled` job, the publisher included, runs on the single `shedlock-keep-alive` thread; a long daily
-servicing run delays publisher ticks and lock renewals.
+event written after the close, and a claim without `SKIP LOCKED` each fail their test. Review fix: the ShedLock
+keep-alive `ScheduledExecutorService` bean had switched off Boot's task scheduler, so every `@Scheduled` job ran
+on the single `shedlock-keep-alive` thread, which would have stalled the publisher for the whole nightly run and
+blocked lock renewals while a job ran. `JobSchedulingConfiguration` now defines a three-thread
+`serfira-scheduling-` `TaskScheduler`; `SchedulingThreadIT` pins it.
 
 **Goal:** Make domain events durable and observable without Kafka.
 

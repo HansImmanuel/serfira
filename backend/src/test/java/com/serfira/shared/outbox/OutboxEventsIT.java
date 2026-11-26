@@ -314,7 +314,10 @@ class OutboxEventsIT {
 
 		assertThat(result.getResponse().getStatus()).isEqualTo(201);
 		UUID settlementId = UUID.fromString(data(result).get("settlement_id").asText());
-		// Same transaction, same FixedClock instant: only the time-ordered id can put these two in write order.
+		// One transaction: the two rows either differ in created_at (stamped per persist) or tie on it, and then
+		// the time-ordered id breaks the tie (ADR-027 D4; the tie itself is pinned by OutboxEventIdsTest).
+		// Whether they tie here depends on which context's clock AuditSupport was last bound to, so the test
+		// asserts only the order.
 		List<Map<String, Object>> pair = jdbc.queryForList("""
 				select event_type, aggregate_type, aggregate_id, created_at from outbox_events
 				where event_type in ('SettlementExecuted', 'ContractClosed') and payload_json ->> 'contract_id' = ?
@@ -322,7 +325,6 @@ class OutboxEventsIT {
 		assertThat(pair).extracting(row -> row.get("event_type")).containsExactly("SettlementExecuted", "ContractClosed");
 		assertThat(pair.get(0)).containsEntry("aggregate_type", "SETTLEMENT").containsEntry("aggregate_id", settlementId);
 		assertThat(pair.get(1)).containsEntry("aggregate_type", "CONTRACT").containsEntry("aggregate_id", contractId);
-		assertThat(pair.get(0).get("created_at")).isEqualTo(pair.get(1).get("created_at"));
 
 		JsonNode executed = payload(rows(settlementId).get(0));
 		assertThat(keys(executed)).containsExactlyInAnyOrder("schema_version", "settlement_id", "settlement_no",

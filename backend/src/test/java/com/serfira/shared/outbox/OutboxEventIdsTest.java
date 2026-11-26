@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * T38 / ADR-027: outbox event ids are UUIDv7 and strictly increasing within the process, so two events
- * written in one transaction (same {@code created_at}) still sort in write order under
+ * written in one transaction with tied {@code created_at} values still sort in write order under
  * {@code ORDER BY created_at, id}. PostgreSQL compares {@code uuid} byte-wise, which is the same order as the
  * lowercase hex text compared lexically, so the text comparison below is the database's order.
  */

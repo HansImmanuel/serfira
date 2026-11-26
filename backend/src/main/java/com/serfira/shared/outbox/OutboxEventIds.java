@@ -7,12 +7,14 @@ import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.stereotype.Component;
 
 /**
- * Issues outbox event ids: UUIDv7 (RFC 9562), strictly increasing within this process (ADR-027).
+ * Issues outbox event ids: UUIDv7 (RFC 9562), strictly increasing within this process (ADR-027 D4).
  *
- * <p>Two events written in one transaction share {@code created_at} (one {@link Clock#now()} per business
- * instant), and the publisher claims rows {@code ORDER BY created_at, id}. A random id would order such a pair
- * by chance; a monotonic id orders it as written, so a {@code SettlementExecuted} always precedes the
- * {@code ContractClosed} it caused. PostgreSQL compares {@code uuid} byte-wise, which is this layout's order.
+ * <p>The publisher claims rows {@code ORDER BY created_at, id}. {@code created_at} is stamped per persist from
+ * the application clock, so two events of one transaction usually differ in it already; when they tie (always
+ * under a fixed test clock, possible at the clock's resolution) a random id would order them by chance. A
+ * monotonic id breaks the tie as written, so a {@code SettlementExecuted} precedes the {@code ContractClosed} it
+ * caused as long as the wall clock does not step backwards between the two writes. PostgreSQL compares
+ * {@code uuid} byte-wise, which is this layout's order.
  *
  * <p>Layout: 48-bit Unix milliseconds | version {@code 0111} | 12-bit counter | variant {@code 10} | 62 random
  * bits. The millisecond never goes backwards (a clock moved back reuses the last one), a repeat within the

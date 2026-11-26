@@ -175,7 +175,7 @@ Definisi metrik di ADR-026:
       (`PaymentReceived`, `PaymentVoided`, `ContractActivated`, `ContractClosed`, `ContractWrittenOff`,
       `SettlementExecuted`) ditulis dalam transaksi bisnisnya, payload tanpa PII dan tanpa teks bebas (ADR-027).
       Id UUIDv7 monoton menjaga urutan event dalam satu transaksi. Publisher ShedLock tiap 5 detik menulis satu
-      baris log ECS per event lalu `SENT`; gagal → retry, batas → `FAILED`. Verifikasi: backend 135 suite / 1016 test, frontend
+      baris log ECS per event lalu `SENT`; gagal → retry, batas → `FAILED`. Verifikasi: backend 136 suite / 1017 test, frontend
       236 test, helper demo 30/30, demo exit 0 dengan event di log tanpa PII (branch `t38-outbox-events`)
 - [ ] T28a — PII key ring + envelope `v2` (ADR-025)
 - [ ] T28b — re-keying PII/HMAC + kompatibilitas kunci `RequestFingerprint`

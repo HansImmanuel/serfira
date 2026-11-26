@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import javax.sql.DataSource;
 import java.util.concurrent.Executors;
@@ -18,6 +19,27 @@ import java.util.concurrent.ScheduledExecutorService;
 @EnableScheduling
 @EnableSchedulerLock(defaultLockAtMostFor = "PT10M")
 public class JobSchedulingConfiguration {
+
+	/** One thread per scheduled job: daily servicing, idempotency cleanup and the outbox publisher. */
+	static final int SCHEDULING_POOL_SIZE = 3;
+
+	/**
+	 * The thread pool every {@code @Scheduled} job runs on (T38 review). Without it, the keep-alive
+	 * {@link ScheduledExecutorService} below makes Boot's task-scheduling auto-configuration back off and
+	 * {@code @Scheduled} falls back to that single {@code shedlock-keep-alive} thread: the five-second outbox
+	 * publisher would stall for the whole nightly run, a long drain would delay the daily jobs, and a running
+	 * job would block its own lock renewal. {@code @Scheduled} resolves a {@code TaskScheduler} before a
+	 * {@code ScheduledExecutorService}, so this bean takes the jobs and leaves the keep-alive thread to ShedLock.
+	 */
+	@Bean
+	ThreadPoolTaskScheduler taskScheduler() {
+		ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+		scheduler.setPoolSize(SCHEDULING_POOL_SIZE);
+		scheduler.setThreadNamePrefix("serfira-scheduling-");
+		scheduler.setWaitForTasksToCompleteOnShutdown(true);
+		scheduler.setAwaitTerminationSeconds(30);
+		return scheduler;
+	}
 
 	@Bean(destroyMethod = "shutdown")
 	ScheduledExecutorService shedLockKeepAliveExecutor() {
