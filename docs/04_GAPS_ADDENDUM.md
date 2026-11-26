@@ -524,27 +524,27 @@ Semua migration harus diterapkan via Flyway; tidak ada perubahan schema manual.
 
 ## 18. Demo Seed Data Specification
 
-Seed data ini harus tersedia setelah `docker-compose up` agar demo script (G5) bisa dijalankan ulang tanpa setup manual. Dua kontrak demonstrasi dengan karakteristik berbeda.
+Data demo harus bisa dibuat ulang dari stack `docker compose up` yang bersih, tanpa setup manual: user demo (§18.3) di-seed, dan dua kontrak demonstrasi dengan karakteristik berbeda dibuat oleh demo script (G5) lewat API.
+
+> **Keputusan T34 (2026-11-25).** Hanya user demo (§18.3) yang di-seed. Kontrak A dan B dibuat lewat API oleh `scripts/demo.mjs`, tidak lewat SQL (ADR-004). State "pre-seeded" berisi riwayat pembayaran (angsuran 1 dibayar tepat waktu di bulan Februari, angsuran 2 telat 5 hari, dst.) tidak bisa dibuat lewat API: `paid_at` selalu jam server (TS §2.0), dan aktivasi menolak `start_date` yang lebih dari satu tahun ke belakang, sehingga tanggal tetap `2026-01-31` tidak berlaku lagi setelah Januari 2027. Karena itu term kontrak dan golden values di bawah tetap dipakai, tetapi `planned_start_date` dihitung relatif terhadap hari ini (Asia/Jakarta) dan pembayaran dilakukan hari ini. Customer dipakai ulang di setiap run (NIK + telepon tetap), sedangkan aset memakai `serial_no` unik per run tanpa plat, sehingga script bisa dijalankan ulang tanpa `DUPLICATE_CONTRACT`. Lihat `docs/tasks.md` § T34.
 
 ### 18.1 Kontrak Demo A — FLAT, Skenario Normal & Late
 
 | Field | Value |
 |---|---|
-| customer | Budi Santoso, NIK: `3171012501900001` |
-| asset | MOTORCYCLE, Honda Beat, Plat B1234XY |
+| customer | Budi Santoso, NIK: `3171012501900001`, telepon `081200000001` |
+| asset | MOTORCYCLE, Honda Beat, `serial_no` `DEMO-A-<run tag>` (tanpa plat; lihat keputusan T34) |
 | asset_price | Rp 20.000.000 |
 | down_payment | Rp 4.000.000 |
 | principal | Rp 16.000.000 |
 | tenor_months | 12 |
 | interest_scheme | FLAT |
 | interest_rate | 0.0150 (1.5%/bulan) |
-| start_date | 2026-01-31 |
+| start_date | hari ini − 70 hari (Asia/Jakarta); draft awal: 2026-01-31 |
 
-**Skenario pre-seeded (state saat demo start):**
-- Installment 1 (Feb 28): PAID — payment normal tepat waktu.
-- Installment 2 (Mar 31): PAID — payment telat 5 hari, denda sudah terbayar.
-- Installment 3 (Apr 30): PARTIALLY_PAID — partial payment, saldo tersisa.
-- Installment 4–12: OVERDUE / PENDING (tergantung tanggal demo).
+**Skenario demo (dijalankan oleh `scripts/demo.mjs`):**
+- Angsuran 1 (sekitar 40 hari telat) dan angsuran 2 (sekitar 10 hari telat) sudah lewat grace 3 hari.
+- Pembayaran Rp 2.000.000 (CASH) hari ini: denda dialokasikan lebih dulu, lalu bunga, lalu pokok (PRD skenario 2). Angsuran 1 → PAID, angsuran 2 → PARTIALLY_PAID (PRD skenario 3), angsuran 3 → PENDING.
 
 **Golden values (harus cocok dengan engine):**
 - bungaTotal = 16.000.000 × 0.0150 × 12 = 2.880.000
@@ -552,24 +552,24 @@ Seed data ini harus tersedia setelah `docker-compose up` agar demo script (G5) b
 - angsuranBunga = 2.880.000 / 12 = 240.000
 - angsuranTotal = 1.573.333,33/bulan (last installment adjust)
 
-### 18.2 Kontrak Demo B — EFFECTIVE, Skenario Settlement
+### 18.2 Kontrak Demo B — EFFECTIVE, Skenario Bayar Tepat Waktu (settlement: T39)
 
 | Field | Value |
 |---|---|
-| customer | Siti Rahayu, NIK: `3275015506850002` |
-| asset | CAR, Toyota Avanza, Plat D5678YZ |
+| customer | Siti Rahayu, NIK: `3275015506850002`, telepon `081200000002` |
+| asset | CAR, Toyota Avanza, `serial_no` `DEMO-B-<run tag>` (tanpa plat; lihat keputusan T34) |
 | asset_price | Rp 200.000.000 |
 | down_payment | Rp 50.000.000 |
 | principal | Rp 150.000.000 |
 | tenor_months | 36 |
 | interest_scheme | EFFECTIVE |
 | interest_rate | 0.0075 (0.75%/bulan) |
-| start_date | 2026-01-15 |
+| start_date | hari ini − 1 bulan (Asia/Jakarta, di-clamp ke akhir bulan); draft awal: 2026-01-15 |
 
-**Skenario pre-seeded:**
-- Installment 1–6: PAID — semua tepat waktu, tidak ada denda.
-- Installment 7–36: PENDING/OVERDUE.
-- State ini memposisikan kontrak untuk demo **pelunasan dipercepat** (settlement) pada bulan ke-7.
+**Skenario demo (dijalankan oleh `scripts/demo.mjs`):**
+- Angsuran 1 jatuh tempo paling lambat hari ini dan masih dalam grace, sehingga tidak ada denda.
+- Pembayaran Rp 4.769.959,90 (BANK_TRANSFER): bunga 1.125.000 + pokok 3.644.959,90, angsuran 1 → PAID (PRD skenario 1). Request yang sama diulang dengan `Idempotency-Key` yang sama me-replay pembayaran yang sama (PRD skenario 6).
+- Demo pelunasan dipercepat (settlement) dari browser ada di T39.
 
 **Golden value installment #1 (pinned by `EffectiveScheduleGoldenTest.demoContractBGoldenCase`):**
 - i = 0.0075, n = 36
@@ -594,12 +594,10 @@ Seed data ini harus tersedia setelah `docker-compose up` agar demo script (G5) b
 
 Gunakan Flyway **repeatable migration** terpisah, `R__demo_seed.sql` (bukan V1 dan bukan versi bernomor), agar seed tidak bercampur dengan schema baseline dan dapat di-skip untuk production profile. File berada di `db/demo`, dan Spring profile `demo` menambahkan lokasi itu ke `spring.flyway.locations`; profile `prod` tidak pernah melihatnya. `INSERT … ON CONFLICT (username) DO NOTHING` membuat re-apply aman, dengan konsekuensi perubahan hash pada baris demo yang sudah ada tidak otomatis ter-update (ADR-022 D8).
 
-Script demo (`docs/demo-script.sh` atau `docs/demo-script.curl`) wajib dimulai dengan:
+Script demo adalah `scripts/demo.mjs` (Node ≥ 22, tanpa dependency; keputusan T34: bash membutuhkan `jq`, yang tidak tersedia di lingkungan Windows). Reset database bersifat opt-in, karena menghapus volume lokal:
 ```bash
-# Reset seed: drop + recreate DB via docker-compose
-docker-compose down -v && docker-compose up -d
-# Tunggu aplikasi ready
-sleep 5
-# Jalankan skenario
-curl -s -X POST http://localhost:8080/api/v1/auth/login ...
+node scripts/demo.mjs --reset   # docker compose down -v, up --build -d, tunggu /actuator/health UP, jalankan skenario
+node scripts/demo.mjs --up      # tanpa menghapus volume
+node scripts/demo.mjs           # terhadap stack yang sudah berjalan; aman dijalankan ulang
 ```
+Job CI `compose-smoke` menjalankan script yang sama terhadap stack Compose yang baru.

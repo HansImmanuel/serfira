@@ -17,17 +17,21 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `3a66c98` (PR #23, T32 Next.js shell, merged). **Sprint 6b is COMPLETE**; **Sprint 7
-is in progress** — T35 and T32 DONE and merged, T33 DONE on branch `t33-payment-statement-credit` (PR
-pending); T34 still TODO. Backend Phases 1–2 are implemented and merged; the `frontend/` app shell, login,
-contract lifecycle and the servicing screens (payment, statement filters, credit apply) are implemented.
+**Snapshot:** `main` @ `9036501` (PR #24, T33 servicing screens, merged). **Sprint 7 is COMPLETE**: T35,
+T32 and T33 are merged, and T34 (demo script and README close-out) is DONE on branch `t34-demo-script`
+(PR pending). Backend Phases 1–2 are implemented and merged. The `frontend/` app shell, login, contract
+lifecycle and the servicing screens (payment, statement filters, credit apply) are implemented, and
+`node scripts/demo.mjs` proves the operator flow end to end against the Compose stack. Next: Sprint 8
+(T28a/T28b, T36, T37, T38), to be detailed at its planning.
 
-**Verified test counts:** backend full local `./gradlew check` (2026-11-25, branch `t32-nextjs-shell`, after
-`main` was merged in) = **121 suites / 932 tests / 0 failed** (T35 baseline 120/926, plus
-`BigDecimalStringModuleTest`, plus the PR #22 CORS review tests); unchanged by T33 (no backend file
-touched). Frontend `npm test` (2026-11-25, branch `t33-payment-statement-credit`) =
-**178 tests / 23 files / 0 failed** (T32 baseline 108 / 17), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the
-production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). CI on `main` is red
+**Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
+`t34-demo-script`) = **121 suites / 939 tests / 0 failed** (T32 close 121/932; PR #24 added the credit-apply
+`Idempotency-Key` tests; T34 touched no backend file). Frontend `npm test`
+(2026-11-25, branch `t34-demo-script`) = **203 tests / 23 files / 0 failed** (T33 close 178; PR #24's
+review fixes added the rest), plus green `npm run lint` and `npm run typecheck`; `npm run build` was green
+at T33 (the production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo
+helpers `node --test "scripts/demo/*.test.mjs"` = **28 tests / 0 failed**; `node scripts/demo.mjs --reset`
+exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
 for a GitHub billing reason, not a test failure.
 
 **Implemented (verified in source):**
@@ -62,6 +66,11 @@ for a GitHub billing reason, not a test failure.
   search (ADR-004); rotation is **T28a/T28b** (Sprint 8).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
   Dependency-Check and Compose smoke as separate CI jobs (T27, T32). No scanner is wired into `check`.
+  Compose smoke also runs the demo helpers' tests and `node scripts/demo.mjs` (T34).
+- Demo (T34): `scripts/demo.mjs` is a dependency-free Node script that logs in, creates and activates the
+  Addendum §18 contracts through the API with dates relative to today, checks the golden schedules, pays
+  (PRD scenarios 1, 2, 3 and 6), reads the statement (Σ debit = Σ credit) and the aging report, and checks
+  the role split. Only the demo users are seeded.
 
 Full per-task implementation notes for DONE work are in `tasks-archive.md`; the sprint narrative is in
 `PROGRESS.md`.
@@ -113,6 +122,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T27   | CI & runtime gates: OWASP Dependency-Check (CVSS ≥ 7.0), gitleaks (history incl. merge diffs + tree), Compose smoke | CR-15, `t27-ci-runtime-gates`                           |
 | T35   | Browser-client CORS boundary: exact-origin allowlist + startup validation, `CorsFilter` before the matrix, ADR-023 | ADR-023, `t35-cors-adr-023`                             |
 | T33   | Frontend G3: payment form + allocation result, statement filters, credit apply; no `paid_at`/note input     | 06_FRONTEND_SPEC §2.6–§2.7, `t33-payment-statement-credit` |
+| T34   | G5 demo: `scripts/demo.mjs` end-to-end API demo (relative dates), CI compose-smoke run, README close-out    | Addendum §18 (amended), `t34-demo-script`               |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -129,10 +139,13 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
   T21a (auth foundation, PR #19), T21b (rotation/logout/lockout/dev-key guard, PR #20) and T27 (CI & runtime
   gates) DONE. T27's keyed CI acceptance run is deferred while the GitHub account billing lock is resolved;
   the workflow, scanners and smoke test are implemented and locally verified.
+- **Sprint 7 — Frontend Core & Demo:** COMPLETE. T35 (PR #22), T32 (PR #23), T33 (PR #24) and T34
+  (`t34-demo-script`) DONE. The operator flow runs in the browser and `node scripts/demo.mjs` replays it
+  against the API.
 
 ---
 
-## Sprint 7 — Frontend Core & Demo (active)
+## Sprint 7 — Frontend Core & Demo (COMPLETE)
 
 **Goal (05_SPRINT_PLAN.md Sprint 7):** the main operator flow runs in a browser — login → create contract
 → activate → record payment → read statement — and the demo is repeatable.
@@ -142,7 +155,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 - T35 — Browser-client CORS boundary + ADR-023 (1 pt) — **DONE**
 - T32 — G2: app shell, login, contract list/detail/create/activate (5 pts) — **DONE**
 - T33 — G3: payment form, installment table, statement, credit tab (5 pts) — **DONE**
-- T34 — G5: demo script, seed data, README close-out (2 pts)
+- T34 — G5: demo script, seed data, README close-out (2 pts) — **DONE**
 
 **Exit:** login works against the real backend; a DRAFT contract can be created, activated, paid and read
 back from the browser; the statement renders ledger-literal rows; the demo script runs end-to-end from a
@@ -505,8 +518,38 @@ use the business zone, not the browser's.
 
 ### T34 — G5: demo script, seed data and README close-out (2 pts)
 
-Status: TODO
+Status: DONE
 Estimate: 2 pts
+
+Decision (2026-11-25): (1) **Relative dates (user decision).** Addendum §18 described Contract A/B as
+"pre-seeded" with historical payments. The API cannot create that: `paid_at` is always the server clock,
+ADR-004 forbids raw-SQL PII, and activation rejects a start date more than one year back
+(`MAX_BACKDATED_ACTIVATION_YEARS = 1`). The script keeps §18's terms and golden values, backdates
+`planned_start_date` relative to today in Asia/Jakarta (A: today − 70 days; B: today − 1 month), and pays
+today. §18 is amended accordingly. (2) **Node, not bash/PowerShell:** a bash script needs `jq` to read JSON,
+which the Windows dev environment lacks, while Node is already required by the frontend. (3) **Re-runnable:**
+customers are reused (fixed NIK + phone), and each run uses a per-run asset `serial_no` without a plate, so
+invariant 18 (`DUPLICATE_CONTRACT`) never fires. Every write gets a fresh `Idempotency-Key`. (4) **Opt-in
+reset:** `--reset` runs `docker compose down -v`; without it the script never deletes the volume.
+
+Implementation note (2026-11-25, branch `t34-demo-script`; plan
+`docs/superpowers/plans/2026-11-25-t34-demo-script.md`): `scripts/demo/lib.mjs` holds the helpers (Jakarta
+business date, month-end-clamped date math, BigInt-cent money, the `{data, error}` client with a
+`DemoError` that carries method/path/status/raw body, per-request and per-attempt timeouts so a hung server
+still fails, and health polling), with 17 `node:test` tests.
+`scripts/demo.mjs` runs: health → admin login → Contract B (EFFECTIVE golden schedule; an on-time
+4,769,959.90 payment allocates interest 1,125,000.00 + principal 3,644,959.90 with no penalty;
+same-key replay returns the same `payment_no` and leaves the customer credit at zero) → Contract A (FLAT golden schedule; a 2,000,000.00 payment
+pays installment 1 as penalty → interest → principal, installment 1 `PAID`, installment 2 `PARTIALLY_PAID`, installment 3 `PENDING`) →
+the statement, paged and summarized per `ref_type` with Σ debit = Σ credit → aging → role split (finance:
+statement 200, payment 403; manager: aging 200, statement 403). No new seed rows and no backend or
+frontend source change. CI `compose-smoke` runs the helper tests and the script. Both READMEs document the
+demo, the demo users and the known limitations. Verification: `node scripts/demo.mjs --reset` exit 0 on a
+fresh volume; two further plain runs against the same database exit 0 with new contract numbers; the browser
+follow-along matches (Jadwal: installment 1 `PAID`, installment 2 `PARTIALLY_PAID` with Rp 1.214.320 owed);
+backend 121 suites / 939 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 203 tests / 23 files, lint and typecheck green; demo helpers 28/28. PR #25 review: `--up`/`--reset` refuse a non-loopback base URL before any Compose command, and money fields the API must return (excess, credit balances, outstanding) fail when absent instead of reading as zero. Observation: the
+Jadwal "Denda" column shows the *remaining* penalty (ADR-019), so a paid late installment shows Denda Rp 0 and
+Terbayar above Total Tagihan. This is pre-existing T32/T33 UX, documented under frontend Known limitations.
 
 **Goal:** Make the system demonstrable from a clean checkout in one repeatable sequence.
 
@@ -632,7 +675,7 @@ formalized in **ADR-023** (T35, DONE). The resolved Phase-1 decisions (A-1…A-1
 ### Dependency order (open tail)
 
 ```text
-Sprint 7 (active):
+Sprint 7 (COMPLETE):
   T35 (CORS + ADR-023) ─► T32 (G2 shell, login, contract lifecycle)
       ─► T33 (G3 payment, schedule, statement, credit) ─► T34 (G5 demo)
 

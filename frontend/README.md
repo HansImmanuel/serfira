@@ -111,6 +111,32 @@ the way back. Validation, comparison, rate conversion and the derived schedule t
 a binary float; a missing amount (DRAFT outstanding) renders as `–`. Operator input is bounded to the
 server's `NUMERIC(19,2)` domain (17 integer digits, scale 2).
 
+## Running the demo
+
+From the repository root, with Docker running:
+
+```bash
+node scripts/demo.mjs --up    # Compose backend + the scripted flow (see the root README, "Demo")
+cd frontend && npm ci && npm run dev
+```
+
+Open http://localhost:3000, log in as `admin` / `Admin123!` (Addendum §18.3, demo profile only), and
+search for the contract number the script printed. The Jadwal tab shows installment 1 `PAID` and
+installment 2 `PARTIALLY_PAID`. The Ledger tab and **Rekening koran** show the activation, billing, penalty
+and payment rows. Logging in as `finance` or `manager` shows the role split: `manager` has no Kredit,
+Ledger or statement view.
+
+## Known limitations
+
+- **A reload means logging in again.** Tokens live in memory only (ADR-023 D2); there is no refresh cookie.
+- **The Denda column shows the penalty still owed**, not the gross penalty charged (ADR-019). For a late
+  installment that has been paid, Denda is `Rp 0` and Terbayar can exceed Total Tagihan, because the paid
+  amount includes the penalty.
+- **Not built yet:** the payments-history tab and the settlement and write-off dialogs (T39), and the
+  dashboard and report pages (T36/T37).
+- **No frontend container.** The supported path is `npm run dev` against the Compose backend; a
+  production build needs `NEXT_PUBLIC_API_BASE_URL` (above).
+
 ## Tests
 
 ```bash

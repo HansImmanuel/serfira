@@ -40,7 +40,7 @@ layer cannot silently corrupt the books.
   → [ADR-003](docs/adr/ADR-003-injectable-clock.md)
 - **PII protected at rest.** National ID (NIK) and phone numbers are AES-256-GCM encrypted;
   uniqueness and search use HMAC lookup columns. → [ADR-004](docs/adr/ADR-004-at-rest-pii-protection.md)
-- **Decisions on record.** 22 [Architecture Decision Records](docs/adr/) with alternatives
+- **Decisions on record.** 24 [Architecture Decision Records](docs/adr/) with alternatives
   considered and rejected.
 
 ## Domain in 60 seconds
@@ -114,7 +114,8 @@ Dependencies point one way: `ledger` depends on nothing, and `contract` does not
 
 ## Getting started
 
-Prerequisites: JDK 21 and Docker.
+Prerequisites: Docker. JDK 21 to run the backend tests; Node ≥ 22 (`frontend/.nvmrc` pins 24.16.0) for
+the demo script and the frontend.
 
 ```bash
 # Run PostgreSQL and the app
@@ -134,6 +135,43 @@ three login users from Addendum §18.3 (`admin`, `finance`, `manager`; credentia
 only there). Override `SPRING_PROFILES_ACTIVE=prod` (or an empty value) to start without the demo
 seed. A database first created with `demo` must be reset before switching to a non-demo profile
 because the repeatable `R__demo_seed.sql` would then no longer be resolved.
+
+### Demo
+
+One command brings the stack up and proves the main operator flow against the real API:
+
+```bash
+node scripts/demo.mjs --up        # docker compose up --build -d, then the demo
+node scripts/demo.mjs             # against a stack that is already running (safe to re-run)
+node scripts/demo.mjs --reset     # docker compose down -v first: DELETES the local database volume
+```
+
+Options: `--base-url <url>` (default `$SERFIRA_API_BASE_URL` or `http://localhost:8080`) and
+`--skip-roles`. `--up` and `--reset` only manage the local Compose stack, so they refuse a base URL that is
+not `localhost`, `127.0.0.1` or `[::1]` before running any Compose command. To run the demo against an
+already-running remote stack, pass `--base-url` without them. The script needs no npm install. It exits 0 and ends with
+`DEMO OK — contract A MF-…, contract B MF-…`; any failure exits 1 and prints the request, the HTTP status
+and the response body.
+
+| Step | What it proves |
+| --- | --- |
+| Log in as `admin` | Seeded demo user, Argon2id login, bearer token (ADR-022) |
+| Contract B: EFFECTIVE, Rp 150 M over 36 months, started one month ago | Schedule matches the golden values (installment 1 = 4,769,959.90); an on-time payment pays interest then principal with no penalty (PRD scenario 1); the same `Idempotency-Key` replays the same payment and creates no customer credit (scenario 6) |
+| Contract A: FLAT, Rp 16 M over 12 months, started 70 days ago | Penalty accrues lazily and is paid first, then interest, then principal (scenario 2); the remainder leaves installment 2 `PARTIALLY_PAID` (scenario 3) |
+| Statement and aging | Ledger-literal statement with activation, billing, penalty and payment rows, Σ debit = Σ credit; aging totals |
+| `finance` and `manager` | Statement 200 / payment 403 for finance; aging 200 / statement 403 for manager (ADR-015) |
+
+Demo users (Addendum §18.3, `demo` profile only, never real accounts): `admin` / `Admin123!`
+(`ADMIN_OPERASIONAL`), `finance` / `Finance123!` (`FINANCE`), `manager` / `Manager123!` (`MANAJEMEN`).
+
+Customers and contracts are created through the API, never by SQL (ADR-004). The two demo customers are
+reused across runs, and every run creates two new contracts with a per-run asset serial, so re-running
+never hits `DUPLICATE_CONTRACT`. Dates are relative to today in Asia/Jakarta, because a payment always
+takes the server's clock.
+
+To follow along in the browser, start the frontend (`cd frontend && npm ci && npm run dev`), open
+http://localhost:3000, log in as `admin`, and search for the contract number the script prints. See
+[frontend/README.md](frontend/README.md).
 
 ### Running tests
 
@@ -275,7 +313,7 @@ itself as their credential.
 | ------------ | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | 1 — MVP      | Contracts, FLAT/EFFECTIVE schedules, payments and allocation, ledger, penalty and aging job, RBAC, aging report, statement | Done                                   |
 | 2            | Early settlement, customer credit, payment void/reversal, penalty waiver, consistency check, write-off, login              | Built                                  |
-| 3            | Next.js dashboard (shell/login/contract lifecycle built; payments, reports, outbox, export pending), reporting, outbox event publisher, export | In progress                            |
+| 3            | Next.js dashboard (login, contract lifecycle, payment, statement, credit and the demo script built; reports, payments history, settlement/write-off UI pending), reporting, outbox event publisher, export | In progress                            |
 | 4 (optional) | Restructuring, payment gateway stub, maker-checker, microservice split demo                                                | Optional                               |
 
 Out of scope by design: loan origination (credit scoring, credit bureau checks, e-KYC), funding and
@@ -303,4 +341,5 @@ The specifications are the source of truth and are written in Bahasa Indonesia.
 backend/    Spring Boot application (modules above), Flyway migrations, tests
 docs/       Specifications, ADRs, progress log
 frontend/   Next.js 16 dashboard (see frontend/README.md)
+scripts/    End-to-end demo script (node scripts/demo.mjs) and its helpers
 ```
