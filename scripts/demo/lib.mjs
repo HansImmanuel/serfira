@@ -72,6 +72,17 @@ export function toCents(amount) {
   return sign === "-" ? -cents : cents;
 }
 
+/**
+ * Exact cents of a money field the API must return. Unlike {@link toCents}, an absent value is an error,
+ * so a field the backend stopped sending can never satisfy a "must be zero" assertion.
+ */
+export function requireCents(amount, label) {
+  if (amount === null || amount === undefined) {
+    throw new Error(`${label} is missing from the response (got ${amount})`);
+  }
+  return toCents(amount);
+}
+
 function formatCents(cents) {
   const negative = cents < 0n;
   const abs = negative ? -cents : cents;
@@ -146,6 +157,40 @@ export function createApiClient({ baseUrl, fetchImpl = fetch, timeoutMs = 60_000
   }
 
   return { request };
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** True when {@code baseUrl} parses as a URL whose host is this machine's loopback interface. */
+export function isLoopbackUrl(baseUrl) {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Runs the Compose lifecycle for --up/--reset. Compose only ever starts the local stack, so the demo's
+ * API target must be that stack too: a remote base URL is refused before any Compose command, above all
+ * before the destructive {@code down -v}. Without --up/--reset nothing runs and any base URL is allowed.
+ */
+export function startLocalStack({ up, reset, baseUrl }, { compose, log = () => {} }) {
+  if (!up && !reset) {
+    return;
+  }
+  if (!isLoopbackUrl(baseUrl)) {
+    throw new Error(
+      `--up/--reset start the local Compose stack, but the base URL ${baseUrl} is not a loopback address `
+        + "(localhost, 127.0.0.1 or [::1]), so the demo would write to another server. Use "
+        + "--base-url http://localhost:8080, or drop --up/--reset to run against an already-running stack.",
+    );
+  }
+  if (reset) {
+    log("--reset: deleting the local Compose database volume");
+    compose("down", "-v");
+  }
+  compose("up", "--build", "-d");
 }
 
 /** Polls GET /actuator/health until UP; connection errors are expected while the stack boots. */

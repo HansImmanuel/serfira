@@ -147,7 +147,9 @@ node scripts/demo.mjs --reset     # docker compose down -v first: DELETES the lo
 ```
 
 Options: `--base-url <url>` (default `$SERFIRA_API_BASE_URL` or `http://localhost:8080`) and
-`--skip-roles`. The script needs no npm install. It exits 0 and ends with
+`--skip-roles`. `--up` and `--reset` only manage the local Compose stack, so they refuse a base URL that is
+not `localhost`, `127.0.0.1` or `[::1]` before running any Compose command. To run the demo against an
+already-running remote stack, pass `--base-url` without them. The script needs no npm install. It exits 0 and ends with
 `DEMO OK — contract A MF-…, contract B MF-…`; any failure exits 1 and prints the request, the HTTP status
 and the response body.
 

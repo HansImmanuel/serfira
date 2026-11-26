@@ -5,6 +5,7 @@
 //   node scripts/demo.mjs --up       # docker compose up --build -d first
 //   node scripts/demo.mjs --reset    # docker compose down -v first (DELETES the local database volume)
 //   options: --base-url <url> (default $SERFIRA_API_BASE_URL or http://localhost:8080), --skip-roles
+//   --up/--reset only accept a loopback base URL (localhost, 127.0.0.1, [::1]); without them any URL works.
 //
 // Every customer and contract goes through the API (ADR-004): no SQL, no plaintext PII rows. The only
 // seeded data are the three demo users of Addendum §18.3. Each run creates two new contracts with a
@@ -23,9 +24,10 @@ import {
   jakartaToday,
   minusDays,
   minusMonths,
+  requireCents,
   runTag,
+  startLocalStack,
   sumMoney,
-  toCents,
   waitForHealth,
 } from "./demo/lib.mjs";
 
@@ -75,8 +77,9 @@ function check(condition, message) {
   }
 }
 
+// Every amount asserted here is a field the API must return: an absent one fails, never reads as zero.
 function checkMoney(actual, expected, label) {
-  check(toCents(actual) === toCents(expected), `${label}: expected ${expected}, got ${actual}`);
+  check(requireCents(actual, label) === requireCents(expected, `${label} (expected)`), `${label}: expected ${expected}, got ${actual}`);
 }
 
 function compose(...args) {
@@ -140,7 +143,11 @@ async function pay(api, token, contractId, amount, channel, idempotencyKey = ran
     body: { contract_id: contractId, amount, channel },
     expectStatus: 201,
   });
-  checkMoney(sumMoney(payment.allocations.map((line) => line.amount)), amount, `payment ${payment.payment_no} Σ allocations`);
+  const lineAmounts = payment.allocations.map((line) => {
+    requireCents(line.amount, `payment ${payment.payment_no} ${line.allocation_type} allocation amount`);
+    return line.amount;
+  });
+  checkMoney(sumMoney(lineAmounts), amount, `payment ${payment.payment_no} Σ allocations`);
   return { payment, idempotencyKey };
 }
 
@@ -179,14 +186,15 @@ async function contractB(api, token, today, tag) {
   const byType = Object.fromEntries(payment.allocations.map((line) => [line.allocation_type, line.amount]));
   checkMoney(byType.INTEREST, "1125000.00", "B interest allocation");
   checkMoney(byType.PRINCIPAL, "3644959.90", "B principal allocation");
-  check(toCents(payment.excess_amount) === 0n, `B payment has no excess (got ${payment.excess_amount})`);
+  check(requireCents(payment.excess_amount, "B payment excess_amount") === 0n, `B payment has no excess (got ${payment.excess_amount})`);
   ok(`B: payment ${payment.payment_no} 4769959.90 → ${describeAllocations(payment)}`);
 
   const replay = await pay(api, token, contract.id, "4769959.90", "BANK_TRANSFER", idempotencyKey);
   // "Saldo tidak dobel" (PRD scenario 6): installment 2 is not due yet, so a second application would land
   // as customer credit (ADR-009), never on the schedule. The credit balance is what must stay at zero.
   const credit = await api.request("GET", `${API}/contracts/${contract.id}/credit`, { token });
-  check(toCents(credit.available_balance) === 0n && toCents(credit.total_credit) === 0n,
+  check(requireCents(credit.available_balance, "B credit available_balance") === 0n
+    && requireCents(credit.total_credit, "B credit total_credit") === 0n,
     `B retry created no customer credit (available ${credit.available_balance}, total ${credit.total_credit})`);
   check(replay.payment.id === payment.id && replay.payment.payment_no === payment.payment_no,
     `B retry with the same Idempotency-Key replays ${payment.payment_no} (got ${replay.payment.payment_no})`);
@@ -233,7 +241,7 @@ async function contractA(api, token, today, tag) {
   const after = await installments(api, token, contract.id);
   check(after[0].status === "PAID", `A installment 1 PAID (got ${after[0].status})`);
   check(after[1].status === "PARTIALLY_PAID", `A installment 2 PARTIALLY_PAID (got ${after[1].status})`);
-  check(toCents(after[1].outstanding) > 0n, `A installment 2 still owes (got ${after[1].outstanding})`);
+  check(requireCents(after[1].outstanding, "A installment 2 outstanding") > 0n, `A installment 2 still owes (got ${after[1].outstanding})`);
   check(after[2].status === "PENDING", `A installment 3 PENDING (got ${after[2].status})`);
   ok(`A: installment 1 PAID, installment 2 PARTIALLY_PAID (outstanding ${after[1].outstanding}), installment 3 PENDING`);
   return contract;
@@ -278,7 +286,7 @@ async function statement(api, token, contract) {
 
 async function aging(api, token) {
   const report = await api.request("GET", `${API}/reports/aging`, { token });
-  check(toCents(report.portfolio.total_outstanding) > 0n, "aging total outstanding > 0");
+  check(requireCents(report.portfolio?.total_outstanding, "aging portfolio total_outstanding") > 0n, "aging total outstanding > 0");
   ok(`aging as of ${report.as_of}: total outstanding ${report.portfolio.total_outstanding}`);
 }
 
@@ -308,13 +316,9 @@ async function main() {
     log("usage: node scripts/demo.mjs [--up] [--reset] [--base-url <url>] [--skip-roles]");
     return;
   }
-  if (options.reset) {
-    log("--reset: deleting the local Compose database volume");
-    compose("down", "-v");
-  }
-  if (options.up) {
-    compose("up", "--build", "-d");
-  }
+  // Validates the base URL before any Compose command: --reset must never wipe the local volume and then
+  // send the demo's writes to a remote server.
+  startLocalStack(options, { compose, log });
 
   const api = createApiClient({ baseUrl: options.baseUrl });
   const timeoutMs = Number(process.env.SERFIRA_DEMO_HEALTH_TIMEOUT_MS) || 300_000;

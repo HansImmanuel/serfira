@@ -6,8 +6,11 @@ import {
   createApiClient,
   jakartaToday,
   minusDays,
+  isLoopbackUrl,
   minusMonths,
+  requireCents,
   runTag,
+  startLocalStack,
   sumMoney,
   toCents,
   waitForHealth,
@@ -39,6 +42,33 @@ test("toCents is exact and strict", () => {
   assert.throws(() => toCents("1e6"));
   assert.throws(() => toCents("1.234"));
   assert.throws(() => toCents(1.5));
+});
+
+test("requireCents converts a present decimal string exactly", () => {
+  assert.equal(requireCents("4769959.90", "x"), 476995990n);
+  assert.equal(requireCents("0.00", "x"), 0n);
+  assert.equal(requireCents("0", "x"), 0n);
+  assert.equal(requireCents("-1.25", "x"), -125n);
+});
+
+test("requireCents rejects a missing field instead of reading it as zero", () => {
+  assert.throws(() => requireCents(undefined, "payment.excess_amount"), /payment\.excess_amount is missing/);
+  assert.throws(() => requireCents(null, "credit.total_credit"), /credit\.total_credit is missing/);
+});
+
+test("requireCents rejects numbers and malformed decimals", () => {
+  assert.throws(() => requireCents(0, "x"));
+  assert.throws(() => requireCents(1.5, "x"));
+  assert.throws(() => requireCents("", "x"));
+  assert.throws(() => requireCents("abc", "x"));
+  assert.throws(() => requireCents("1e6", "x"));
+  assert.throws(() => requireCents("1.234", "x"));
+});
+
+test("toCents still reads an absent optional amount as zero", () => {
+  assert.equal(toCents(null), 0n);
+  assert.equal(toCents(undefined), 0n);
+  assert.equal(toCents("0.00"), 0n);
 });
 
 test("sumMoney adds without float drift", () => {
@@ -149,7 +179,13 @@ test("request throws DemoError when a 200 body is not JSON", async () => {
 /** A fetch that never answers, like an accepted connection on a hung server; it only honours its abort signal. */
 const hangingFetch = (url, init) =>
   new Promise((resolve, reject) => {
-    init?.signal?.addEventListener("abort", () => reject(init.signal.reason));
+    // AbortSignal.timeout() is unref'd, so hold the event loop open until it fires; older Node 22 test
+    // runners would otherwise cancel the test as "event loop has already resolved".
+    const keepAlive = setInterval(() => {}, 1 << 30);
+    init?.signal?.addEventListener("abort", () => {
+      clearInterval(keepAlive);
+      reject(init.signal.reason);
+    });
   });
 
 test("request fails with a DemoError when the server never answers", async () => {
@@ -216,4 +252,74 @@ test("waitForHealth gives up at the deadline with a DemoError", async () => {
       return true;
     },
   );
+});
+
+test("isLoopbackUrl accepts only loopback hosts, by parsed hostname", () => {
+  assert.equal(isLoopbackUrl("http://localhost:8080"), true);
+  assert.equal(isLoopbackUrl("http://LOCALHOST:8080/"), true);
+  assert.equal(isLoopbackUrl("http://127.0.0.1:8080"), true);
+  assert.equal(isLoopbackUrl("http://[::1]:8080"), true);
+  assert.equal(isLoopbackUrl("https://production.example.com"), false);
+  assert.equal(isLoopbackUrl("http://localhost.example.com:8080"), false);
+  assert.equal(isLoopbackUrl("http://127.0.0.1.example.com"), false);
+  assert.equal(isLoopbackUrl("http://user@evil.test/localhost"), false);
+  assert.equal(isLoopbackUrl("not a url"), false);
+  assert.equal(isLoopbackUrl(""), false);
+});
+
+/** A compose double that records every command instead of running Docker. */
+function recordingCompose() {
+  const commands = [];
+  return { commands, compose: (...args) => commands.push(args.join(" ")) };
+}
+
+test("startLocalStack refuses --up against a remote base URL without running compose", () => {
+  const { commands, compose } = recordingCompose();
+
+  assert.throws(
+    () => startLocalStack({ up: true, reset: false, baseUrl: "https://production.example.com" }, { compose }),
+    /not a loopback address/,
+  );
+  assert.deepEqual(commands, []);
+});
+
+test("startLocalStack refuses --reset against a remote base URL before docker compose down -v", () => {
+  const { commands, compose } = recordingCompose();
+
+  assert.throws(
+    () => startLocalStack({ up: true, reset: true, baseUrl: "https://production.example.com" }, { compose }),
+    /not a loopback address/,
+  );
+  assert.deepEqual(commands, []);
+});
+
+test("startLocalStack refuses --reset with an unparseable base URL", () => {
+  const { commands, compose } = recordingCompose();
+
+  assert.throws(() => startLocalStack({ up: true, reset: true, baseUrl: "localhost:8080" }, { compose }));
+  assert.deepEqual(commands, []);
+});
+
+test("startLocalStack runs up for --up against a local base URL", () => {
+  const { commands, compose } = recordingCompose();
+
+  startLocalStack({ up: true, reset: false, baseUrl: "http://localhost:8080" }, { compose });
+
+  assert.deepEqual(commands, ["up --build -d"]);
+});
+
+test("startLocalStack runs down -v then up for --reset against a local base URL", () => {
+  const { commands, compose } = recordingCompose();
+
+  startLocalStack({ up: true, reset: true, baseUrl: "http://127.0.0.1:8080" }, { compose });
+
+  assert.deepEqual(commands, ["down -v", "up --build -d"]);
+});
+
+test("startLocalStack leaves a remote base URL alone when no Compose flag is given", () => {
+  const { commands, compose } = recordingCompose();
+
+  startLocalStack({ up: false, reset: false, baseUrl: "https://dev.example.com" }, { compose });
+
+  assert.deepEqual(commands, []);
 });

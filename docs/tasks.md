@@ -30,7 +30,7 @@ lifecycle and the servicing screens (payment, statement filters, credit apply) a
 (2026-11-25, branch `t34-demo-script`) = **203 tests / 23 files / 0 failed** (T33 close 178; PR #24's
 review fixes added the rest), plus green `npm run lint` and `npm run typecheck`; `npm run build` was green
 at T33 (the production build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo
-helpers `node --test "scripts/demo/*.test.mjs"` = **17 tests / 0 failed**; `node scripts/demo.mjs --reset`
+helpers `node --test "scripts/demo/*.test.mjs"` = **28 tests / 0 failed**; `node scripts/demo.mjs --reset`
 exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
 for a GitHub billing reason, not a test failure.
 
@@ -547,7 +547,7 @@ frontend source change. CI `compose-smoke` runs the helper tests and the script.
 demo, the demo users and the known limitations. Verification: `node scripts/demo.mjs --reset` exit 0 on a
 fresh volume; two further plain runs against the same database exit 0 with new contract numbers; the browser
 follow-along matches (Jadwal: installment 1 `PAID`, installment 2 `PARTIALLY_PAID` with Rp 1.214.320 owed);
-backend 121 suites / 939 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 203 tests / 23 files, lint and typecheck green; demo helpers 17/17. Observation: the
+backend 121 suites / 939 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 203 tests / 23 files, lint and typecheck green; demo helpers 28/28. PR #25 review: `--up`/`--reset` refuse a non-loopback base URL before any Compose command, and money fields the API must return (excess, credit balances, outstanding) fail when absent instead of reading as zero. Observation: the
 Jadwal "Denda" column shows the *remaining* penalty (ADR-019), so a paid late installment shows Denda Rp 0 and
 Terbayar above Total Tagihan. This is pre-existing T32/T33 UX, documented under frontend Known limitations.
 

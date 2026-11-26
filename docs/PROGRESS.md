@@ -151,7 +151,7 @@ Sprint 8 sebagai T28a/T28b; payments tab + settlement/write-off UI menjadi T39 d
       jam server; customer dipakai ulang dan `serial_no` aset unik per run sehingga aman dijalankan ulang;
       `--reset` (opt-in) menghapus volume. Job CI `compose-smoke` menjalankan helper test dan script ini.
       README root + frontend: bagian demo, user demo, dan keterbatasan yang diketahui. Verifikasi: demo
-      exit 0 dari volume kosong dan saat dijalankan ulang, alur browser cocok, helper 17/17, frontend 203
+      exit 0 dari volume kosong dan saat dijalankan ulang, alur browser cocok, helper 28/28, frontend 203
       test / 23 file, backend 121 suite / 939 test (branch `t34-demo-script`)
 
 **Sprint 7 selesai.** Alur operator utama berjalan di browser dan dapat diulang lewat `node scripts/demo.mjs`.
