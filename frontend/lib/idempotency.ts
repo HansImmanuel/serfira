@@ -46,3 +46,19 @@ const SPENT_KEY_CODES: ReadonlySet<string> = new Set(["CONFLICT", "IDEMPOTENCY_K
 export function isSpentKeyError(error: unknown): error is ApiError {
   return error instanceof ApiError && SPENT_KEY_CODES.has(error.code);
 }
+
+/**
+ * Whether a failed attempt leaves a keyed write's outcome unknown (FE §1.4, ADR-017). A network error or a 5xx
+ * is no answer: the write may have committed, so only a retry with the same key and body is safe. A 4xx is a
+ * definite answer — the server rolled its idempotency claim back — with one exception: a 401 or 403 is about
+ * the caller, not the write (authentication or the role matrix turns the request away before the claim), so it
+ * says nothing about an earlier attempt. After an unknown outcome it leaves that outcome unknown.
+ *
+ * @param sentWhileUnknown whether the outcome was already unknown when this attempt was sent
+ */
+export function isOutcomeUnknown(error: unknown, sentWhileUnknown: boolean): boolean {
+  if (!(error instanceof ApiError) || error.status >= 500) {
+    return true;
+  }
+  return sentWhileUnknown && (error.status === 401 || error.status === 403);
+}

@@ -224,6 +224,62 @@ describe("WriteOffDialog", () => {
     expect(sentBody(1)).toEqual({ reason: "rusak total" });
   });
 
+  it("keeps an earlier unknown outcome when the retry is turned away with 401", async () => {
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ApiError("UNAUTHORIZED", "Sesi berakhir", 401))
+      .mockResolvedValueOnce(result() as never);
+    const user = userEvent.setup();
+    const view = renderDialog();
+
+    await openDialog(user);
+    await typeReason(user, "rusak total");
+    await submit(user);
+    await within(dialog()).findByText("Failed to fetch");
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+
+    // The 401 never reached the write-off, so the first attempt may still have committed.
+    expect(await within(dialog()).findByText("Sesi berakhir")).toBeInTheDocument();
+    expect(within(dialog()).getByText(/Hasilnya belum pasti/)).toBeInTheDocument();
+    expect(within(dialog()).getByLabelText("Alasan write-off")).toBeDisabled();
+    expect(within(dialog()).queryByRole("button", { name: "Write-off sekarang" })).not.toBeInTheDocument();
+
+    // It stays reachable once the refetched contract is TERMINATED and the dialog is closed.
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <WriteOffDialog contractId="c1" contractNo="MF-202611-0001" canStartNew={false} />
+      </QueryClientProvider>,
+    );
+    await user.click(within(dialog()).getByRole("button", { name: "Batal" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Write-off" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Coba lagi" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(calls()).toHaveLength(3);
+    expect([sentKey(0), sentKey(1), sentKey(2)]).toEqual(["key-1", "key-1", "key-1"]);
+    expect(sentBody(2)).toEqual({ reason: "rusak total" });
+  });
+
+  it("settles an earlier unknown outcome when the retry gets a definite 4xx", async () => {
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ApiError("CONTRACT_STATE_INVALID", "Kontrak tidak berstatus ACTIVE.", 409));
+    const user = userEvent.setup();
+    renderDialog();
+
+    await openDialog(user);
+    await typeReason(user, "rusak total");
+    await submit(user);
+    await within(dialog()).findByText("Failed to fetch");
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+
+    expect(await within(dialog()).findByText("Kontrak tidak berstatus ACTIVE.")).toBeInTheDocument();
+    expect(within(dialog()).queryByText(/Hasilnya belum pasti/)).not.toBeInTheDocument();
+    expect(within(dialog()).getByLabelText("Alasan write-off")).toBeEnabled();
+    expect(within(dialog()).queryByRole("button", { name: "Coba lagi" })).not.toBeInTheDocument();
+  });
+
   it("CONTRACT_STATE_INVALID is definitive", async () => {
     vi.mocked(apiFetch).mockRejectedValue(
       new ApiError("CONTRACT_STATE_INVALID", "Kontrak tidak berstatus ACTIVE.", 409),

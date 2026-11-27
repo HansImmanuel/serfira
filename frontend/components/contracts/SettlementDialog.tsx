@@ -20,7 +20,7 @@ import { useIdempotencyKey } from "@/hooks/useIdempotencyKey";
 import { executeSettlementKey, useExecuteSettlement, useSettlementQuote } from "@/hooks/useSettlement";
 import { ApiError } from "@/lib/api";
 import { formatDateTime, formatMoney } from "@/lib/format";
-import { isSpentKeyError } from "@/lib/idempotency";
+import { isOutcomeUnknown, isSpentKeyError } from "@/lib/idempotency";
 import { formatCountdown, quoteLifetimeMs, remainingMs, settlementBreakdown } from "@/lib/settlement";
 import type { Money } from "@/types/contract";
 import type { SettlementQuote } from "@/types/settlement";
@@ -174,6 +174,7 @@ function SettlementExecutionStep({
   const idempotencyKey = useIdempotencyKey();
   const mutation = useExecuteSettlement(contractId);
   const [confirming, setConfirming] = useState(false);
+  const [sentWhileUnknown, setSentWhileUnknown] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -190,9 +191,10 @@ function SettlementExecutionStep({
   const spentKeyError = mutation.isError && isSpentKeyError(mutation.error) ? mutation.error : null;
   // A 4xx is a definite answer: the server rolled the claim back. Anything else (network error, 5xx) leaves
   // the outcome unknown: the settlement may have committed and closed the contract. Only a retry with the
-  // same key and quote is then offered, and the server replays the stored result.
-  const definiteError = mutation.error instanceof ApiError && mutation.error.status < 500 ? mutation.error : null;
-  const outcomeUnknown = mutation.isError && definiteError === null;
+  // same key and quote is then offered, and the server replays the stored result. A 401/403 to that retry
+  // settles nothing about the earlier attempt, so the outcome stays unknown (`isOutcomeUnknown`).
+  const outcomeUnknown = mutation.isError && isOutcomeUnknown(mutation.error, sentWhileUnknown);
+  const definiteError = !outcomeUnknown && mutation.error instanceof ApiError ? mutation.error : null;
   const unresolved = outcomeUnknown || spentKeyError !== null;
   const serverAnswer = definiteError === null ? undefined : QUOTE_ANSWERS.get(definiteError.code);
   const answer = serverAnswer ?? (creditExceedsGross ? CREDIT_EXCEEDS_SETTLEMENT : undefined);
@@ -210,6 +212,7 @@ function SettlementExecutionStep({
       // Defence in depth: the buttons are disabled in these states, but the rule must not depend on it.
       return;
     }
+    setSentWhileUnknown(outcomeUnknown);
     try {
       const settlement = await mutation.mutateAsync({ quoteId: quote.quote_id, idempotencyKey });
       toast.success(

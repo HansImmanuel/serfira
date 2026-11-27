@@ -427,6 +427,53 @@ describe("SettlementDialog", () => {
     expect(toast.success).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps an earlier unknown outcome when the retry is forbidden", async () => {
+    let executes = 0;
+    mockApi(
+      () => quote(),
+      async () => {
+        executes += 1;
+        if (executes === 1) {
+          throw new TypeError("Failed to fetch");
+        }
+        if (executes === 2) {
+          throw new ApiError("FORBIDDEN", "Akses ditolak", 403);
+        }
+        return execution();
+      },
+    );
+    const user = userEvent.setup();
+    const view = renderDialog();
+
+    await openQuote(user);
+    await confirmExecution(user);
+    await within(dialog()).findByText("Failed to fetch");
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+
+    // The 403 never reached the settlement, so the first attempt may still have closed the contract.
+    expect(await within(dialog()).findByText("Akses ditolak")).toBeInTheDocument();
+    expect(within(dialog()).getByText(/Hasilnya belum pasti/)).toBeInTheDocument();
+    expect(within(dialog()).queryByRole("button", { name: "Lunasi Sekarang" })).not.toBeInTheDocument();
+    expect(within(dialog()).queryByRole("button", { name: "Ambil quote baru" })).not.toBeInTheDocument();
+
+    // It stays reachable once the refetched contract is CLOSED and the dialog is closed.
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <SettlementDialog contractId="c1" canStartNew={false} />
+      </QueryClientProvider>,
+    );
+    await user.click(within(dialog()).getByRole("button", { name: "Batal" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Pelunasan Dipercepat" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Coba lagi" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(callsTo("/settlements")).toHaveLength(3);
+    expect([sentKey(0), sentKey(1), sentKey(2)]).toEqual(["key-1", "key-1", "key-1"]);
+    expect(sentBody(2)).toEqual({ quote_id: "q1" });
+    expect(toast.success).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks execution when available credit exceeds the gross", async () => {
     mockApi(() => quote({ available_credit: "10625000.01" }));
     const user = userEvent.setup();

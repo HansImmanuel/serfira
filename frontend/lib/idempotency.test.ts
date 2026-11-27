@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { newIdempotencyKey } from "./idempotency";
+import { ApiError } from "./api";
+import { isOutcomeUnknown, newIdempotencyKey } from "./idempotency";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -36,5 +37,28 @@ describe("newIdempotencyKey", () => {
     vi.stubGlobal("crypto", undefined);
 
     expect(() => newIdempotencyKey()).toThrow(/secure random/);
+  });
+});
+
+describe("isOutcomeUnknown", () => {
+  it("leaves the outcome unknown after a network error or a 5xx", () => {
+    expect(isOutcomeUnknown(new TypeError("Failed to fetch"), false)).toBe(true);
+    expect(isOutcomeUnknown(new ApiError("SERVICE_UNAVAILABLE", "Layanan tidak tersedia", 503), false)).toBe(true);
+  });
+
+  it("takes a 4xx on a first attempt as a definite answer, 401 and 403 included", () => {
+    expect(isOutcomeUnknown(new ApiError("CONTRACT_STATE_INVALID", "Bukan ACTIVE", 409), false)).toBe(false);
+    expect(isOutcomeUnknown(new ApiError("UNAUTHORIZED", "Sesi berakhir", 401), false)).toBe(false);
+    expect(isOutcomeUnknown(new ApiError("FORBIDDEN", "Akses ditolak", 403), false)).toBe(false);
+  });
+
+  it("keeps an earlier unknown outcome when the retry is turned away with 401 or 403", () => {
+    expect(isOutcomeUnknown(new ApiError("UNAUTHORIZED", "Sesi berakhir", 401), true)).toBe(true);
+    expect(isOutcomeUnknown(new ApiError("FORBIDDEN", "Akses ditolak", 403), true)).toBe(true);
+  });
+
+  it("settles an earlier unknown outcome with any other 4xx, a spent key included", () => {
+    expect(isOutcomeUnknown(new ApiError("CONTRACT_STATE_INVALID", "Bukan ACTIVE", 409), true)).toBe(false);
+    expect(isOutcomeUnknown(new ApiError("CONFLICT", "Kunci sudah dipakai", 409), true)).toBe(false);
   });
 });

@@ -19,9 +19,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useWriteOff } from "@/hooks/useContract";
 import { useIdempotencyKey } from "@/hooks/useIdempotencyKey";
-import { ApiError } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
-import { isSpentKeyError } from "@/lib/idempotency";
+import { isOutcomeUnknown, isSpentKeyError } from "@/lib/idempotency";
 
 const REASON_MAX_LENGTH = 500;
 
@@ -66,12 +65,13 @@ function WriteOffOperation({
   const [open, setOpen] = useState(initiallyOpen);
   const [reasonInput, setReasonInput] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [sentWhileUnknown, setSentWhileUnknown] = useState(false);
   const mutation = useWriteOff(contractId);
   const spentKeyError = mutation.isError && isSpentKeyError(mutation.error) ? mutation.error : null;
   // The outcome is unknown when no definite answer came back (network error, 5xx): the write-off may have
-  // committed. A 4xx answer rolled the claim back, so nothing is outstanding and the reason may be edited.
-  const outcomeUnknown =
-    mutation.isError && !(mutation.error instanceof ApiError && mutation.error.status < 500);
+  // committed. A 4xx answer rolled the claim back, so nothing is outstanding and the reason may be edited —
+  // except a 401/403 to a retry, which settles nothing about the earlier attempt (`isOutcomeUnknown`).
+  const outcomeUnknown = mutation.isError && isOutcomeUnknown(mutation.error, sentWhileUnknown);
   const unresolved = outcomeUnknown || spentKeyError !== null;
   // A new write-off needs an ACTIVE contract. Re-sending one whose outcome is unknown does not: it carries
   // its original key and body, so the server replays the stored result (or rejects it truthfully).
@@ -96,6 +96,7 @@ function WriteOffOperation({
       return;
     }
     setFieldError(null);
+    setSentWhileUnknown(outcomeUnknown);
     try {
       const written = await mutation.mutateAsync({ payload: { reason: result.reason }, idempotencyKey });
       setOpen(false);
