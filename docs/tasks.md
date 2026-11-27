@@ -17,14 +17,14 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `59b26a5` (PR #31, T28a key ring, merged); T28b on `t28b-pii-rekey`; T39 on `t39-payments-settlement-writeoff`. **Sprint 8b is COMPLETE** (T39). **Sprint 8 is COMPLETE** (T36, T37, T38, T28a, T28b). **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `12a4ccc` (PR #32, T28b PII re-keying, merged); T39 on `t39-payments-settlement-writeoff`. **Sprint 8b is COMPLETE** (T39). **Sprint 8 is COMPLETE** (T36, T37, T38, T28a, T28b). **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
 operator flow end to end against the Compose stack.
 **Current sprint: Sprint 8b (COMPLETE, 5 pts)**: T39 is DONE (`t39-payments-settlement-writeoff`); no later sprint is planned yet.
 **Previous sprint: Sprint 8 (COMPLETE, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (`t28b-pii-rekey`).
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (PR #32, merged).
 
 **Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-27, branch
 `t39-payments-settlement-writeoff`) = **150 suites / 1177 tests / 0 failed** (T28b close 149/1170; T39 added

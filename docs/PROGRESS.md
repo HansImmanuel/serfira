@@ -191,7 +191,7 @@ Definisi metrik di ADR-026:
       (`SERFIRA_MAINTENANCE_PIIREKEY_ENABLED`, `DRY_RUN`/`EXECUTE`) menjalankan pre-flight census (nol
       penulisan bila ada baris tak terbaca atau duplikat), re-key per halaman dengan verifikasi tiap baris,
       dapat dilanjutkan, dan mencatat verdict `RETIRABLE`/`NOT_RETIRABLE` per kid; kunci lama dihapus hanya
-      bila `RETIRABLE`. Verifikasi: backend 149 suite / 1168 test (branch `t28b-pii-rekey`)
+      bila `RETIRABLE`. Verifikasi: backend 149 suite / 1170 test (branch `t28b-pii-rekey`)
 
 **Sprint 8 selesai.** Laporan manajemen, outbox, dan rotasi kunci PII (ring + re-keying) berjalan; sprint
 berikutnya adalah Sprint 8b (T39).
