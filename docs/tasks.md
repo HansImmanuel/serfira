@@ -30,7 +30,7 @@ definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (P
 `t39-payments-settlement-writeoff`) = **150 suites / 1177 tests / 0 failed** (T28b close 149/1170; T39 added
 `ContractPaymentHistoryIT`; T28a close 140/1100; T28b added the census,
 row-verifier, retirement-report, runner and configuration suites, `PiiRekeyIT` and `IdempotencyKeyRotationIT`). Frontend `npm test` (2026-11-27, branch `t39-payments-settlement-writeoff`) =
-**284 tests / 31 files / 0 failed** (T37 close 236; T39 added the payments tab, settlement modal and write-off dialog; T34 close 203), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
+**294 tests / 31 files / 0 failed** (T37 close 236; T39 added the payments tab, settlement modal and write-off dialog; T34 close 203), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
 exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
@@ -926,7 +926,7 @@ Implementation note (2026-11-27, branch `t39-payments-settlement-writeoff`; plan
 - **Review fix:** "Ambil quote baru" could replace a "Coba lagi" retry still in flight; the re-quote is now
   withheld while an outcome is unknown (`fecc3f6`).
 Verification (2026-11-27, local; GitHub CI is blocked by billing): backend `./gradlew check --rerun-tasks`
-BUILD SUCCESSFUL, 150 suites / 1177 tests / 0 failed; frontend `npm test` 284 tests / 31 files / 0 failed,
+BUILD SUCCESSFUL, 150 suites / 1177 tests / 0 failed; frontend `npm test` 294 tests / 31 files / 0 failed,
 `npm run lint`, `npm run typecheck` and `NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 npm run build` green.
 
 Goal: an ADMIN_OPERASIONAL or FINANCE operator sees every payment of a contract (POSTED and VOIDED, with
