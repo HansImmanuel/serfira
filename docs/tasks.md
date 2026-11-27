@@ -30,7 +30,7 @@ definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (P
 `t39-payments-settlement-writeoff`) = **150 suites / 1177 tests / 0 failed** (T28b close 149/1170; T39 added
 `ContractPaymentHistoryIT`; T28a close 140/1100; T28b added the census,
 row-verifier, retirement-report, runner and configuration suites, `PiiRekeyIT` and `IdempotencyKeyRotationIT`). Frontend `npm test` (2026-11-27, branch `t39-payments-settlement-writeoff`) =
-**294 tests / 31 files / 0 failed** (T37 close 236; T39 added the payments tab, settlement modal and write-off dialog; T34 close 203), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
+**302 tests / 31 files / 0 failed** (T37 close 236; T39 added the payments tab, settlement modal and write-off dialog, and the PR #33 review fix; T34 close 203), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
 exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
@@ -919,14 +919,14 @@ Implementation note (2026-11-27, branch `t39-payments-settlement-writeoff`; plan
 - **Frontend:** the Pembayaran tab with `?tab=` / `?payment=` handling and statement PAYMENT links
   (reversal rows included; SETTLEMENT rows stay unlinked); the settlement quote/execute modal; the write-off
   dialog with a trimmed reason (1-500 characters).
-- **Decisions that held:** D2 roles, D3 unpaged newest-first list, D4 a separate response type, D5 cash due is
-  `gross - available_credit` with a derived "Bunga Masa Depan" line, D6 the countdown never compares browser and
-  server clocks, D7 one `Idempotency-Key` per quote, D8 the write dialogs mount for any status so a lost
-  response can still replay, D10 statement links, D12 no void UI. FE spec §2.4, §2.7 and §2.8 restate them.
+- **Decisions:** plan Decisions 1–13 held as planned; FE spec §2.4, §2.7 and §2.8 carry them.
 - **Review fix:** "Ambil quote baru" could replace a "Coba lagi" retry still in flight; the re-quote is now
   withheld while an outcome is unknown (`fecc3f6`).
+- **PR review fix (CodeRabbit, PR #33):** a 401 or 403 answering the retry of an unknown outcome no longer
+  clears it, in the settlement, write-off and credit-apply dialogs alike (`isOutcomeUnknown` in
+  `lib/idempotency`); FE spec §2.8 now times the countdown from the quote request, as the code does.
 Verification (2026-11-27, local; GitHub CI is blocked by billing): backend `./gradlew check --rerun-tasks`
-BUILD SUCCESSFUL, 150 suites / 1177 tests / 0 failed; frontend `npm test` 294 tests / 31 files / 0 failed,
+BUILD SUCCESSFUL, 150 suites / 1177 tests / 0 failed; frontend `npm test` 302 tests / 31 files / 0 failed,
 `npm run lint`, `npm run typecheck` and `NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 npm run build` green.
 
 Goal: an ADMIN_OPERASIONAL or FINANCE operator sees every payment of a contract (POSTED and VOIDED, with
@@ -938,10 +938,8 @@ Scope:
   row, OpenAPI, doc rows.
 - Frontend: payments tab; settlement modal with countdown; write-off dialog; `?tab=` and `?payment=` deep links;
   statement PAYMENT rows link to the payment row.
-Business Rules: all taken at planning, see plan Decisions 1–13; not restated here. In brief: roles are ADMIN and
-FINANCE, MANAJEMEN gets 403 (D2); the list is unpaged, newest first (D3); `PaymentResponse` is not widened
-(D4); settlement cash due is `gross_amount − available_credit` (D5, ADR-018 D9/D10); one `Idempotency-Key` per
-quote (D7); write dialogs mount for any contract status (D8); no payment-void UI (D12).
+Business Rules: all taken at planning, see plan Decisions 1–13, with ADR-018 (settlement), ADR-017
+(idempotency) and Addendum §3.4 (roles); not restated here.
 Implementation Notes: `contract` never imports `payment`, so the existence check goes through the new
 `ContractLookupPort` in `contract.application`. The new endpoint adds exactly one default-deny matcher row
 (ADR-015) and the same Addendum §3.4 and `EndpointRoleMatrixIT` rows. Money stays a decimal string end to end

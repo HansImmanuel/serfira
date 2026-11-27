@@ -277,7 +277,9 @@ klien App Router tidak andal men-scroll ke hash.
 kontrak; `status === "ACTIVE"` hanya menentukan tombol untuk operasi *baru*. Respons yang hilang bisa saja sudah
 commit, sehingga refetch menampilkan CLOSED/TERMINATED sementara operasi harus tetap bisa di-replay. Aturan key
 sama dengan Kredit di atas: satu `Idempotency-Key` per operasi, tetap walau dialog ditutup/dibuka, key baru
-hanya setelah sukses atau "Mulai form baru".
+hanya setelah sukses atau "Mulai form baru". Hasil yang tak diketahui (error jaringan atau 5xx) tetap tak
+diketahui bila retry-nya dijawab 401 atau 403: jawaban itu tentang pemanggil, bukan operasinya, jadi "Coba lagi"
+tetap ditawarkan (`isOutcomeUnknown`, juga untuk Kredit). 4xx lain atas retry menuntaskannya.
 
 ---
 
@@ -366,7 +368,8 @@ browser. Rentang dengan tanggal awal setelah tanggal akhir ditolak di form tanpa
   eksekusi diblokir (server menjawab 409 `CREDIT_EXCEEDS_SETTLEMENT`).
 - Quote punya masa berlaku (parameter sistem; teks tidak menulis angka menit) dengan countdown di UI. Countdown
   **tidak** membandingkan jam browser dengan jam server: umur = `valid_until − quoted_at` (keduanya instan
-  server), waktu berjalan diukur sebagai selisih `Date.now()` sejak respons quote tiba. Di nol, "Lunasi
+  server), waktu berjalan diukur sebagai selisih `Date.now()` sejak permintaan quote dikirim (sisa waktu
+  terpotong satu round trip, sisi yang aman). Di nol, "Lunasi
   Sekarang" nonaktif dan "Ambil quote baru" muncul; server tetap otoritas.
 
 **Step 2 — Eksekusi:**
@@ -384,7 +387,7 @@ browser. Rentang dengan tanggal awal setelah tanggal akhir ditolak di form tanpa
 | `CREDIT_EXCEEDS_SETTLEMENT` | "Kredit nasabah melebihi total pelunasan." | tidak ada |
 | `CONFLICT`, `IDEMPOTENCY_KEY_EXPIRED` | peringatan key terpakai | "Mulai form baru" (quote baru) |
 | 4xx lain | pesan server | "Lunasi Sekarang" tetap aktif |
-| error jaringan atau 5xx (hasil tak diketahui) | `ErrorAlert` | hanya "Coba lagi" (key dan `quote_id` sama) |
+| error jaringan atau 5xx (hasil tak diketahui), juga 401/403 atas retry-nya | `ErrorAlert` | hanya "Coba lagi" (key dan `quote_id` sama) |
 
 - Quote menagih bunga jatuh tempo dan mengakrual denda (ADR-018 D8), jadi quote meng-invalidasi prefix
   `["contract", id]` (jadwal dan statement bisa berubah).

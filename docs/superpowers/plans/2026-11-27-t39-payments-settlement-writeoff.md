@@ -59,7 +59,7 @@ Every write replays safely when its response is lost.
    - When `available_credit > gross_amount`, the UI blocks execution. The server would answer 409 `CREDIT_EXCEEDS_SETTLEMENT`.
 6. **The countdown never compares the browser clock with the server clock.**
    - Lifetime is `valid_until − quoted_at`, both server instants.
-   - Elapsed time is measured as a `Date.now()` difference from the moment the quote response arrived.
+   - Elapsed time is measured as a `Date.now()` difference from the moment the quote request was sent (one round trip early, the safe side; changed from "response arrived" in the final-review fix `e2af348`).
    - At zero, "Lunasi Sekarang" is disabled and "Ambil quote baru" appears.
    - The server stays the authority: a late click gets `SETTLEMENT_QUOTE_EXPIRED`, handled below.
 7. **One `Idempotency-Key` per quote.**

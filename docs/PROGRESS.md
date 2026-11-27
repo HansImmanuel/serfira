@@ -205,7 +205,7 @@ berikutnya adalah Sprint 8b (T39).
       "Bunga Masa Depan" turunan), countdown dari `valid_until − quoted_at` tanpa membandingkan jam browser dan
       server, satu `Idempotency-Key` per quote, "Coba lagi" tetap tersedia setelah kontrak tertutup. Dialog
       write-off dengan alasan ter-trim (maks 500). FE spec §2.4/§2.7/§2.8 diperbarui. Verifikasi lokal:
-      backend 150 suite / 1177 test, frontend 294 test / 31 file, lint/typecheck/build hijau (branch
+      backend 150 suite / 1177 test, frontend 302 test / 31 file, lint/typecheck/build hijau (branch
       `t39-payments-settlement-writeoff`)
 
 **Sprint 8b selesai.** Belum ada sprint berikutnya yang direncanakan.
