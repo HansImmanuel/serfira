@@ -178,6 +178,52 @@ describe("WriteOffDialog", () => {
     expect(toast.success).toHaveBeenCalledTimes(1);
   });
 
+  it("does not say a write-off cannot start while the retry of a lost response is in flight", async () => {
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockReturnValueOnce(new Promise(() => {}));
+    const user = userEvent.setup();
+    const view = renderDialog();
+
+    await openDialog(user);
+    await typeReason(user, "rusak total");
+    await submit(user);
+    expect(await within(dialog()).findByText("Failed to fetch")).toBeInTheDocument();
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <WriteOffDialog contractId="c1" contractNo="MF-202611-0001" canStartNew={false} />
+      </QueryClientProvider>,
+    );
+
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+    await within(dialog()).findByRole("button", { name: "Memproses…" });
+
+    expect(within(dialog()).queryByText("Write-off tidak dapat dimulai")).not.toBeInTheDocument();
+  });
+
+  it("treats a 503 as an unknown outcome and retries with the same key", async () => {
+    vi.mocked(apiFetch)
+      .mockRejectedValueOnce(new ApiError("SERVICE_UNAVAILABLE", "Layanan tidak tersedia", 503))
+      .mockResolvedValueOnce(result() as never);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await openDialog(user);
+    await typeReason(user, "rusak total");
+    await submit(user);
+
+    expect(await within(dialog()).findByText("Layanan tidak tersedia")).toBeInTheDocument();
+    expect(within(dialog()).getByLabelText("Alasan write-off")).toBeDisabled();
+    expect(within(dialog()).queryByRole("button", { name: "Write-off sekarang" })).not.toBeInTheDocument();
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(calls()).toHaveLength(2);
+    expect(sentKey(0)).toBe("key-1");
+    expect(sentKey(1)).toBe("key-1");
+    expect(sentBody(1)).toEqual({ reason: "rusak total" });
+  });
+
   it("CONTRACT_STATE_INVALID is definitive", async () => {
     vi.mocked(apiFetch).mockRejectedValue(
       new ApiError("CONTRACT_STATE_INVALID", "Kontrak tidak berstatus ACTIVE.", 409),

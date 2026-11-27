@@ -76,7 +76,7 @@ function WriteOffOperation({
   // A new write-off needs an ACTIVE contract. Re-sending one whose outcome is unknown does not: it carries
   // its original key and body, so the server replays the stored result (or rejects it truthfully).
   const canSubmit = (canStartNew || outcomeUnknown) && spentKeyError === null;
-  const startBlocked = !canStartNew && !outcomeUnknown && spentKeyError === null;
+  const startBlocked = !canStartNew && !outcomeUnknown && spentKeyError === null && !mutation.isPending;
 
   function changeOpen(next: boolean) {
     if (!next && mutation.isPending) {

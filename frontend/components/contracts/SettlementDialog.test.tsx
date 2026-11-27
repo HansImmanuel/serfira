@@ -190,6 +190,31 @@ describe("SettlementDialog", () => {
     expect(within(dialog()).getByRole("button", { name: "Ambil quote baru" })).toBeVisible();
   });
 
+  it("counts the quote's round trip against its lifetime", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === "/settlements/quote") {
+        // The request takes 5 s: the quote's lifetime started on the server somewhere inside it.
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        return quote() as never;
+      }
+      throw new Error(`unexpected call to ${String(path)}`);
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderDialog();
+
+    await user.click(await screen.findByRole("button", { name: "Pelunasan Dipercepat" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Lihat Quote Pelunasan" }));
+    await waitFor(() => expect(callsTo("/settlements/quote")).toHaveLength(1));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await within(dialog()).findByRole("button", { name: "Lunasi Sekarang" });
+
+    // Measured from the request, the countdown understates the time left (safe); never overstates it.
+    expect(within(dialog()).getByRole("timer")).toHaveTextContent("14:55");
+  });
+
   it("executes with the quote id and one key after confirmation", async () => {
     mockApi(() => quote({ available_credit: "125000.00" }));
     const user = userEvent.setup();
@@ -341,6 +366,65 @@ describe("SettlementDialog", () => {
 
     expect(within(dialog()).queryByRole("button", { name: "Ambil quote baru" })).not.toBeInTheDocument();
     expect(callsTo("/settlements/quote")).toHaveLength(1);
+  });
+
+  it("does not say a settlement cannot start while the retry of a lost response is in flight", async () => {
+    let executes = 0;
+    mockApi(
+      () => quote(),
+      () => {
+        executes += 1;
+        return executes === 1 ? Promise.reject(new TypeError("Failed to fetch")) : new Promise(() => {});
+      },
+    );
+    const user = userEvent.setup();
+    const view = renderDialog();
+
+    await openQuote(user);
+    await confirmExecution(user);
+    expect(await within(dialog()).findByText("Failed to fetch")).toBeInTheDocument();
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <SettlementDialog contractId="c1" canStartNew={false} />
+      </QueryClientProvider>,
+    );
+
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+    await within(dialog()).findByRole("button", { name: "Memproses…" });
+
+    expect(within(dialog()).queryByText("Pelunasan tidak dapat dimulai")).not.toBeInTheDocument();
+  });
+
+  it("treats a 503 as an unknown outcome and retries with the same key and quote", async () => {
+    let executes = 0;
+    mockApi(
+      () => quote(),
+      async () => {
+        executes += 1;
+        if (executes === 1) {
+          throw new ApiError("SERVICE_UNAVAILABLE", "Layanan tidak tersedia", 503);
+        }
+        return execution();
+      },
+    );
+    const user = userEvent.setup();
+    renderDialog();
+
+    await openQuote(user);
+    await confirmExecution(user);
+
+    expect(await within(dialog()).findByText("Layanan tidak tersedia")).toBeInTheDocument();
+    expect(within(dialog()).getByText(/Hasilnya belum pasti/)).toBeInTheDocument();
+    expect(within(dialog()).queryByRole("button", { name: "Lunasi Sekarang" })).not.toBeInTheDocument();
+    expect(within(dialog()).queryByRole("button", { name: "Ambil quote baru" })).not.toBeInTheDocument();
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(callsTo("/settlements")).toHaveLength(2);
+    expect(sentKey(0)).toBe("key-1");
+    expect(sentKey(1)).toBe("key-1");
+    expect(sentBody(1)).toEqual({ quote_id: "q1" });
+    expect(toast.success).toHaveBeenCalledTimes(1);
   });
 
   it("blocks execution when available credit exceeds the gross", async () => {

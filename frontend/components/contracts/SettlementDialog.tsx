@@ -149,7 +149,7 @@ function SettlementBreakdownTable({
 function SettlementExecutionStep({
   contractId,
   quote,
-  receivedAt,
+  requestedAt,
   open,
   canStartNew,
   requoting,
@@ -161,7 +161,7 @@ function SettlementExecutionStep({
 }: {
   contractId: string;
   quote: SettlementQuote;
-  receivedAt: number;
+  requestedAt: number;
   open: boolean;
   canStartNew: boolean;
   requoting: boolean;
@@ -181,9 +181,9 @@ function SettlementExecutionStep({
     return () => clearInterval(timer);
   }, []);
 
-  // Lifetime from the two server instants, elapsed time from the local clock since the response arrived
+  // Lifetime from the two server instants, elapsed time from the local clock since the quote was requested
   // (T39 decision 6): a browser clock that is years off still counts the server's lifetime.
-  const remaining = remainingMs(quoteLifetimeMs(quote), receivedAt, now);
+  const remaining = remainingMs(quoteLifetimeMs(quote), requestedAt, now);
   const expired = remaining === 0;
   const { futureInterestGross, cashDue, creditExceedsGross } = settlementBreakdown(quote);
 
@@ -203,7 +203,7 @@ function SettlementExecutionStep({
   // this step under a new key and drop the attempt's outcome (T39 decision 7).
   const offerRequote =
     canStartNew && !unresolved && !mutation.isPending && (answer === undefined ? expired : answer.requote);
-  const startBlocked = !canStartNew && !unresolved;
+  const startBlocked = !canStartNew && !unresolved && !mutation.isPending;
 
   async function execute() {
     if (!canExecute && !outcomeUnknown) {
@@ -336,7 +336,7 @@ function SettlementOperation({
   onRestart: () => void;
 }) {
   const [open, setOpen] = useState(initiallyOpen);
-  const [quoted, setQuoted] = useState<{ quote: SettlementQuote; receivedAt: number } | null>(null);
+  const [quoted, setQuoted] = useState<{ quote: SettlementQuote; requestedAt: number } | null>(null);
   const quoteMutation = useSettlementQuote(contractId);
   const executing = useIsMutating({ mutationKey: executeSettlementKey(contractId) }) > 0;
 
@@ -352,9 +352,12 @@ function SettlementOperation({
     if (!canStartNew || executing) {
       return;
     }
+    // Stamped before the request: `mutateAsync` resolves only after the `onSettled` refetch, so a stamp
+    // taken afterwards would overstate the time left. This understates it by one round trip, the safe side.
+    const requestedAt = Date.now();
     try {
       const quote = await quoteMutation.mutateAsync();
-      setQuoted({ quote, receivedAt: Date.now() });
+      setQuoted({ quote, requestedAt });
     } catch {
       // The quote error renders inside the dialog; a quote carries no key, so asking again is safe.
     }
@@ -392,7 +395,7 @@ function SettlementOperation({
           key={quoted.quote.quote_id}
           contractId={contractId}
           quote={quoted.quote}
-          receivedAt={quoted.receivedAt}
+          requestedAt={quoted.requestedAt}
           open={open}
           canStartNew={canStartNew}
           requoting={quoteMutation.isPending}

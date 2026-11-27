@@ -56,9 +56,9 @@ export function quoteLifetimeMs(quote: Pick<SettlementQuote, "quoted_at" | "vali
   return Math.round(instantMs(quote.valid_until) - instantMs(quote.quoted_at));
 }
 
-/** The lifetime left, measured by local elapsed time since the quote response arrived; never negative. */
-export function remainingMs(lifetimeMs: number, receivedAtMs: number, nowMs: number): number {
-  return Math.max(0, lifetimeMs - (nowMs - receivedAtMs));
+/** The lifetime left, measured by local elapsed time since the quote was requested; never negative. */
+export function remainingMs(lifetimeMs: number, startedAtMs: number, nowMs: number): number {
+  return Math.max(0, lifetimeMs - (nowMs - startedAtMs));
 }
 
 /** `mm:ss`, seconds rounded up, so the display reads `00:00` only once the quote has expired. */
