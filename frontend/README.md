@@ -73,7 +73,8 @@ frontend/
 │   ├── (auth)/login/            # sign-in
 │   ├── (dashboard)/             # sidebar + header + client guard
 │   │   ├── contracts/           # list, create
-│   │   └── contracts/[id]/      # detail (Jadwal/Kredit/Ledger), statement, payments/new
+│   │   ├── contracts/[id]/      # detail (Jadwal/Pembayaran/Kredit/Ledger), statement, payments/new
+│   │   └── reports/             # aging, outstanding
 │   ├── layout.tsx               # root layout + providers
 │   └── providers.tsx            # QueryClient + toaster
 ├── components/                  # auth, contracts, payments, shared, ui (shadcn)
@@ -99,9 +100,10 @@ frontend/
   behind.
 - `/auth/login`, `/auth/refresh` and `/auth/logout` never carry an access token.
 - `roles` from the JWT decides which buttons and tabs are shown (UX only). The backend's role matrix is the
-  enforcement; a forced call still answers 403. Credit and the ledger statement are limited to
-  `ADMIN_OPERASIONAL`/`FINANCE`; `MANAJEMEN` sees contract detail and the schedule only. The **Laporan**
-  pages (aging, outstanding) are offered to all three roles.
+  enforcement; a forced call still answers 403. Payment history, credit and the ledger statement are
+  limited to `ADMIN_OPERASIONAL`/`FINANCE`; `MANAJEMEN` sees contract detail and the schedule only. Writes
+  (activation, payment, credit apply, early settlement, write-off) are offered to `ADMIN_OPERASIONAL` only.
+  The **Laporan** pages (aging, outstanding) are offered to all three roles.
 
 ## Money and dates
 
@@ -124,8 +126,8 @@ cd frontend && npm ci && npm run dev
 Open http://localhost:3000, log in as `admin` / `Admin123!` (Addendum §18.3, demo profile only), and
 search for the contract number the script printed. The Jadwal tab shows installment 1 `PAID` and
 installment 2 `PARTIALLY_PAID`. The Ledger tab and **Rekening koran** show the activation, billing, penalty
-and payment rows. Logging in as `finance` or `manager` shows the role split: `manager` has no Kredit,
-Ledger or statement view. **Laporan → Aging** and **Laporan → Outstanding** show the reports to all three
+and payment rows. Logging in as `finance` or `manager` shows the role split: `manager` has no Pembayaran,
+Kredit, Ledger or statement view. **Laporan → Aging** and **Laporan → Outstanding** show the reports to all three
 users; the NPL badge marks contracts with an amount more than 90 days past due.
 
 ## Known limitations
@@ -134,7 +136,8 @@ users; the NPL badge marks contracts with an amount more than 90 days past due.
 - **The Denda column shows the penalty still owed**, not the gross penalty charged (ADR-019). For a late
   installment that has been paid, Denda is `Rp 0` and Terbayar can exceed Total Tagihan, because the paid
   amount includes the penalty.
-- **Not built yet:** the payments-history tab and the settlement and write-off dialogs (T39).
+- **No screen for payment void or penalty waive/reduce.** Both are API-only; screens for them are the
+  proposed T40 in `docs/tasks.md`.
 - **No frontend container.** The supported path is `npm run dev` against the Compose backend; a
   production build needs `NEXT_PUBLIC_API_BASE_URL` (above).
 
@@ -154,4 +157,10 @@ loading/empty/error states and DRAFT `–`, role gating for credit/statement, an
 derived totals. T33 adds the payment schema and payload (no `paid_at`/note), the per-mount key reused on
 retry and the deliberate restart after a spent key (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`), allocation and
 excess-credit rendering, cache invalidation after a payment or credit application, statement filter wiring
-(page reset, inverted-range guard), and the credit-apply amount rules and role/status gating.
+(page reset, inverted-range guard), and the credit-apply amount rules and role/status gating. T37 adds the
+report pages: values shown as the API returns them, server-side paging that never sends `as_of`, partial
+failures that keep the other half of the page, and access denied without a request for other roles. T39 adds
+the payment history table with its `?tab=`/`?payment=` deep links and statement links, the settlement
+breakdown and skew-safe countdown, and the settlement, write-off and credit retry rules: the same key after
+an unknown outcome (a 401 or 403 on the retry included), a new key after a re-quote or a restart, and the
+dialogs staying mounted when the contract refetch fails.

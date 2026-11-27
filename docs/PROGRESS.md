@@ -206,6 +206,9 @@ berikutnya adalah Sprint 8b (T39).
       server, satu `Idempotency-Key` per quote, "Coba lagi" tetap tersedia setelah kontrak tertutup. Dialog
       write-off dengan alasan ter-trim (maks 500). FE spec §2.4/§2.7/§2.8 diperbarui. Verifikasi lokal:
       backend 150 suite / 1177 test, frontend 302 test / 31 file, lint/typecheck/build hijau (branch
-      `t39-payments-settlement-writeoff`)
+      `t39-payments-settlement-writeoff`, merged PR #33). Perbaikan review PR: 401/403 atas retry tidak lagi
+      menghapus hasil yang belum pasti di dialog settlement, write-off dan kredit
 
-**Sprint 8b selesai.** Belum ada sprint berikutnya yang direncanakan.
+**Sprint 8b selesai.** Semua sprint yang direncanakan sudah selesai. Detail Sprint 8 dan 8b dipindahkan ke
+[tasks-archive.md](tasks-archive.md); usulan story berikutnya (T40 UI void payment dan waive/reduce denda,
+T41 cleanup `refresh_token`, T42 tindak lanjut T39) ada di [tasks.md](tasks.md) → Later sprints.

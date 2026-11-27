@@ -85,8 +85,9 @@ frontend/
 > `components/shared/{AppHeader,AppSidebar,AuthGuard,RequireWrite}.tsx`,
 > `lib/{session,jwt,decimal,format,navigation}.ts` plus `lib/schemas/`, and
 > `hooks/{useContracts,useSession,useStatement,useIdempotencyKey}.ts`, with tests beside each unit and a
-> `test/` helper directory. `payments/`, `reports/`, `types/payment.ts` and `hooks/usePayment.ts` remain
-> T33/T37/T39.
+> `test/` helper directory. `payments/`, `reports/`, `types/payment.ts` and `hooks/usePayment.ts` came
+> later with T33, T37 and T39, which also added `types/settlement.ts`, `hooks/useSettlement.ts`,
+> `lib/settlement.ts` and the settlement and write-off dialogs.
 
 ### 1.3 API Client Pattern
 ```typescript
@@ -370,7 +371,9 @@ browser. Rentang dengan tanggal awal setelah tanggal akhir ditolak di form tanpa
   **tidak** membandingkan jam browser dengan jam server: umur = `valid_until − quoted_at` (keduanya instan
   server), waktu berjalan diukur sebagai selisih `Date.now()` sejak permintaan quote dikirim (sisa waktu
   terpotong satu round trip, sisi yang aman). Di nol, "Lunasi
-  Sekarang" nonaktif dan "Ambil quote baru" muncul; server tetap otoritas.
+  Sekarang" nonaktif dan "Ambil quote baru" muncul; server tetap otoritas. "Ambil quote baru" tidak muncul
+  selama hasil eksekusi belum pasti atau retry-nya masih berjalan: quote baru berarti key baru, sehingga
+  hasil percobaan sebelumnya tidak bisa lagi di-replay.
 
 **Step 2 — Eksekusi:**
 - Tombol "Lunasi Sekarang" → konfirmasi dialog dengan total cash due.

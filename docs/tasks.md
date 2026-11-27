@@ -11,67 +11,58 @@ Estimates use the sprint plan's points (1 pt ≈ 2–3 h; target velocity 8–13
 Completed-task detail (full implementation notes for DONE work, the resolved X-table, the CR-01…CR-16
 review table, and historical verification snapshots) is archived in `tasks-archive.md`; `PROGRESS.md` is the
 sprint-by-sprint narrative. This file keeps the live backlog: the current-state snapshot, the compact
-Completed Work index, open tasks, and open ambiguities.
+Completed Work index, the proposed next stories, deferred work, and open ambiguities.
 
 ---
 
 ## Current Project State
 
-**Snapshot:** `main` @ `12a4ccc` (PR #32, T28b PII re-keying, merged); T39 on `t39-payments-settlement-writeoff`. **Sprint 8b is COMPLETE** (T39). **Sprint 8 is COMPLETE** (T36, T37, T38, T28a, T28b). **Sprint 7 is COMPLETE**: T35, T32,
-T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
-shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
-implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
-operator flow end to end against the Compose stack.
-**Current sprint: Sprint 8b (COMPLETE, 5 pts)**: T39 is DONE (`t39-payments-settlement-writeoff`); no later sprint is planned yet.
-**Previous sprint: Sprint 8 (COMPLETE, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (PR #32, merged).
+**Snapshot:** `main` @ `70da91b` (PR #33, T39, merged 2026-11-27). **Every planned sprint is COMPLETE**
+(Sprint 0 through Sprint 8b; T10 stays DEFERRED) and no sprint is in progress. Backend Phases 1–3 are
+implemented. The browser dashboard covers every operator flow except payment void and penalty waive/reduce,
+which exist only as API endpoints. The proposed next stories (T40–T42) are in Future / Deferred Work →
+Later sprints.
 
-**Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-27, branch
-`t39-payments-settlement-writeoff`) = **150 suites / 1177 tests / 0 failed** (T28b close 149/1170; T39 added
-`ContractPaymentHistoryIT`; T28a close 140/1100; T28b added the census,
-row-verifier, retirement-report, runner and configuration suites, `PiiRekeyIT` and `IdempotencyKeyRotationIT`). Frontend `npm test` (2026-11-27, branch `t39-payments-settlement-writeoff`) =
-**302 tests / 31 files / 0 failed** (T37 close 236; T39 added the payments tab, settlement modal and write-off dialog, and the PR #33 review fix; T34 close 203), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
+**Verified test counts** (2026-11-27, the T39 branch exactly as merged into `main` @ `70da91b`): backend
+`./gradlew check --rerun-tasks` = **150 suites / 1177 tests / 0 failed**; frontend `npm test` = **302 tests /
+31 files / 0 failed**, plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
-`node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
-exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
-for a GitHub billing reason, not a test failure.
+`node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset` exits 0
+on a fresh stack, and plain re-runs against the same database exit 0. Per-task counts are in each task's
+implementation note in `tasks-archive.md`. CI on `main` is red for a GitHub billing reason, not a test
+failure; the local runs are the verification of record.
 
 **Implemented (verified in source):**
 
 - Modules `contract`, `payment`, `penalty`, `ledger`, `reporting`, `settlement`, `auth`, `shared`.
 - Migrations **V1–V25** plus the `demo`-profile repeatable seed `R__demo_seed.sql`; schema is owned by
   Flyway (`ddl-auto=validate`). V25 is the latest: the nullable `idempotency_keys.request_hash_kid` (T28b).
-  V24 is the reporting range indexes on `installment.due_date` and `settlement.executed_at` (T36).
 - Daily servicing (billing → penalty → aging → consistency check) runs as the ShedLock job with `job_run`
   rows; a second job cleans expired idempotency keys (T18).
 - Money paths: schedule engine, payment allocation + idempotency, billing/recognition, penalty accrual
   and waive/reduce, settlement quote/execution, credit application, payment void, write-off, double-entry
   ledger with DB backstops (ADR-008/009/011/014/017/018/019/020/021).
-- **20 endpoints** under `/api/v1`: auth login/refresh/logout, contracts create/activate/list/detail/
-  installments/statement, payments create/void, payment history (`GET /contracts/{id}/payments`, T39), aging and outstanding reports (ADR-026), credit
-  apply/read, write-off, penalty
-  adjustment, settlement quote/execute. Every one has a default-deny role-matrix row (ADR-015); only the
-  three auth endpoints are `permitAll` (ADR-022).
+- **20 endpoints** under `/api/v1` (README → API): auth login/refresh/logout, contracts create/activate/
+  list/detail/installments/statement, payment history, payments create/void, credit apply/read, penalty
+  adjustment, settlement quote/execute, write-off, aging and outstanding reports. Every one has a
+  default-deny role-matrix row (ADR-015); only the three auth endpoints are `permitAll` (ADR-022).
 - Auth: Argon2id, 15-minute HS256 access token, hashed opaque refresh token with single-use rotation,
   idempotent logout, lockout (5 × `PT15M` → 423), dev-key production guard (ADR-022).
 - Browser boundary: exact-origin CORS in the security chain with startup validation, an empty default, no
-  credentials, and `403` before authorization for a disallowed origin (T35, ADR-023). The frontend calls
-  the API directly — no BFF or proxy.
-- Frontend (`frontend/`, T32): Next.js 16.4.6 App Router shell with in-memory tokens, a single-flight
-  refresh-and-replay client, a session generation that discards stale refreshes/responses, and cache
-  clearing on login/logout; `/login`, a guarded dashboard, the contract book (filter/search/pagination),
-  create, detail with Jadwal/Kredit/Ledger tabs, activation, and a minimal statement page. Money and rates
-  are exact decimal strings (ADR-024) formatted with BigInt, never a float. Authorization stays server-side;
-  the JWT `roles` only drives which buttons/tabs render, and credit/statement are hidden from `MANAJEMEN`
-  (the API still answers 403). T33 adds `/contracts/[id]/payments/new` (amount + channel; the server's
-  `paid_at`; allocation and excess-credit result), statement `ref_type`/`from`/`to` filters sent to the
-  API, and credit apply from the Kredit tab; every write invalidates the `["contract", id]` query prefix.
-  T37 adds `/reports/aging` and `/reports/outstanding` (a "Laporan" sidebar group for all three roles):
-  the summary row and cards are the API's values, formatted only, and the aging rows carry `customer_name`.
-  T39 adds the Pembayaran tab (ADMIN and FINANCE; `?tab=` / `?payment=` deep links; statement PAYMENT rows link
-  to it), a settlement quote/execute modal with a skew-safe countdown and a write-off dialog with a reason.
-- PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
-  search (ADR-004); rotation is **T28a/T28b** (Sprint 8, DONE).
+  credentials, and `403` before authorization for a disallowed origin (ADR-023). The frontend calls the API
+  directly — no BFF or proxy.
+- Frontend (`frontend/`, Next.js 16.4.6 App Router): in-memory tokens, a single-flight refresh-and-replay
+  client, and a session generation that discards stale refreshes and responses. Screens: `/login`, the
+  contract book (filter/search/pagination), create, activation, and contract detail with Jadwal/Pembayaran/
+  Kredit/Ledger tabs (`?tab=` / `?payment=` deep links). Writes: payment (`/contracts/[id]/payments/new`),
+  credit apply, early settlement (quote, countdown, execute) and write-off, each retry-safe under one
+  `Idempotency-Key` per operation (FE §1.4). Reads: the statement page with filters (PAYMENT rows link to
+  the payment) and `/reports/aging` and `/reports/outstanding`. Money and rates are exact decimal strings
+  (ADR-024), never a float. Authorization stays server-side; the JWT `roles` only drive which buttons and
+  tabs render.
+- PII: AES-256-GCM envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and search
+  (ADR-004). The key ring (`v2:<kid>:…`, legacy `v1:` still read) and the opt-in, verified, resumable
+  re-keying runner with a per-`kid` retirement verdict are ADR-025 (T28a/T28b).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
   Dependency-Check and Compose smoke as separate CI jobs (T27, T32). No scanner is wired into `check`.
   Compose smoke also runs the demo helpers' tests and `node scripts/demo.mjs` (T34).
@@ -79,22 +70,9 @@ for a GitHub billing reason, not a test failure.
   Addendum §18 contracts through the API with dates relative to today, checks the golden schedules, pays
   (PRD scenarios 1, 2, 3 and 6), reads the statement (Σ debit = Σ credit) and the aging report, and checks
   the role split. Only the demo users are seeded.
-- Outbox (T38, ADR-027): `PaymentReceived`, `PaymentVoided`, `ContractActivated`, `ContractClosed`,
-  `ContractWrittenOff` and `SettlementExecuted` are written to `outbox_events` in their business transaction,
-  PII-free, in write order (monotonic UUIDv7 ids). A ShedLock job (`outbox-publisher`, every 5 s) logs each
-  as one ECS line and marks it `SENT`; failures retry and end `FAILED`.
-- PII key ring (T28a, ADR-025): customer PII is sealed under the active key, as `v1:` until
-  `write-envelope=v2` and then `v2:<kid>:…`; both formats always read, and `v1:` rows read
-  under the legacy key; NIK/phone lookups match the hash under every ring key. The flat key pair is entry
-  `k1`; extra keys are `serfira.security.pii.keys.<kid>.*`.
-- PII re-keying (T28b, ADR-025 D8–D10): an idempotency claim records the key id it was signed with
-  (`request_hash_kid`, `NULL` = legacy key), and a replay recomputes the fingerprint under it. An opt-in
-  runner (`serfira.maintenance.pii-rekey.enabled=true`, `DRY_RUN` or `EXECUTE`) moves every customer to the
-  active key after a census pre-flight, verifies each row, resumes after an abort, and logs a per-`kid`
-  retirement verdict. A key is retired only when that verdict is `RETIRABLE`.
-
-Full per-task implementation notes for DONE work are in `tasks-archive.md`; the sprint narrative is in
-`PROGRESS.md`.
+- Outbox (T38, ADR-027): six PII-free domain events are written to `outbox_events` in their business
+  transaction, in write order; a ShedLock job (`outbox-publisher`, every 5 s) logs each as one ECS line and
+  marks it `SENT`; failures retry and end `FAILED`.
 
 **Blockers and critical gaps:** none. Operational notes: the `dependencies` CI job requires the one-time
 `NVD_API_KEY` secret; the keyed CI acceptance run is deferred while the GitHub account billing lock is
@@ -142,843 +120,49 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T21b  | Auth stateful half: refresh rotation, idempotent logout, brute-force lockout, dev-key prod guard, X-14/A-14 closed  | ADR-022 D10–D13, `t21b-refresh-lockout`                 |
 | T27   | CI & runtime gates: OWASP Dependency-Check (CVSS ≥ 7.0), gitleaks (history incl. merge diffs + tree), Compose smoke | CR-15, `t27-ci-runtime-gates`                           |
 | T35   | Browser-client CORS boundary: exact-origin allowlist + startup validation, `CorsFilter` before the matrix, ADR-023 | ADR-023, `t35-cors-adr-023`                             |
+| T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | T33   | Frontend G3: payment form + allocation result, statement filters, credit apply; no `paid_at`/note input     | 06_FRONTEND_SPEC §2.6–§2.7, `t33-payment-statement-credit` |
 | T34   | G5 demo: `scripts/demo.mjs` end-to-end API demo (relative dates), CI compose-smoke run, README close-out    | Addendum §18 (amended), `t34-demo-script`               |
-| T36   | G1 reporting metrics: `GET /reports/outstanding` (outstanding, AR, NPL, collection rate, settlement cash), V24 | ADR-026, `t36-reporting-outstanding`                    |
-| T37   | G4 report pages `/reports/aging` and `/reports/outstanding`; `customer_name` on aging rows                     | ADR-026, FE §2.9/§2.10, `t37-report-pages`              |
-| T38   | G6 outbox: six PII-free domain events written in their transaction; ShedLock log publisher, retries, `FAILED` | ADR-027, `t38-outbox-events`                            |
-| T28a  | CR-11 PII key ring: `v2:<kid>` envelope, candidate lookups, ring validation + guard on every member         | ADR-025, `t28a-pii-key-ring`                            |
-| T28b  | CR-11 re-keying pass + `request_hash_kid` (V25): verified resumable re-key, kid-aware replay, retirement verdict | ADR-025 D8–D10, `t28b-pii-rekey`                        |
-| T39   | FE payments tab, settlement modal and write-off dialog; `GET /contracts/{id}/payments`                       | plan T39, FE §2.4/§2.7/§2.8, `t39-payments-settlement-writeoff` |
-| T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
+| T36   | G1 reporting metrics: `GET /reports/outstanding` (outstanding, AR, NPL, collection rate, settlement cash), V24 | ADR-026, `t36-reporting-outstanding`, PR #28            |
+| T37   | G4 report pages `/reports/aging` and `/reports/outstanding`; `customer_name` on aging rows                     | ADR-026, FE §2.9/§2.10, `t37-report-pages`, PR #29      |
+| T38   | G6 outbox: six PII-free domain events written in their transaction; ShedLock log publisher, retries, `FAILED` | ADR-027, `t38-outbox-events`, PR #30                    |
+| T28a  | CR-11 PII key ring: `v2:<kid>` envelope, candidate lookups, ring validation + guard on every member         | ADR-025, `t28a-pii-key-ring`, PR #31                    |
+| T28b  | CR-11 re-keying pass + `request_hash_kid` (V25): verified resumable re-key, kid-aware replay, retirement verdict | ADR-025 D8–D10, `t28b-pii-rekey`, PR #32                |
+| T39   | FE payments tab, settlement modal and write-off dialog; `GET /contracts/{id}/payments`                       | plan T39, FE §2.4/§2.7/§2.8, `t39-payments-settlement-writeoff`, PR #33 |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
 ### Sprint summaries (detail in the archive)
 
-- **Sprint 4 — Phase-1 Close (4b/4c/4d):** COMPLETE. T1–T9, T11, T23–T26, T29 DONE; T10 DEFERRED. Detail in
-  `tasks-archive.md`.
+- **Sprint 4 — Phase-1 Close (4b/4c/4d):** COMPLETE. T1–T9, T11, T23–T26, T29 DONE; T10 DEFERRED.
 - **Sprint 5 — Settlement, Credit & Waiver (Epic E):** COMPLETE. T14, T15, T30, T12, T13 DONE (ADR-018,
-  ADR-019). Detail in `tasks-archive.md`.
-- **Sprint 6 — Void, Consistency & Write-off:** COMPLETE. T16, T17, T19, T18 DONE and merged (ADR-020,
-  PR #14); T27a DONE and merged (PR #15); T31 DONE and merged (PR #16 + review fixes PR #17). No
-  implementation work remains.
-- **Sprint 6b — Phase-2 security boundary + CI hardening:** COMPLETE. T20 (observability baseline, PR #18),
-  T21a (auth foundation, PR #19), T21b (rotation/logout/lockout/dev-key guard, PR #20) and T27 (CI & runtime
-  gates) DONE. T27's keyed CI acceptance run is deferred while the GitHub account billing lock is resolved;
-  the workflow, scanners and smoke test are implemented and locally verified.
-- **Sprint 7 — Frontend Core & Demo:** COMPLETE. T35 (PR #22), T32 (PR #23), T33 (PR #24) and T34
-  (PR #25) DONE. The operator flow runs in the browser and `node scripts/demo.mjs` replays it against the
-  API. Detail in `tasks-archive.md`.
-
----
-
-## Sprint 8 — Reporting, Outbox & PII Key Rotation (COMPLETE)
-
-**Goal (05_SPRINT_PLAN.md Sprint 8):** management reporting and the event foundation are done, which closes
-**Phase 3**. The dashboard metrics have written definitions (ADR-026), the aging and outstanding reports run
-in the browser, and domain events are written transactionally and drained by a log-based publisher. The
-sprint also carries CR-11: the PII key ring and a re-keying pass, so the AES and HMAC keys can rotate
-without losing data.
-
-**Scope (14 pts — a deliberate one-point stretch over the 13-point ceiling):**
-
-- T36 — G1: reporting metrics + `GET /reports/outstanding` (3 pts) — DONE
-- T37 — G4: frontend aging and outstanding pages + customer name in the aging API (3 pts) — DONE
-- T38 — G6: transactional outbox writer, six domain events, log-based publisher (3 pts) — DONE
-- T28a — PII key ring + `v2` envelope, ADR-025 (2 pts) — DONE
-- T28b — PII/HMAC re-keying pass + `RequestFingerprint` key compatibility (3 pts) — DONE
-
-**Exit:**
-
-- `GET /reports/outstanding` returns the ADR-026 metrics, and its totals reconcile with the aging report.
-- Both report pages render against the real backend for all three reporting roles.
-- Each of the six events is written exactly once, in the business transaction, without PII, and the
-  publisher moves it `PENDING → SENT`.
-- A customer created under key `k1` stays readable and findable after `k2` becomes active. The re-keying
-  pass moves every row to `k2`. A key is retired only once nothing signed with it is still live.
-- `./gradlew check` and the frontend CI job are green, and `node scripts/demo.mjs` still exits 0.
-
-**Order of work:** T36 → T37 → T38 → T28a → T28b.
-
-- The reporting pair goes first because it is the sprint plan's Phase-3 goal.
-- T38 comes next. It writes in the payment/contract/settlement services that T36 only reads, so it can
-  start the moment T36 is merged.
-- T28a/T28b come last. They touch only `shared/security`, `shared/idempotency` and `customer`.
-- **If the sprint runs over, T28b is the point that slips to Sprint 8b.** T28a alone is safe to ship: one
-  key in the ring behaves exactly as today. T28b landed in the sprint, so it did not slip; the HMAC key may
-  now be rotated once no T28a instance runs (ADR-025 D6, D8).
-
-> **Planned 2026-11-26.** The definitions in ADR-026, the event catalogue for T38, and the T28b retention
-> rule were decided at planning. T38 grew from 2 to 3 pts because nothing writes to `outbox_events` yet: a
-> publisher with no producers would drain an empty table. The decision was to take the one-point stretch,
-> not to split the work. ADR-024 is already the exact-decimal wire format, so the key ring is **ADR-025**,
-> the metric definitions are **ADR-026**, and T38's publisher semantics are **ADR-027**.
-
-Business rules live in the PRD, `02_TECH_SPEC.md`, `03_DOMAIN_MODEL.md`, `04_GAPS_ADDENDUM.md`,
-`06_FRONTEND_SPEC.md` and the cited ADRs. These tasks point to them and do not restate them.
-
-### T36 — G1: reporting metrics and `GET /reports/outstanding` (3 pts)
-
-Status: DONE
-Estimate: 3 pts
-
-Implementation note (2026-11-26, branch `t36-reporting-outstanding`): `GET /api/v1/reports/outstanding`
-returns `as_of`, `total_outstanding`, `accounts_receivable`, `npl { contract_count, outstanding, ratio }`,
-`collection { period_from, period_to, collected, due, rate }`, `settlement_cash { period_from, period_to,
-amount }` and `active_contract_count`. Decisions:
-- **Ports (ADR-026 D8).** `InstallmentAgingSnapshot` gained `due_date`. The new
-  `contract.application.CollectionCohortSourcePort` returns the cohort's recognized total (net of active
-  penalty adjustments, read through the existing bulk `EffectivePenaltyPort` only for contracts whose cohort
-  installments carry penalty) and `settled_amount`. The new `payment.application.CollectedAllocationPort`
-  sums POSTED non-EXCESS allocations in 1,000-id chunks (bind-parameter limit). The new
-  `settlement.application.SettlementCashPort` turns the business dates into a half-open Jakarta instant
-  range.
-- **Calculator.** `reporting.application.OutstandingMetricsCalculator` is pure. Stock metrics come from
-  one pass over the aging snapshots. Money and ratios follow ADR-026 D7.
-- **`active_contract_count`** is the number of ACTIVE contracts with outstanding, i.e. the aging report's
-  `contracts.total_elements`. The service is not `@Transactional`: each port reads in its own read-only
-  transaction, so the reads share no snapshot and, under concurrent financial writes, one response can mix
-  values from different points in time. The OpenAPI description says so.
-- **V24** adds `idx_installment_due_date` and `idx_settlement_executed_at`. The baseline indexes lead with
-  `contract_id`, so they could not serve the range reads. `OutstandingReportIT` asserts that the planner
-  uses the due-date index.
-- **Found in passing (not fixed here):** a partial penalty REDUCE on an OVERDUE installment with nothing
-  paid fails with 409 (`ck_installment_paid_coherence`), because `Installment.recomputeResolutionStatus`
-  promotes it to PARTIALLY_PAID with no `paid_at`. The IT pays 10,000 first to stay clear of it. Proposed as
-  a separate bug task.
-
-Verification: the new unit tests (`OutstandingMetricsCalculatorTest` 9, `OutstandingReportServiceTest` 2,
-`CollectedAllocationServiceTest` 5, `SettlementCashServiceTest` 2), `OutstandingReportIT` 8 and
-`EndpointRoleMatrixIT` 74 are green. The IT moves money through the API (payment, void, credit apply,
-settlement, penalty reduce, daily job). Full `./gradlew check --rerun-tasks` = **126 suites / 968 tests /
-0 failed**. Demo helpers 30/30. `node scripts/demo.mjs --up` exits 0 on a rebuilt stack, re-run
-against an existing database: outstanding total = aging total, and manager → 200 on the new endpoint.
-
-**Goal:** Serve PRD R-1's management metrics, computed exactly as ADR-026 defines them, from one read-only
-endpoint that reconciles with the aging report.
-
-**Scope.**
-
-- `GET /api/v1/reports/outstanding?as_of=` (`as_of` optional, today only). Response, inside the standard
-  envelope, in snake_case, money and ratios as strings:
-  - `as_of`, `total_outstanding`, `accounts_receivable`.
-  - `npl { contract_count, outstanding, ratio }`.
-  - `collection { period_from, period_to, collected, due, rate }`.
-  - `settlement_cash { period_from, period_to, amount }`.
-  - `active_contract_count`.
-  - Final field names are T36's call; the meanings are ADR-026's.
-- Read-only ports owned by each data owner (ADR-026 D8):
-  - **`contract`:** add `due_date` to the aging source snapshot (`InstallmentAgingSnapshot`), which AR
-    needs. Add a cohort read that returns installment id, recognized total net of active penalty
-    adjustments, and `settled_amount`, for installments due in a date range on non-DRAFT contracts.
-  - **`payment`:** Σ of POSTED non-EXCESS allocations for a set of installment ids.
-  - **`settlement`:** Σ `cash_received` for an `executed_at` business-date range.
-- `reporting`: a pure metrics calculator and a service that composes the ports, plus the controller.
-- **Role matrix:** a `GET /api/v1/reports/outstanding` row for `ADMIN_OPERASIONAL`, `FINANCE` and
-  `MANAJEMEN` (Addendum §3.4 already lists it). Add it to `ResourceServerSecurityConfiguration` and to
-  `EndpointRoleMatrixIT`. The API grows to 19 endpoints.
-- OpenAPI annotations that cite ADR-026.
-- **Demo:** `scripts/demo.mjs` reads the new endpoint and checks that `total_outstanding` equals the aging
-  report's portfolio `total_outstanding` (sprint plan rule 8.3: update the demo every sprint).
-- **Docs:**
-  - `02_TECH_SPEC.md` §1: the reporting read path.
-  - Current Project State: endpoint count.
-  - README API list.
-
-**Business Rules.**
-
-- ADR-026 D1–D8: the definitions, scope, period, cohort, exclusions, null ratios and scale-4 HALF_UP
-  ratios.
-- ADR-013 A-6: `as_of` is today only, and any other value is `400 INVALID_AS_OF_DATE`. Reuse
-  `InvalidAsOfDateException`.
-- ADR-013 A-7 and `02_TECH_SPEC.md` §1: `reporting` consumes the `contract` module's
-  `InstallmentBalance`/`InstallmentAging` values and never restates them.
-- ADR-019: penalty is net of adjustments, through the existing effective-penalty path.
-- ADR-020: only POSTED payments count.
-- ADR-024: exact decimal strings on the wire.
-- ADR-015: default-deny.
-
-**Implementation Notes.**
-
-- Total outstanding, AR and NPL come from one pass over the same snapshots the aging report reads. Do not
-  add a second outstanding query.
-- The collection numerator must read `payment_allocation`, never `installment.paid_amount`: credit
-  applications raise `paid_amount` through `applyPaymentResolution` (`ContractCreditCommandService`).
-- The period is `[as_of.withDayOfMonth(1), as_of]`. Convert `executed_at` to a business date in the
-  application zone (`Asia/Jakarta`, the injectable `Clock`'s zone).
-- The service is not `@Transactional` itself. Each port reads inside its own read-only transaction, as
-  `AgingReportService` does.
-- **Snapshot consistency:** the ports are separate read-only transactions that share no database snapshot,
-  so any number of financial writes (payments, voids, credit applications, settlements, penalty changes) can
-  commit between them, and under concurrent writes one response can mix values from different points in
-  time. Accept this, because the report is not a ledger, and record it in the controller's OpenAPI
-  description.
-
-**Dependencies:** ADR-026 (Accepted at planning). T8, T30 and T33 are DONE.
-
-**Acceptance Criteria.**
-
-- `total_outstanding` equals the aging report's portfolio `total_outstanding` for the same data.
-- NPL matches the aging rows: `npl.outstanding` = Σ `total_outstanding` of the aging rows with
-  `dpd_over_90 > 0`, and `npl.contract_count` is the number of those rows.
-- `accounts_receivable ≤ total_outstanding`, and `0 ≤ collection.collected ≤ collection.due`.
-- A ratio with a zero denominator is `null`. A non-null ratio is a scale-4 decimal string.
-- What is excluded from the collection rate: a voided payment's allocations, `EXCESS`, credit
-  applications, settlement allocations and written-off amounts. Written-off amounts stay in `due`; the
-  others are excluded from the numerator, and settlement from both sides.
-- `settlement_cash` sums `cash_received` only (not `credit_used`), for settlements executed in the period.
-- Any `as_of` other than today gets `400 INVALID_AS_OF_DATE`.
-- `MANAJEMEN`, `FINANCE` and `ADMIN_OPERASIONAL` get `200`, and an untokened call gets `401`.
-  `EndpointRoleMatrixIT` pins the row the same way it pins `GET /reports/aging`.
-- The demo script still exits 0 with the new check.
-
-**Tests.** Narrowest first:
-
-1. **Calculator unit tests**, hand-computed fixtures:
-   - A contract with one installment at DPD 91 and two future-due installments: the whole contract counts
-     as NPL.
-   - Grace boundaries: DPD 90 is not NPL, DPD 91 is.
-   - An installment due today but inside grace: in AR, DPD 0.
-   - Cohort edges: the first of the month and `as_of` are in; the last day of the previous month and
-     tomorrow are out.
-   - Collection rate: an early payment counted; a voided payment, `EXCESS` and a credit application
-     excluded; a settled installment taken out of both sides; a written-off installment in `due` only.
-   - Zero denominators. HALF_UP at scale 4.
-2. **Port tests** for each owning module.
-3. **`OutstandingReportIT`.** Testcontainers, with data seeded through the API on the Addendum §18
-   contracts and clock moves:
-   - the totals reconcile with `/reports/aging`;
-   - the role matrix;
-   - `INVALID_AS_OF_DATE`.
-4. `EndpointRoleMatrixIT`, then `./gradlew check`.
-
-**Risks.**
-
-- The cohort read is the costliest query. Bound it to one month of due dates and index-check
-  `installment.due_date`. A plan that scans every installment is a defect at portfolio scale.
-- It is tempting to compute NPL from the bucket. ADR-026 D4 is whole-contract, and the identity test
-  guards it.
-
-### T37 — G4: frontend report pages and customer name in the aging API (3 pts)
-
-Status: DONE
-Estimate: 3 pts
-
-Implementation note (2026-11-26, branch `t37-report-pages`; plan
-`docs/superpowers/plans/2026-11-26-t37-report-pages.md`): the aging rows carry `customer_name`, and the
-browser has `/reports/aging` and `/reports/outstanding` under a "Laporan" sidebar group for the three
-reporting roles. Decisions:
-- **Name through the `contract` port, as scalars.** `ContractRepository.findActiveContractCustomerNames()`
-  selects `c.id` and `cu.fullName` only, so no `Customer` is hydrated and NIK/phone are never decrypted to
-  label a row. `AgingReportSourceService` now reads at `REPEATABLE_READ`, so the installments, penalty
-  adjustments and names share one PostgreSQL snapshot; a missing name throws instead of dropping a row.
-- **`as_of` is never sent.** The read-only "Per tanggal" field shows the response's `as_of`; the backend
-  defaults to its own today, so a browser in another zone cannot ask for the wrong day (ADR-013 A-6).
-- **No browser arithmetic.** The summary row is the API's `portfolio`; the cards are the T36 values,
-  formatted only. Ratios use the new `formatRatioPercent` (`"0.0150"` → `1,50%`, BigInt, no float); a
-  `null` ratio renders the app's empty dash "–" (FE §2.10 updated). The NPL badge is `dpd_over_90` not
-  being a zero string (ADR-026 D4). The aging API sends an empty bucket as `"0"`, which the test covers.
-- **Shared table.** `AgingContractTable` serves both pages (portfolio summary row on the aging page, NPL
-  badge on the outstanding page). Cards and table are separate queries that load and fail independently.
-  While another page loads, the previous response stays as placeholder data so the summary row and
-  `as_of` stay on screen, but its rows render as skeletons, never as the new page's rows (final review).
-- **Verification:** backend `./gradlew check --rerun-tasks` = 126 suites / 969 tests / 0 failed (new
-  `AgingReportIT.everyRowCarriesTheCustomerNameAndNoOtherPii`). Frontend `npm test` = 234 tests / 27 files
-  / 0 failed; `lint`, `typecheck` and `build` (with `NEXT_PUBLIC_API_BASE_URL`) green. Demo helpers 30/30;
-  `node scripts/demo.mjs --up` exits 0. Both pages checked in the browser against the Compose stack as
-  `admin`, `finance` and `manager`: summary row = API `portfolio`, cards = API values, no request carries
-  `as_of`. The demo book has no contract past 90 DPD, so the NPL badge is proven by component tests only.
-
-**Goal:** Let an operator, finance user or manager read the aging and outstanding reports in the browser.
-The pages show numbers the backend computed and never compute their own.
-
-**Scope.**
-
-- **Backend (small):** add `customer_name` to the aging report's per-contract row (`ContractAgingRow`).
-  It is carried through `AgingReportSourcePort` from `customer.full_name`. Update OpenAPI and the aging
-  report IT.
-- **`/reports/aging` (`06_FRONTEND_SPEC.md` §2.9):**
-  - `as_of` is shown and locked to today: read-only, with no other value ever sent.
-  - A portfolio summary row comes from the response's portfolio buckets.
-  - Table columns: Contract No (linking to `/contracts/[id]`), Customer, Outstanding, Current, 1–30,
-    31–60, 61–90, >90.
-  - Server-side `page`/`size` pagination, plus loading, empty and error states.
-- **`/reports/outstanding` (§2.10):**
-  - **Cards from T36:** Total Outstanding, AR (receivable due as of today), NPL % with NPL outstanding and
-    contract count, Collection Rate MTD with collected/due and the period label, and Settlement Cash MTD
-    as its own card.
-  - **Per-contract table:** reuses the `/reports/aging` rows (ADR-026 D4 identity). Rows with
-    `dpd_over_90 > 0` carry an NPL badge.
-  - No second per-contract endpoint and no status column. The aging rows are ACTIVE contracts only.
-- **Navigation:** a "Laporan" entry with both pages, visible to all three reporting roles. Authorization
-  stays server-side.
-- **Docs:** confirm `06_FRONTEND_SPEC.md` §2.9/§2.10 against the shipped pages, and update README and
-  Current Project State.
-
-**Business Rules.**
-
-- ADR-026: what each card means. Null-ratio display: FE §2.10.
-- ADR-013 A-6: `as_of` locked to today.
-- ADR-024 and FE §3.1: money and ratios stay decimal strings, and percentages are formatted with
-  `lib/decimal.ts`/`lib/format.ts`, never `Number`/`parseFloat`.
-- ADR-023: roles drive what renders, not what is allowed.
-- Addendum §9 and ADR-004 mask and encrypt only NIK and phone. The full name is unencrypted, and
-  `GET /contracts` already returns it to all three roles. NIK and phone never appear on a report.
-
-**Implementation Notes.**
-
-- **No metric arithmetic in the browser.** The only derived value is the NPL badge, `dpd_over_90 > 0`,
-  which ADR-026 D4 defines as the NPL test itself. Totals come from the API's portfolio buckets, not from
-  summing a page of rows.
-- Reuse the existing API client, query keys, `MoneyDisplay`, and table/loading/error components.
-- Add a ratio→percent formatter in `lib/format.ts`, unit-tested in BigInt: `"0.0150"` → `1,50%`.
-- The customer name must come through the `contract` port. `reporting` does not read `customer` directly.
-
-**Dependencies:** T36 (`/reports/outstanding` and the `due_date` snapshot change; T37 extends the same
-snapshot with the customer name).
-
-**Acceptance Criteria.**
-
-- Both pages render against the Compose stack for `ADMIN_OPERASIONAL`, `FINANCE` and `MANAJEMEN`.
-- The aging page never sends an `as_of` other than today.
-- The summary row equals the API's portfolio buckets.
-- Every card shows the T36 value unchanged, apart from formatting. A `null` ratio renders "–".
-- The NPL badge appears exactly on rows with `dpd_over_90 > 0`.
-- The aging API returns `customer_name` on every row. The existing aging IT and `EndpointRoleMatrixIT` stay
-  green.
-- Frontend `npm test`, `lint`, `typecheck` and `build` are green in CI.
-
-**Tests.**
-
-1. Unit test for the ratio formatter: scale 4, HALF_UP already applied by the API, null, `"1.0000"`.
-2. Component tests for both pages: loading, empty, error, populated, locked `as_of`, null ratio, NPL badge,
-   pagination.
-3. Backend: extend `AgingReportIT` for `customer_name`.
-4. Then the full frontend suite and `./gradlew check`.
-
-**Risks.**
-
-- The page might sum a page of rows for the totals. That is wrong as soon as there is more than one page;
-  the summary row must come from the API.
-- The NPL badge is the one browser-side derivation. Any second one is scope creep and a second formula.
-
-### T38 — G6: transactional outbox writer, six domain events and a log-based publisher (3 pts)
-
-Status: DONE
-Estimate: 3 pts
-
-Implementation note (2026-11-26, branch `t38-outbox-events`; plan
-`docs/superpowers/plans/2026-11-26-t38-outbox-events.md`): `shared.outbox.OutboxWriter` (`MANDATORY`) writes
-the six events at their transitions, with dedicated PII-free payload records; ADR-027 holds the catalogue.
-Decisions:
-- **Write order: `created_at`, then the id.** `created_at` is stamped per persist from the application clock;
-  when two events of one transaction tie on it (always under the tests' `FixedClock`), the writer's per-process
-  monotonic UUIDv7 (`OutboxEventIds`) breaks the tie in write order, so `PaymentReceived` and
-  `SettlementExecuted` each precede the `ContractClosed` they cause. Assumes no backward wall-clock step
-  between the two writes (ADR-027 D4). No migration.
-- **One MATURITY site.** `ContractClosed` is written in `closeWhenEveryInstallmentIsPaid` and
-  `SettlementCloseService`; the first also covers a penalty waiver that clears the last amount (defensive:
-  the penalty-first waterfall means no API flow reaches it today, so a unit test pins it).
-- **`PaymentVoidPort.applyVoidRecomputation` now returns whether it reopened** a MATURITY close, for
-  `contract_reopened`.
-- **Publisher:** scheduler → `LockedOutboxPublisherJob` (lock `outbox-publisher`, every 5 s) →
-  `OutboxBatchPublisher` (`REQUIRES_NEW`, `FOR UPDATE SKIP LOCKED`) → `OutboxSink` (`LoggingOutboxSink`, one
-  ECS line per event with `event_id`, `event_type`, `aggregate_type`, `aggregate_id`, `payload`). A tick stops
-  after a batch with a failure, so a refused event retries on the next tick; at `max-retries` (10) it is
-  `FAILED`. Only a tick with failures writes a `job_run` row.
-Verification: backend 136 suites / 1017 tests / 0 failed (`./gradlew check --rerun-tasks`); frontend 236 tests / 27 files (unchanged code); demo helpers 30/30;
-`node scripts/demo.mjs --reset` exit 0, and the app logged one `Published outbox event` line per event (2
-`ContractActivated`, 2 `PaymentReceived`; the replay and the refused finance payment wrote none), all `SENT`
-within one or two 5-second ticks on a `serfira-scheduling-` thread,
-with no demo customer name, NIK or phone. Mutation checks: `REQUIRED` instead of `MANDATORY`, the settlement
-event written after the close, and a claim without `SKIP LOCKED` each fail their test. Review fix: the ShedLock
-keep-alive `ScheduledExecutorService` bean had switched off Boot's task scheduler, so every `@Scheduled` job ran
-on the single `shedlock-keep-alive` thread, which would have stalled the publisher for the whole nightly run and
-blocked lock renewals while a job ran. `JobSchedulingConfiguration` now defines a three-thread
-`serfira-scheduling-` `TaskScheduler`; `SchedulingThreadIT` pins it.
-
-**Goal:** Make domain events durable and observable without Kafka.
-
-- Six business transitions each write one event in the same transaction as the change.
-- A separate publisher drains them to the structured log and marks them sent.
-- When a broker arrives later, it replaces only the publisher's sink.
-
-**Scope.**
-
-- **`shared.outbox.OutboxWriter`**, reusable, `Propagation.MANDATORY`.
-  - `append(aggregateType, aggregateId, eventType, payload)` inserts one `PENDING` row into
-    `outbox_events` (V1) with the audit actor.
-  - The payload is serialized with the application `ObjectMapper`, so money is a decimal string
-    (ADR-024).
-- **The six events and their emission sites**, each only when the transition is actually performed:
-
-  | Event | Aggregate | Emitted from |
-  |---|---|---|
-  | `PaymentReceived` | `PAYMENT` | `POST /payments`, after the payment and its allocations persist |
-  | `PaymentVoided` | `PAYMENT` | `POST /payments/{id}/void`. The payload includes `contract_reopened` when the void reopened a MATURITY close (ADR-020 D1.3) |
-  | `ContractActivated` | `CONTRACT` | activation |
-  | `ContractClosed` | `CONTRACT` | every `Contract.close(...)` that returns `true`: MATURITY through a payment or a credit application (`InstallmentReceivableService`), and SETTLEMENT (`SettlementCloseService`) |
-  | `ContractWrittenOff` | `CONTRACT` | write-off |
-  | `SettlementExecuted` | `SETTLEMENT` | settlement execution. Followed by `ContractClosed` in the same transaction |
-
-- **Payloads.** Minimal and PII-free:
-  - Allowed: `schema_version: 1`, ids, business numbers, amounts, enums, and business dates/instants.
-  - Never: customer name, NIK, phone or address, and no free text, so no write-off reason and no void
-    reason.
-  - The event id is the outbox row id.
-- **Publisher.** A scheduled job with its own ShedLock lock. Each tick:
-  - Claims a bounded batch of `PENDING` rows ordered by `(created_at, id)` with `FOR UPDATE SKIP LOCKED`.
-  - Emits one structured INFO log line per event: id, type, aggregate and payload (ECS JSON, T20).
-  - Sets `SENT` and `sent_at`.
-  - On a sink failure, increments `retry_count`; after a configured maximum the row goes to `FAILED`.
-  - Batch size, delay and maximum retries are properties with safe defaults.
-- **ADR-027** records the event catalogue, the payload rules, the delivery semantics, and the sink seam for
-  a future broker. Delivery is at-least-once: a crash after logging but before the `SENT` commit re-emits
-  the event, and consumers deduplicate by event id.
-- **Docs:**
-  - `02_TECH_SPEC.md` §2.7: a log-based publisher now, Kafka later.
-  - `03_DOMAIN_MODEL.md` §1.15: point to the ADR-027 catalogue.
-  - GLOSSARY entries for the outbox event and the publisher.
-
-**Business Rules.**
-
-- `02_TECH_SPEC.md` §2.7: events are written in the business transaction, and the publisher is separate.
-- `03_DOMAIN_MODEL.md` §1.15: the `outbox_events` columns.
-- Addendum §9: no PII in logs. The publisher's log line is a log, so the payload rule is a hard rule, not
-  a style choice.
-- ADR-017: an idempotent replay returns the stored response without running the operation, so it emits
-  nothing.
-- ADR-011, ADR-018, ADR-019 and ADR-020: the existing close, settlement, write-off and void semantics. The
-  events report them and change none of them.
-
-**Implementation Notes.**
-
-- Emit inside the existing transactional services, after the state change and before commit, through
-  `OutboxWriter` only. Controllers never write events.
-- A transaction that rolls back drops its event. Retrying wrappers (`PaymentRetryingService`,
-  `SettlementExecutionRetryingService`, `PaymentVoidRetryingService`) re-run in a fresh transaction, so a
-  conflict-retry still yields exactly one event.
-- `ContractClosed` is emitted where `close()` returns `true`, not in each caller. One site in
-  `InstallmentReceivableService` covers both a payment and a credit application that matures a contract.
-- **No new migration expected:** `outbox_events` and `idx_outbox_status_created` exist in V1. Retention of
-  `SENT` rows is out of scope; record it as a Deferred row.
-- The publisher must not write a `job_run` row on an idle tick. A busy or failed tick may record one, and
-  ADR-027 decides which.
-
-**Dependencies:** none. Sequenced after T36/T37, see the order above.
-
-**Acceptance Criteria.**
-
-- Each of the six flows writes exactly one row of its type, with the expected aggregate and payload.
-  Settlement writes two rows: `SettlementExecuted`, then `ContractClosed`.
-- A replayed `Idempotency-Key` writes no second row. A request that fails or rolls back writes none.
-- A payment that does not close its contract writes no `ContractClosed`. A void that reopens one writes
-  `PaymentVoided` with `contract_reopened: true`.
-- No payload contains the customer's name, NIK, phone, address or any free-text reason. Assert this
-  against the seeded values.
-- The publisher moves `PENDING → SENT` with `sent_at`, logs one line per event, leaves `SENT` rows alone,
-  and after the maximum retries marks a row `FAILED`. Two concurrent ticks never emit the same row twice
-  in one pass.
-- `AccountingInvariantsIT`, `EndpointRoleMatrixIT` and `./gradlew check` stay green. The demo exits 0.
-
-**Tests.**
-
-1. `OutboxWriter` unit test: serialization, decimal strings, no transaction means an error.
-2. Publisher unit tests with a fake sink: success, failure, retry ceiling.
-3. **`OutboxEventsIT`.** One case per flow, plus:
-   - replay;
-   - rollback;
-   - a payment with no close;
-   - a void reopening a MATURITY close;
-   - a credit application that matures the contract;
-   - the PII scan.
-4. **`OutboxPublisherIT`:** batch drain, `SKIP LOCKED` under two concurrent ticks, retry → `FAILED`.
-
-**Risks.**
-
-- **Missed emission sites.** `ContractClosed` has two callers and one of them is reached through credit
-  application. The per-flow IT is the guard.
-- **PII leaking through a convenient payload** such as a response DTO. Payloads are dedicated records, and
-  the PII-scan test enforces it.
-
-### T28a — PII key ring and versioned `v2` envelope (CR-11) (2 pts)
-
-Status: DONE
-Estimate: 2 pts
-
-Implementation note (2026-11-26, branch `t28a-pii-key-ring`; plan
-`docs/superpowers/plans/2026-11-26-t28a-pii-key-ring.md`): `PiiSecuritySupport` now holds a validated
-`PiiKeyRing` (`PiiKey` = `kid` + AES key + HMAC key); ADR-025 records the scheme and the rotation runbook.
-Decisions:
-- **Configuration is additive.** The flat `encryption-key`/`hmac-key` pair is ring entry `k1`;
-  `serfira.security.pii.keys.<kid>.*` adds entries; `active-kid` and `legacy-kid` default to `k1` when the
-  flat pair is set. Compose, the test profile and the README's existing variables are unchanged.
-- **`kid` = 1–16 lowercase letters or digits**, so it round-trips through
-  `SERFIRA_SECURITY_PII_KEYS_<KID>_ENCRYPTIONKEY` (Spring lowercases env map keys and splits on `_`).
-- **Two-phase write format (PR #31 review).** `serfira.security.pii.write-envelope` = `v1` (default) or `v2`.
-  This version reads both but writes `v1` until an operator sets `v2`, so a pre-T28a instance running alongside
-  it, or a rollback, can still read every row. `v1` writes are refused unless the active and the legacy key are
-  both `k1` (the key every `v1:` row is under), so a rotation needs `v2` first (ADR-025 D7).
-- **Envelope `v2:<kid>:<base64>`**, no AAD: a relabelled body fails its tag because no two ring keys share
-  material. `v1:` reads under the legacy key. Every failure is an `IllegalArgumentException` that never echoes
-  the envelope or its `kid` (a 16-digit NIK fits the `kid` syntax). No migration (`TEXT` columns since V2).
-- **Candidates.** `hmacHex` stays the active key (writers, `RequestFingerprint`); `PiiHasher.nikCandidates` /
-  `phoneCandidates` hash under every ring key, active first. `CustomerSearchService` and `resolveCustomer`
-  (including its phone comparison) match any candidate through `CustomerLookup`; two matching rows fail with
-  the count only.
-- **Startup** refuses an unknown active/legacy `kid`, a duplicate or invalid `kid`, a wrong key length, shared
-  key material, a half-configured entry, bad base64, and `keys.k1` alongside the flat pair; messages name the
-  property and variable, never the value. The dev-key guard checks every ring member.
-Rulings: the existing `v1:` prefix assertions are unchanged again, because the default is `v1` writes; the
-single-hash finders `findByNikHash`/`findByPhoneLookup` stay for tests; the at-most-one check lives in
-`contract.application.CustomerLookup`, because Spring Data's exception translation rewraps an exception thrown
-in a repository default method. ADR-004 and Addendum §9 now name the real `SERFIRA_SECURITY_PII_*` variables.
-Verification: backend 140 suites / 1100 tests / 0 failed (`./gradlew check --rerun-tasks`; T28a added
-`PiiKeyRingTest`, `PiiSecuritySupportKeyRingTest`, `PiiKeyRingConfigurationTest` and `PiiKeyRotationIT`, which
-writes under `k1` in one application context and reads, finds, reuses and 409s in a second context with `k2`
-active on the same database); frontend and demo unchanged (no change outside the backend and docs). Review
-fixes: the dev-key guard trims like the key loader (a dev key with a trailing newline no longer passes); an
-active/legacy kid that is not a key id is never echoed (it may be a pasted key); `v1` create-reuse is asserted;
-README and ADR-025 D4/D6 corrected on the kid defaults and the mixed-active-key window during a rolling switch.
-Second review: `v1` writes need active = legacy = `k1` (`active-kid=k2` + `legacy-kid=k2` no longer starts in
-`v1` mode); a ring with no legacy key is told `legacy-kid` is missing instead of being steered to `v2`; the
-dev-key guard compares every key with all three public Compose values (a swapped dev key no longer passes);
-a `keys.<kid>` entry of the wrong shape, an invalid `kid`, a wrong length and shared material each fail
-naming the property and variable; `PiiKey` validates in its canonical constructor and prints only its `kid`;
-the `PiiKeyRing` constructor without an explicit envelope is gone; two stale Javadocs corrected.
-**Do not switch the active key in any environment until T28b ships** (ADR-025 D6).
-
-**Goal:** Let the PII encryption and HMAC keys rotate without making existing rows unreadable or
-unfindable (CR-11). Record the scheme in **ADR-025**.
-
-**Scope.**
-
-- **Key ring.** Entries keyed by a key id (`kid`). Each entry holds an AES-256 encryption key and an HMAC
-  key, and rotation moves both together. One `kid` is **active**.
-- **Configuration.** The existing `serfira.security.pii.encryption-key` / `hmac-key` properties and their
-  `SERFIRA_SECURITY_PII_*` variables keep working unchanged as a one-key ring, so Compose, the test profile
-  and the README need no edits to start. Ring properties are additive, and their exact names are ADR-025's
-  call.
-- **Envelope.**
-  - Writes produce `v2:<kid>:<base64(iv ‖ ciphertext|tag)>` under the active key.
-  - Reads accept `v2` under any ring key, and `v1:` under a designated legacy `kid`. That `kid` defaults
-    to the single configured key.
-  - An unknown `kid`, a malformed `v2` envelope or a failed tag throws. Nothing is silently null.
-- **HMAC.**
-  - New lookups and uniqueness values use the active key.
-  - Search and dedup compute **candidates** under every ring key, active first, and match any of them:
-    `findByNikHashIn` / `findByPhoneLookupIn`.
-  - `resolveCustomer`'s phone comparison must be candidate-aware too: an existing customer hashed under
-    the old key must not be reported as "registered with a different phone".
-- **Startup validation:**
-  - the active `kid` exists;
-  - every key has the right length;
-  - no two `kid`s share key material;
-  - `kid` syntax has no `:`, is non-empty and is bounded.
-- **`DevKeyProductionGuardConfiguration`** checks every ring member, not only the active one.
-- **ADR-025.** Records the envelope, ring configuration, candidate matching and failure modes, plus the
-  rotation runbook: add the key, switch active, run T28b, retire. It points to T28b for the retention rule.
-- **Docs:** ADR-004 consequence line (rotation now exists), Addendum §9 key lines, GLOSSARY, README
-  environment section.
-
-**Business Rules.**
-
-- ADR-004: AES-256-GCM with a random IV, an authenticated envelope, HMAC lookup on normalized values, and
-  keys never in the database.
-- Addendum §9: PII never in logs, URLs or SQL, and startup fails fast on a missing key.
-- ADR-022 D13: the dev-key guard.
-- The create flow never mutates an existing customer row (`ContractCommandService.resolveCustomer`;
-  PRD C-5 customer update is deferred). T28a keeps that rule.
-
-**Implementation Notes.**
-
-- `PiiSecuritySupport` stays the static bridge (Hibernate builds the converter).
-- `hmacHex` keeps meaning "active key" for writers. Candidate matching is a separate method. Callers:
-  `CustomerSearchService`, `ContractCommandService.resolveCustomer`. `RequestFingerprint` stays on the
-  active key here, and T28b makes its comparison key-aware.
-- Unique indexes on `nik_hash`/`phone_lookup` still catch a race, because concurrent creates both hash
-  under the active key.
-- **A ring of one key must behave exactly as today, apart from new writes being `v2`.** This is what makes
-  T28a shippable without T28b.
-
-**Dependencies:** T21b (DONE: dev-key guard).
-
-**Acceptance Criteria.**
-
-- A customer written under `k1` (`v1` or `v2`) is read, found by NIK/phone search, and reused by contract
-  create after the ring becomes `{k1, k2 active}`. A different phone still gets `409`.
-- New writes are `v2:k2:…`.
-- A `v2` envelope with a `kid` not in the ring fails loudly. Tampering fails. A `v1` envelope reads under
-  the legacy key.
-- Startup refuses an unknown active `kid`, a wrong-length key, duplicate key material, or any ring member
-  equal to a Compose dev key under a production profile.
-- Existing PII, customer and contract tests pass unchanged on the one-key ring.
-
-**Tests.**
-
-1. `PiiSecuritySupport` unit tests:
-   - round trips for `v1` and `v2`;
-   - decrypt under a non-active `kid`;
-   - unknown `kid`;
-   - malformed and tampered envelopes;
-   - candidate order.
-2. Configuration validation tests. Dev-key guard tests across the ring.
-3. **`PiiKeyRotationIT`:** create under `k1`, restart the context with `{k1, k2 active}`, then search, reuse
-   and `409`.
-4. `./gradlew check`.
-
-**Risks.**
-
-- Rotating the HMAC key before T28b ships breaks idempotent replays: a stored `request_hash` no longer
-  matches the active-key fingerprint, so a replay gets `409`. ADR-025 and the README must say not to
-  rotate until T28b.
-- If candidate matching is skipped anywhere, a duplicate customer can be inserted under the new key. The
-  IT covers both lookup sites.
-
-### T28b — PII/HMAC re-keying pass and `RequestFingerprint` key compatibility (CR-11) (3 pts)
-
-Status: DONE
-Estimate: 3 pts
-
-Implementation note (2026-11-26, branch `t28b-pii-rekey`; plan
-`docs/superpowers/plans/2026-11-26-t28b-pii-rekey.md`): ADR-025 D8–D10 record the scheme and the retention
-rule. Decisions:
-- **The migration is V25, not V24.** V24 is T36's reporting indexes. `V25__idempotency_request_hash_kid.sql`
-  adds `request_hash_kid VARCHAR(16) NULL` with a `kid`-syntax check and no backfill (`NULL` = legacy key).
-  The Scope below is corrected.
-- **Replay, unexpired and on-target rules:** see ADR-025
-  [D8](adr/ADR-025-pii-key-ring.md#d8--idempotency-fingerprints-record-their-key-id) (replay under the
-  recorded `kid`, and the T28a-instance rollout rule),
-  [D9](adr/ADR-025-pii-key-ring.md#d9--the-re-keying-pass) (when a row is on target) and
-  [D10](adr/ADR-025-pii-key-ring.md#d10--retention-rule-and-retirement-verdict) (what counts as unexpired).
-- **`EXECUTE` refuses `write-envelope=v1`** (the pass writes `v2`) as a `PiiRekeyPreflightException` before any
-  write; `DRY_RUN` runs in either mode.
-- **Runner.** A synchronous `ApplicationRunner`, so the application serves during the pass and a failure never
-  stops it. Properties: `serfira.maintenance.pii-rekey.enabled` (absent = no bean), `.mode` (`DRY_RUN`
-  default), `.batch-size` (500), `.lock-at-most-for` (`PT10M`); environment forms
-  `SERFIRA_MAINTENANCE_PIIREKEY_ENABLED` / `_MODE` / `_BATCHSIZE`.
-- **Retirement verdict per `kid`:** `ACTIVE`, `RETIRABLE` (no envelope, off-active hash, unexpired fingerprint
-  or unreadable row remains; `v1:` and `NULL` count under the legacy key), `NOT_RETIRABLE`, or
-  `MISSING_FROM_RING` for an unexpired fingerprint whose `kid` is not in the ring.
-- **`job_run` counters:** `DRY_RUN` and `EXECUTE` complete with 0 or the rows re-keyed and 0 failed; a
-  pre-flight abort records `FAILED/0/<blocking findings>` (the sum of four counts, so a row duplicated on NIK
-  and phone counts twice); a later abort records the rows committed so far and 1.
-- **Customer-row writes bypass JPA** (native `JdbcClient` SQL on the raw columns, as the `SYSTEM` actor), because
-  the entity holds only plaintext and dirty checking would never fire.
-Rulings: the resume cursor advances by the rows scanned, not rewritten, so an aborted run resumes without
-looping or skipping; the startup runner logs the message only for its own abort exceptions and the class name
-alone for anything else, because a unique-violation message quotes a lookup hash; every run logs one counts-only
-`pii-rekey census ...` line (with `executeWouldRun`, false when `EXECUTE` would refuse or abort), so a `DRY_RUN`
-shows the duplicate counts in advance; the summary line carries `unlabelledFingerprints`, and with no legacy key
-any unlabelled claim keeps every non-active key `NOT_RETIRABLE`.
-Verification: backend 149 suites / 1170 tests / 0 failed (`./gradlew check --rerun-tasks`, BUILD
-SUCCESSFUL; T28b added the census, row-verifier, retirement-report, runner and configuration suites,
-`PiiRekeyIT` and `IdempotencyKeyRotationIT`, which restart the application on one database under a different
-ring); frontend and demo unchanged (no change outside the backend and docs). ADR-025 D6 now forbids switching
-the active key only while a T28a instance runs.
-
-**Goal:**
-
-- Move every customer's ciphertext and lookup hashes to the active key, safely and resumably.
-- Keep idempotent replays correct across an HMAC rotation.
-- Say exactly when an old key can be retired.
-
-**Retention rule (decided at planning).** An old HMAC key is retained until every record signed with it has
-expired:
-
-- **`customer` rows:** none remain once a verified re-keying pass completes.
-- **`idempotency_keys` rows:** none are still inside their retention window (`expires_at > now`). After
-  that point a reused key is rejected before its hash is compared (ADR-017).
-
-An old encryption key is retired once no `customer` row carries its `kid`, including `v1` rows when it is
-the legacy key.
-
-**Scope.**
-
-- **Maintenance runner.**
-  - Disabled unless `serfira.maintenance.pii-rekey.enabled=true`, with `mode=DRY_RUN|EXECUTE`. No bean
-    exists when it is off.
-  - Runs once at startup in-process under its own ShedLock lock and records a `job_run` row (`pii-rekey`).
-    The app keeps serving: customer rows have no update path, and new inserts are already on the active
-    key.
-  - It is the one sanctioned writer of existing `customer` rows. It changes only the ciphertext and lookup
-    columns, never the plaintext values, so the create flow's never-mutate rule and its audit trail still
-    hold.
-- **Pre-flight.** Before any write, one keyset-paged scan decrypts every customer and computes active-key
-  hashes. It **aborts with zero writes** if:
-  - any two customers would share an active `nik_hash` or `phone_lookup`, or
-  - any row has an unknown `kid` or fails to decrypt.
-
-  Logs are counts only, never values.
-- **Execute.**
-  - Pages by `id`, one transaction per page.
-  - Re-encrypts `nik`/`phone` under the active `kid` and rewrites `nik_hash`/`phone_lookup`.
-    Encryption happens in the application (ADR-004: never in SQL). The write is forced, because JPA dirty
-    checking does not fire when the plaintext is unchanged.
-  - **Verifies each row** in the same transaction by re-reading, decrypting and comparing plaintext and
-    hashes. A mismatch rolls back that page and aborts.
-  - Rows already on the active key are skipped, so a re-run is a no-op and an interrupted run resumes.
-  - `updated_by` is the `SYSTEM` user.
-- **`RequestFingerprint` key compatibility.**
-  - New migration V25 adds a nullable `idempotency_keys.request_hash_kid`. `NULL` means legacy: signed
-    with the legacy key.
-  - The claim records the active `kid`.
-  - The replay comparison in `IdempotencyService` recomputes the fingerprint under the row's recorded
-    `kid` (legacy for `NULL`). It no longer compares only against the active key, so a replay across a
-    rotation is a replay, not a `409`.
-  - A recorded `kid` missing from the ring fails loudly. That would mean the key was retired too early.
-- **Retirement report.** Every run, dry or real, prints per-`kid` counts:
-  - customer rows by envelope `kid`;
-  - customer rows whose hashes are not on the active key;
-  - unexpired `idempotency_keys` rows by `request_hash_kid`.
-
-  It ends with a retirable / not-retirable verdict per `kid`, by the rule above.
-- **Docs:** ADR-025 addendum (retention rule, runner, V25), README operations runbook, Addendum §9.
-
-**Business Rules.**
-
-- ADR-004 "Considerations for later sprints": migrations that touch existing `nik`/`phone` rows go through
-  the application, never SQL encryption.
-- ADR-017: a key is single-use forever, and past `expires_at` it is rejected before any hash comparison.
-- Addendum §9: no PII in logs.
-- ADR-007: `request_hash` is a keyed digest, never the payload.
-
-**Implementation Notes.**
-
-- Keyset paging follows the T18/T6 pattern (`id > :after ORDER BY id LIMIT :n`).
-- The runner reuses the `job_run` lifecycle (abandon a stale `RUNNING` row, then start) from
-  `IdempotencyCleanupJob`.
-- Write-off idempotency rows are retained past expiry (T18). They count for retirement only while
-  unexpired: an expired row is never compared.
-- The retention window is the `IDEMPOTENCY_KEY_RETENTION_DAYS` system parameter (7). The report reads each
-  row's own `expires_at`, so a later parameter change is handled.
-
-**Dependencies:** T28a.
-
-**Acceptance Criteria.**
-
-- `DRY_RUN` writes nothing and reports the counts.
-- `EXECUTE` moves every customer to the active `kid` with active hashes. A second run changes zero rows.
-- After the pass, a ring **without** the old key reads, finds and reuses every customer.
-- An induced duplicate makes the pre-flight abort with zero rows changed. An induced verification failure
-  rolls back the page and aborts.
-- With an idempotency row claimed under `k1` and `k2` now active:
-  - a replay of the same body returns the stored response;
-  - a different body gets `409`;
-  - the report calls `k1`'s HMAC key not retirable until that row's `expires_at` passes. Advance the
-    injectable clock to check.
-- With the property absent, no runner bean exists and startup is unchanged.
-- No log line contains a NIK, a phone or a full hash.
-
-**Tests.**
-
-1. Unit tests: the pre-flight duplicate detector, the per-row verifier, the retirement verdict.
-2. **`PiiRekeyIT`:**
-   - customers seeded under `k1` in both `v1` and `v2`;
-   - dry run;
-   - execute;
-   - resume;
-   - duplicate abort;
-   - verification-failure rollback;
-   - read-back with `k1` removed.
-3. **`IdempotencyKeyRotationIT`:** replay, conflict and retirement across rotation, on the payment and
-   contract-create endpoints.
-4. `./gradlew check`.
-
-**Risks.**
-
-- This rewrites PII in place. The pre-flight abort and the per-row verification are the safety net. Run
-  `DRY_RUN` in every environment first.
-- Retiring a key early makes rows unreadable. The report's verdict is the gate; ADR-025's runbook forbids
-  retiring on time alone.
-
----
-
-## Sprint 8b — Payments, Settlement & Write-off UI (COMPLETE)
-
-**Goal:** the operator can read a contract's payment history and run the two remaining servicing flows
-(early settlement, write-off) from the contract detail screen.
-**Scope (5 pts):** T39 — DONE.
-**Exit:** `GET /api/v1/contracts/{id}/payments` is live behind the role matrix; the contract detail screen has a
-payments tab, a settlement quote/execute modal and a write-off dialog; statement PAYMENT rows link to the
-payment. Sprint 8b is the last planned sprint; no later story is planned yet.
-
-> **Planned 2026-11-27.** Plan: `docs/superpowers/plans/2026-11-27-t39-payments-settlement-writeoff.md`
-> (Decisions 1–13, Global Constraints, Review Focus).
-
-### T39 — FE payments tab, settlement and write-off flows (5 pts)
-
-Status: DONE
-Estimate: 5 pts
-
-Implementation note (2026-11-27, branch `t39-payments-settlement-writeoff`; plan
-`docs/superpowers/plans/2026-11-27-t39-payments-settlement-writeoff.md`). Shipped in five tasks:
-- **Backend:** `GET /api/v1/contracts/{id}/payments` in the `payment` module (`ContractPaymentController`,
-  `ContractPaymentResponse`; `PaymentResponse` untouched), the existence check through the new
-  `ContractLookupPort.requireExists`, and one matrix row (ADMIN, FINANCE; MANAJEMEN 403).
-- **Frontend:** the Pembayaran tab with `?tab=` / `?payment=` handling and statement PAYMENT links
-  (reversal rows included; SETTLEMENT rows stay unlinked); the settlement quote/execute modal; the write-off
-  dialog with a trimmed reason (1-500 characters).
-- **Decisions:** plan Decisions 1–13 held as planned; FE spec §2.4, §2.7 and §2.8 carry them.
-- **Review fix:** "Ambil quote baru" could replace a "Coba lagi" retry still in flight; the re-quote is now
-  withheld while an outcome is unknown (`fecc3f6`).
-- **PR review fix (CodeRabbit, PR #33):** a 401 or 403 answering the retry of an unknown outcome no longer
-  clears it, in the settlement, write-off and credit-apply dialogs alike (`isOutcomeUnknown` in
-  `lib/idempotency`); FE spec §2.8 now times the countdown from the quote request, as the code does.
-Verification (2026-11-27, local; GitHub CI is blocked by billing): backend `./gradlew check --rerun-tasks`
-BUILD SUCCESSFUL, 150 suites / 1177 tests / 0 failed; frontend `npm test` 302 tests / 31 files / 0 failed,
-`npm run lint`, `npm run typecheck` and `NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 npm run build` green.
-
-Goal: an ADMIN_OPERASIONAL or FINANCE operator sees every payment of a contract (POSTED and VOIDED, with
-allocations, excess and void details), quotes and executes an early settlement, and writes a contract off
-with a reason, all from the contract detail screen.
-Scope:
-- Backend: `GET /api/v1/contracts/{id}/payments` in the `payment` module (`ContractPaymentController`,
-  `PaymentHistoryQueryService`, `ContractPaymentResponse`), `ContractLookupPort.requireExists`, one role-matrix
-  row, OpenAPI, doc rows.
-- Frontend: payments tab; settlement modal with countdown; write-off dialog; `?tab=` and `?payment=` deep links;
-  statement PAYMENT rows link to the payment row.
-Business Rules: all taken at planning, see plan Decisions 1–13, with ADR-018 (settlement), ADR-017
-(idempotency) and Addendum §3.4 (roles); not restated here.
-Implementation Notes: `contract` never imports `payment`, so the existence check goes through the new
-`ContractLookupPort` in `contract.application`. The new endpoint adds exactly one default-deny matcher row
-(ADR-015) and the same Addendum §3.4 and `EndpointRoleMatrixIT` rows. Money stays a decimal string end to end
-(ADR-024). Task order and files: the plan.
-Dependencies: T33, T12/T13, T19.
-Acceptance Criteria:
-- A settlement whose response is lost but which committed still offers "Coba lagi"; the retry replays with the
-  same key and `quote_id` and ends in the success toast, even after the refetch shows CLOSED.
-- The countdown starts at the server lifetime (`valid_until − quoted_at`) whatever the browser clock says, and
-  execution disables at zero.
-- With customer credit, cash due is `gross − credit`; credit equal to the gross shows Rp 0; credit above the
-  gross blocks execution.
-- A re-quote after `STALE_SETTLEMENT_QUOTE` or `SETTLEMENT_QUOTE_EXPIRED` sends a different `Idempotency-Key`
-  with the new `quote_id`.
-- Write-off reasons are validated and sent trimmed (whitespace only, 500 and 501 characters, surrounding
-  spaces); a retry resends the reason unchanged.
-- `GET /contracts/{id}/payments` answers 200 for ADMIN and FINANCE, 403 for MANAJEMEN, 404 `CONTRACT_NOT_FOUND`
-  for an unknown contract.
-Tests: `ContractPaymentHistoryIT` and `EndpointRoleMatrixIT` first; then the frontend unit and component tests
-named in the plan; `./gradlew check` and `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`.
-Risks: re-estimated from 2 to 5 pts at planning (read model and role row 1, tab and links 1, settlement modal 2,
-write-off dialog 1). The settlement modal carries the only browser-side money arithmetic (D5), so a mistake
-there is a money-display error rather than a ledger error: the server stays the authority.
+  ADR-019).
+- **Sprint 6 — Void, Consistency & Write-off:** COMPLETE. T16, T17, T19, T18 (PR #14), T27a (PR #15) and T31
+  (PR #16 + review fixes PR #17) DONE.
+- **Sprint 6b — Phase-2 security boundary + CI hardening:** COMPLETE. T20 (PR #18), T21a (PR #19), T21b
+  (PR #20) and T27 DONE. T27's keyed CI acceptance run is deferred while the GitHub account billing lock is
+  resolved; the workflow, scanners and smoke test are implemented and locally verified.
+- **Sprint 7 — Frontend Core & Demo:** COMPLETE. T35 (PR #22), T32 (PR #23), T33 (PR #24) and T34 (PR #25)
+  DONE. The operator flow runs in the browser and `node scripts/demo.mjs` replays it against the API.
+- **Sprint 8 — Reporting, Outbox & PII Key Rotation:** COMPLETE. T36 (PR #28), T37 (PR #29), T38 (PR #30),
+  T28a (PR #31) and T28b (PR #32) DONE: Phase 3's reporting and event foundation, and CR-11.
+- **Sprint 8b — Payments, Settlement & Write-off UI:** COMPLETE. T39 (PR #33) DONE. Plan:
+  `docs/superpowers/plans/2026-11-27-t39-payments-settlement-writeoff.md`.
 
 ---
 
 ## Future / Deferred Work
 
-### Later sprints (planned, detailed at their sprint planning)
+### Later sprints (proposed, detailed at their sprint planning)
 
-No later story is planned yet. Sprint 8 and Sprint 8b are detailed above.
+No sprint is planned. These are the proposed next stories, one row each; the one picked up is turned into a
+full ticket (and a plan) at its sprint planning. Suggested order: T42 before T40, which reuses its shared
+alert; T41 is independent.
 
-Sprint 8 = 14 pts (T36, T37, T38, T28a, T28b; a one-point stretch, with T28b the first to slip into 8b).
-Sprint 8b = 5 pts (T39); T28b did not slip.
-
-> **`iss`/`aud` + RS256 (CR-10) and the T7-D2 active-user check** were part of the old T21 carry-forward.
-> The active-user check is now folded into **T21a**. `iss`/`aud` validation and an RS256 migration stay
-> deferred until a real external token issuer exists (ADR-005) — not needed while login mints HS256
-> tokens in-process; revisit when an issuer is introduced.
+| Story | Title (estimate)                                     | Carry-forward requirements |
+| ----- | ---------------------------------------------------- | -------------------------- |
+| T40   | FE payment void and penalty waive/reduce (≈5 pts)    | The last two write endpoints without a screen: `POST /payments/{id}/void` (ADR-020) and `POST /penalty-adjustments` (ADR-019), both ADMIN_OPERASIONAL only (Addendum §3.4). Neither screen is in the FE spec (T39 Decision 12 left void out), so an FE spec section comes first. Likely homes: a void action on POSTED rows of the Pembayaran tab, and a waive/reduce action on an installment in Jadwal (the request names `contract_id` + `installment_id`). Void takes an `Idempotency-Key` and follows the T39 dialog rules (one key per operation, `isOutcomeUnknown`, spent-key restart, mounted whatever the contract status). Penalty adjustment takes **no** key, so how its dialog treats a lost response must be decided at planning against ADR-019. |
+| T41   | `refresh_token` retention / cleanup job (≈2 pts)     | Moved from Deferred: its trigger ("schedule it with the reporting work") passed with Sprint 8. Rotation inserts a row per refresh and revoked rows are never deleted (~96 rows per user per day at a 15-minute access token). Same shape as T18: keyset delete on `expires_at`, its own ShedLock lock, one `job_run` row (ADR-022). |
+| T42   | T39 follow-ups (≈2 pts)                              | Polish parked at the T39 reviews: one shared spent-key alert (copied in the credit, settlement and write-off dialogs); the write-off counter shows the raw length while validation counts the trimmed one; the settlement countdown interval keeps ticking after expiry and while closed; `instantMs` throws during render on a malformed instant; payment history `aria-controls` points at a collapsed row, the allocation sort interleaves while the schedule is unloaded, and the VOIDED/POSTED badges are English; after a `CREDIT_EXCEEDS_SETTLEMENT` block no re-quote is offered once the quote expires. Also decide whether `apiFetch`'s client-side `SESSION_CHANGED` (401), which discards a response the server may have committed, should count as an unknown outcome on a first attempt in every write form. |
 
 ### Deferred
 
@@ -986,6 +170,7 @@ Sprint 8b = 5 pts (T39); T28b did not slip.
 | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | PRD C-5 update DRAFT contract                                                               | Already deferred in `05_SPRINT_PLAN.md`.                                                                                                                  |
 | R-3 cash-in report, R-4 CSV export, P-6 gateway stub, S-5 restructuring                     | P2 / Fase 4 per PRD.                                                                                                                                      |
+| `iss`/`aud` validation + RS256 (CR-10)                                                      | Needs a real external token issuer (ADR-005); login mints HS256 tokens in-process. Revisit when an issuer is introduced.                                   |
 | Require auth for OpenAPI/Swagger outside dev                                                | ADR-005 made it public by design. T21b kept it public; revisit after T32 (the first real browser client).                                                  |
 | Rate limiting; browser security headers beyond the Next.js / Spring Security defaults       | No public deployment yet. CORS itself is T35; the rest is revisited after the browser client exists.                                                       |
 | Frontend container / Compose service                                                        | The demo path is `npm run dev` plus the backend Compose stack (T34); revisit when deployment is real.                                                      |
@@ -998,7 +183,6 @@ Sprint 8b = 5 pts (T39); T28b did not slip.
 | Outbox retry backoff for a broker sink                                                      | T38 retries a refused event every tick (10 × 5 s ≈ 50 s, then `FAILED`; manual re-drive in ADR-027 D5). Fine for the log sink, which practically cannot fail; a broker outage longer than a minute would fail every event written in it. Add backoff (e.g. a `next_attempt_at`) with the broker. |
 | Outbox claim guard for rows an instance cannot read                                         | A row with an `event_type`/`aggregate_type` unknown to an older instance (rolling deploy) fails the entity-mapped claim on every tick and never reaches `FAILED` (ADR-027 D5). Single instance today; needs a per-row guard before a multi-version deployment. |
 | Historical `as_of` / metric trend snapshots                                                 | ADR-013 A-6 and ADR-026 keep reports at today only; trends need a snapshot store.                                                                         |
-| `refresh_token` retention / cleanup job                                                     | Rotation inserts a row per refresh and revoked rows are never deleted (~96 rows per user per day at a 15-minute access token). Same shape as T18's keyset delete on `expires_at`, own ShedLock lock, one `job_run` row. Not needed for T21b; schedule it with the reporting work. |
 
 ### T10 — Component-exact penalty base (conditional, DEFERRED)
 
@@ -1029,32 +213,19 @@ concern therefore reduces to:
 ### Review history (archived)
 
 The 2026-09-29 code review and the 2026-09-30 external review (16 findings, CR-01…CR-16) are resolved or
-mapped to tasks. The full CR verdict table is in `tasks-archive.md`. Still-open mapping: CR-10 → deferred
-(RS256/`iss`/`aud`, needs a real issuer), **CR-11 → T28a/T28b** (Sprint 8, DONE), CR-15 → T27 (DONE). All others
-are DONE.
+mapped to tasks; the full CR verdict table is in `tasks-archive.md`. The only one still open is CR-10
+(RS256/`iss`/`aud`), deferred until a real issuer exists.
 
 ### Ambiguities
 
-No open `A-n`. Sprint 7's browser-client choices are recorded in `06_FRONTEND_SPEC.md` §1.1/§1.4/§4 and
-formalized in **ADR-023** (T35, DONE). Sprint 8's open definitions were decided at planning (2026-11-26):
-
-- The NPL numerator, collection-rate period and cohort, and AR versus overdue are in **ADR-026**.
-- The T38 event catalogue and the T28b key-retention rule are in their task sections, and are recorded in
-  ADR-027 and ADR-025 when those tasks land. The resolved Phase-1 decisions (A-1…A-14) and the X-table are in
-`tasks-archive.md` and the cited ADRs.
+No open `A-n`. The resolved Phase-1 decisions (A-1…A-14) and the X-table are in `tasks-archive.md`; later
+choices are recorded in ADR-023 (browser client), ADR-025 (PII key ring), ADR-026 (report metrics) and
+ADR-027 (outbox).
 
 ### Dependency order (open tail)
 
 ```text
-Sprint 7 (COMPLETE):
-  T35 (CORS + ADR-023) ─► T32 (G2 shell, login, contract lifecycle)
-      ─► T33 (G3 payment, schedule, statement, credit) ─► T34 (G5 demo)
-
-Sprint 8 (COMPLETE, 14 pts; work order T36 → T37 → T38 → T28a → T28b):
-  ADR-026 (metrics, Accepted) ─► T36 (G1 metrics + /reports/outstanding) ─► T37 (G4 FE reports)
-  T38 (G6 outbox writer + 6 events + publisher, ADR-027)
-  T28a (PII key ring + v2 envelope, ADR-025) ─► T28b (re-keying + RequestFingerprint kid)   [CR-11]
-
-Sprint 8b:
-  T33 ─► T39 (FE payments tab, settlement, write-off)
+All planned sprints are complete. Proposed, not yet planned:
+  T39 ─► T42 (T39 follow-ups; one shared spent-key alert) ─► T40 (void + penalty-adjustment dialogs)
+  T41 (refresh_token cleanup job) — independent
 ```

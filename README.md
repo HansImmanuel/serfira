@@ -385,13 +385,15 @@ itself as their credential.
 | ------------ | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | 1 — MVP      | Contracts, FLAT/EFFECTIVE schedules, payments and allocation, ledger, penalty and aging job, RBAC, aging report, statement | Done                                   |
 | 2            | Early settlement, customer credit, payment void/reversal, penalty waiver, consistency check, write-off, login              | Built                                  |
-| 3            | Next.js dashboard (login, contract lifecycle, payment, statement, credit, aging and outstanding reports and the demo script built; payments history, settlement/write-off UI pending), reporting, outbox events and log-based publisher (built, ADR-027), export | In progress                            |
+| 3            | Next.js dashboard (login, contract lifecycle, payment, payment history, statement, credit, early settlement, write-off, aging and outstanding reports), demo script, reporting metrics (ADR-026), outbox events and log-based publisher (ADR-027) | Built; CSV export deferred (PRD P2)    |
 | 4 (optional) | Restructuring, payment gateway stub, maker-checker, microservice split demo                                                | Optional                               |
 
 Out of scope by design: loan origination (credit scoring, credit bureau checks, e-KYC), funding and
 treasury, field collection, real payment gateway integration, and multi-currency.
 
-The sprint-by-sprint log is in [docs/PROGRESS.md](docs/PROGRESS.md).
+Payment void and penalty waive/reduce are API-only for now; screens for them are the first proposed next
+story. The proposed next stories and the deferred work are in [docs/tasks.md](docs/tasks.md), and the
+sprint-by-sprint log is in [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Documentation
 

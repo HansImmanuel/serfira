@@ -583,7 +583,8 @@ Data demo harus bisa dibuat ulang dari stack `docker compose up` yang bersih, ta
 **Skenario demo (dijalankan oleh `scripts/demo.mjs`):**
 - Angsuran 1 jatuh tempo paling lambat hari ini dan masih dalam grace, sehingga tidak ada denda.
 - Pembayaran Rp 4.769.959,90 (BANK_TRANSFER): bunga 1.125.000 + pokok 3.644.959,90, angsuran 1 → PAID (PRD skenario 1). Request yang sama diulang dengan `Idempotency-Key` yang sama me-replay pembayaran yang sama (PRD skenario 6).
-- Demo pelunasan dipercepat (settlement) dari browser ada di T39.
+- Pelunasan dipercepat (settlement) didemokan dari browser lewat tombol "Pelunasan Dipercepat" di detail
+  kontrak (T39); `scripts/demo.mjs` tidak menjalankannya.
 
 **Golden value installment #1 (pinned by `EffectiveScheduleGoldenTest.demoContractBGoldenCase`):**
 - i = 0.0075, n = 36
