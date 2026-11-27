@@ -230,3 +230,42 @@ describe("ContractDetailView payment entry point", () => {
     expect(screen.queryByRole("link", { name: /Catat Pembayaran/ })).not.toBeInTheDocument();
   });
 });
+
+describe("ContractDetailView settlement entry point", () => {
+  beforeEach(() => {
+    clearSession();
+    searchParams = new URLSearchParams();
+    vi.mocked(apiFetch).mockReset();
+  });
+
+  function mockContract(status: Contract["status"]) {
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (String(path).endsWith("/installments")) {
+        return [] as never;
+      }
+      return { ...CONTRACT, status } as never;
+    });
+  }
+
+  it('offers "Pelunasan Dipercepat" to ADMIN_OPERASIONAL on an ACTIVE contract', async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    mockContract("ACTIVE");
+
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+
+    expect(await screen.findByRole("button", { name: "Pelunasan Dipercepat" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["FINANCE", "ACTIVE"],
+    ["ADMIN_OPERASIONAL", "CLOSED"],
+  ] as const)("does not offer it to %s on a %s contract", async (role, status) => {
+    signInAs([role]);
+    mockContract(status);
+
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+
+    expect(await screen.findByText("MF-202611-0001")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pelunasan Dipercepat" })).not.toBeInTheDocument();
+  });
+});

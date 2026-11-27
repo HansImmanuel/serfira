@@ -8,6 +8,7 @@ import { ActivateContractButton } from "@/components/contracts/ActivateContractB
 import { ContractStatusBadge } from "@/components/contracts/ContractStatusBadge";
 import { CreditPanel } from "@/components/contracts/CreditPanel";
 import { InstallmentTable } from "@/components/contracts/InstallmentTable";
+import { SettlementDialog } from "@/components/contracts/SettlementDialog";
 import { ContractPaymentsPanel } from "@/components/payments/ContractPaymentsPanel";
 import { DateDisplay } from "@/components/shared/DateDisplay";
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
@@ -99,6 +100,11 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
                 Catat Pembayaran
               </Link>
             </Button>
+          ) : null}
+          {canWrite ? (
+            // Mounted whatever the status (T39 decision 8): a settlement whose response was lost may have
+            // closed the contract, and its retry must stay reachable. The status gates only a new one.
+            <SettlementDialog contractId={detail.id} canStartNew={detail.status === "ACTIVE"} />
           ) : null}
           {detail.status === "DRAFT" && canWrite ? (
             <ActivateContractButton contractId={detail.id} plannedStartDate={detail.planned_start_date} />
