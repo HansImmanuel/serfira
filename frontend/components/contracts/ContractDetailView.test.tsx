@@ -231,7 +231,7 @@ describe("ContractDetailView payment entry point", () => {
   });
 });
 
-describe("ContractDetailView settlement entry point", () => {
+describe("ContractDetailView settlement and write-off entry points", () => {
   beforeEach(() => {
     clearSession();
     searchParams = new URLSearchParams();
@@ -247,13 +247,14 @@ describe("ContractDetailView settlement entry point", () => {
     });
   }
 
-  it('offers "Pelunasan Dipercepat" to ADMIN_OPERASIONAL on an ACTIVE contract', async () => {
+  it("shows Pelunasan Dipercepat and Write-off only for ADMIN_OPERASIONAL on an ACTIVE contract", async () => {
     signInAs(["ADMIN_OPERASIONAL"]);
     mockContract("ACTIVE");
 
     renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
 
     expect(await screen.findByRole("button", { name: "Pelunasan Dipercepat" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Write-off" })).toBeInTheDocument();
   });
 
   it.each([
@@ -267,5 +268,6 @@ describe("ContractDetailView settlement entry point", () => {
 
     expect(await screen.findByText("MF-202611-0001")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pelunasan Dipercepat" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Write-off" })).not.toBeInTheDocument();
   });
 });

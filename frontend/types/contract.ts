@@ -154,3 +154,26 @@ export interface CreateContractPayload {
   interest_rate: string;
   planned_start_date: string;
 }
+
+/** `POST /contracts/{id}/write-off` body (F5): the operator's reason, trimmed, at most 500 characters. */
+export interface WriteOffPayload {
+  reason: string;
+}
+
+/** One installment the write-off closed, with the recognized receivable capped on it. */
+export interface WrittenOffInstallment {
+  installment_id: string;
+  period_no: number;
+  written_off_amount: Money;
+}
+
+/** `POST /contracts/{id}/write-off` response (`WriteOffResponse`): the terminated contract and what was capped. */
+export interface WriteOffResult {
+  contract_id: string;
+  contract_no: string;
+  status: ContractStatus;
+  write_off_reason: string;
+  written_off_at: string;
+  total_written_off: Money;
+  installments: WrittenOffInstallment[];
+}
