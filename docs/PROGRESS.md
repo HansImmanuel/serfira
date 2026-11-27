@@ -195,3 +195,17 @@ Definisi metrik di ADR-026:
 
 **Sprint 8 selesai.** Laporan manajemen, outbox, dan rotasi kunci PII (ring + re-keying) berjalan; sprint
 berikutnya adalah Sprint 8b (T39).
+
+## Sprint 8b — Payments, Settlement & Write-off UI
+
+- [x] T39 — FE tab Pembayaran, modal settlement, dialog write-off. `GET /contracts/{id}/payments` (modul
+      `payment`; ADMIN dan FINANCE, `MANAJEMEN` 403, 404 `CONTRACT_NOT_FOUND`, tanpa paging, terbaru dulu);
+      tab Pembayaran dengan `?tab=`/`?payment=` dan link dari baris PAYMENT rekening koran (termasuk reversal;
+      SETTLEMENT tidak ditautkan). Modal settlement: Total Cash Due = `gross − kredit tersedia` (plus baris
+      "Bunga Masa Depan" turunan), countdown dari `valid_until − quoted_at` tanpa membandingkan jam browser dan
+      server, satu `Idempotency-Key` per quote, "Coba lagi" tetap tersedia setelah kontrak tertutup. Dialog
+      write-off dengan alasan ter-trim (maks 500). FE spec §2.4/§2.7/§2.8 diperbarui. Verifikasi lokal:
+      backend 150 suite / 1177 test, frontend 284 test / 31 file, lint/typecheck/build hijau (branch
+      `t39-payments-settlement-writeoff`)
+
+**Sprint 8b selesai.** Belum ada sprint berikutnya yang direncanakan.

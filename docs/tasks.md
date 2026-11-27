@@ -17,18 +17,20 @@ Completed Work index, open tasks, and open ambiguities.
 
 ## Current Project State
 
-**Snapshot:** `main` @ `59b26a5` (PR #31, T28a key ring, merged); T28b on `t28b-pii-rekey`. **Sprint 8 is COMPLETE** (T36, T37, T38, T28a, T28b). **Sprint 7 is COMPLETE**: T35, T32,
+**Snapshot:** `main` @ `59b26a5` (PR #31, T28a key ring, merged); T28b on `t28b-pii-rekey`; T39 on `t39-payments-settlement-writeoff`. **Sprint 8b is COMPLETE** (T39). **Sprint 8 is COMPLETE** (T36, T37, T38, T28a, T28b). **Sprint 7 is COMPLETE**: T35, T32,
 T33 and T34 are merged (PRs #22–#25). Backend Phases 1–2 are implemented and merged. The `frontend/` app
 shell, login, contract lifecycle and the servicing screens (payment, statement filters, credit apply) are
 implemented, as are the aging and outstanding report pages (T37), and `node scripts/demo.mjs` proves the
 operator flow end to end against the Compose stack.
-**Current sprint: Sprint 8 (COMPLETE, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
-definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (`t28b-pii-rekey`). T39 is IN PROGRESS.
+**Current sprint: Sprint 8b (COMPLETE, 5 pts)**: T39 is DONE (`t39-payments-settlement-writeoff`); no later sprint is planned yet.
+**Previous sprint: Sprint 8 (COMPLETE, 14 pts)**: T36 → T37 → T38 → T28a → T28b. The metric
+definitions are decided in ADR-026. T36 is DONE (PR #28, merged); T37 is DONE (PR #29, merged); T38 is DONE (PR #30, merged); T28a is DONE (PR #31, merged); T28b is DONE (`t28b-pii-rekey`).
 
-**Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-26, branch
-`t28b-pii-rekey`) = **149 suites / 1170 tests / 0 failed** (T28a close 140/1100; T28b added the census,
-row-verifier, retirement-report, runner and configuration suites, `PiiRekeyIT` and `IdempotencyKeyRotationIT`). Frontend `npm test` (2026-11-26, branch `t38-outbox-events`, no frontend change) =
-**236 tests / 27 files / 0 failed** (T34 close 203; T37 added the formatter, sidebar and both report pages), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
+**Verified test counts:** backend full local `./gradlew check --rerun-tasks` (2026-11-27, branch
+`t39-payments-settlement-writeoff`) = **150 suites / 1177 tests / 0 failed** (T28b close 149/1170; T39 added
+`ContractPaymentHistoryIT`; T28a close 140/1100; T28b added the census,
+row-verifier, retirement-report, runner and configuration suites, `PiiRekeyIT` and `IdempotencyKeyRotationIT`). Frontend `npm test` (2026-11-27, branch `t39-payments-settlement-writeoff`) =
+**284 tests / 31 files / 0 failed** (T37 close 236; T39 added the payments tab, settlement modal and write-off dialog; T34 close 203), plus green `npm run lint`, `npm run typecheck` and `npm run build` (the production
 build refuses to fall back to localhost without `NEXT_PUBLIC_API_BASE_URL`). Demo helpers
 `node --test "scripts/demo/*.test.mjs"` = **30 tests / 0 failed**; `node scripts/demo.mjs --reset`
 exits 0 on a fresh stack, and plain `node scripts/demo.mjs` re-runs against the same database exit 0. CI on `main` is red
@@ -45,8 +47,8 @@ for a GitHub billing reason, not a test failure.
 - Money paths: schedule engine, payment allocation + idempotency, billing/recognition, penalty accrual
   and waive/reduce, settlement quote/execution, credit application, payment void, write-off, double-entry
   ledger with DB backstops (ADR-008/009/011/014/017/018/019/020/021).
-- **19 endpoints** under `/api/v1`: auth login/refresh/logout, contracts create/activate/list/detail/
-  installments/statement, payments create/void, aging and outstanding reports (ADR-026), credit
+- **20 endpoints** under `/api/v1`: auth login/refresh/logout, contracts create/activate/list/detail/
+  installments/statement, payments create/void, payment history (`GET /contracts/{id}/payments`, T39), aging and outstanding reports (ADR-026), credit
   apply/read, write-off, penalty
   adjustment, settlement quote/execute. Every one has a default-deny role-matrix row (ADR-015); only the
   three auth endpoints are `permitAll` (ADR-022).
@@ -66,6 +68,8 @@ for a GitHub billing reason, not a test failure.
   API, and credit apply from the Kredit tab; every write invalidates the `["contract", id]` query prefix.
   T37 adds `/reports/aging` and `/reports/outstanding` (a "Laporan" sidebar group for all three roles):
   the summary row and cards are the API's values, formatted only, and the aging rows carry `customer_name`.
+  T39 adds the Pembayaran tab (ADMIN and FINANCE; `?tab=` / `?payment=` deep links; statement PAYMENT rows link
+  to it), a settlement quote/execute modal with a skew-safe countdown and a write-off dialog with a reason.
 - PII: AES-256-GCM `v1:` envelope for `nik`/`phone`, HMAC `nik_hash`/`phone_lookup` for uniqueness and
   search (ADR-004); rotation is **T28a/T28b** (Sprint 8, DONE).
 - Observability and CI: `X-Request-Id` + ECS JSON logs (T20); `check`, `frontend`, gitleaks,
@@ -145,6 +149,7 @@ are in the cited ADRs; the sprint narrative is in `PROGRESS.md`.
 | T38   | G6 outbox: six PII-free domain events written in their transaction; ShedLock log publisher, retries, `FAILED` | ADR-027, `t38-outbox-events`                            |
 | T28a  | CR-11 PII key ring: `v2:<kid>` envelope, candidate lookups, ring validation + guard on every member         | ADR-025, `t28a-pii-key-ring`                            |
 | T28b  | CR-11 re-keying pass + `request_hash_kid` (V25): verified resumable re-key, kid-aware replay, retirement verdict | ADR-025 D8–D10, `t28b-pii-rekey`                        |
+| T39   | FE payments tab, settlement modal and write-off dialog; `GET /contracts/{id}/payments`                       | plan T39, FE §2.4/§2.7/§2.8, `t39-payments-settlement-writeoff` |
 | T32   | Frontend G2: Next.js 16.4.6 shell, in-memory session + single-flight refresh, contract list/create/detail/activate  | 06_FRONTEND_SPEC §1–§3, ADR-023, `t32-nextjs-shell`     |
 | —     | Pre-Sprint hygiene: PII at rest/resource server; V8 SYSTEM; input DoS bounds (ADR-016)                             | ADR-004/005/016, V2–V5, V8                              |
 
@@ -889,11 +894,11 @@ the legacy key.
 
 ---
 
-## Sprint 8b — Payments, Settlement & Write-off UI
+## Sprint 8b — Payments, Settlement & Write-off UI (COMPLETE)
 
 **Goal:** the operator can read a contract's payment history and run the two remaining servicing flows
 (early settlement, write-off) from the contract detail screen.
-**Scope (5 pts):** T39.
+**Scope (5 pts):** T39 — DONE.
 **Exit:** `GET /api/v1/contracts/{id}/payments` is live behind the role matrix; the contract detail screen has a
 payments tab, a settlement quote/execute modal and a write-off dialog; statement PAYMENT rows link to the
 payment. Sprint 8b is the last planned sprint; no later story is planned yet.
@@ -903,8 +908,26 @@ payment. Sprint 8b is the last planned sprint; no later story is planned yet.
 
 ### T39 — FE payments tab, settlement and write-off flows (5 pts)
 
-Status: IN PROGRESS
+Status: DONE
 Estimate: 5 pts
+
+Implementation note (2026-11-27, branch `t39-payments-settlement-writeoff`; plan
+`docs/superpowers/plans/2026-11-27-t39-payments-settlement-writeoff.md`). Shipped in five tasks:
+- **Backend:** `GET /api/v1/contracts/{id}/payments` in the `payment` module (`ContractPaymentController`,
+  `ContractPaymentResponse`; `PaymentResponse` untouched), the existence check through the new
+  `ContractLookupPort.requireExists`, and one matrix row (ADMIN, FINANCE; MANAJEMEN 403).
+- **Frontend:** the Pembayaran tab with `?tab=` / `?payment=` handling and statement PAYMENT links
+  (reversal rows included; SETTLEMENT rows stay unlinked); the settlement quote/execute modal; the write-off
+  dialog with a trimmed reason (1-500 characters).
+- **Decisions that held:** D2 roles, D3 unpaged newest-first list, D4 a separate response type, D5 cash due is
+  `gross - available_credit` with a derived "Bunga Masa Depan" line, D6 the countdown never compares browser and
+  server clocks, D7 one `Idempotency-Key` per quote, D8 the write dialogs mount for any status so a lost
+  response can still replay, D10 statement links, D12 no void UI. FE spec §2.4, §2.7 and §2.8 restate them.
+- **Review fix:** "Ambil quote baru" could replace a "Coba lagi" retry still in flight; the re-quote is now
+  withheld while an outcome is unknown (`fecc3f6`).
+Verification (2026-11-27, local; GitHub CI is blocked by billing): backend `./gradlew check --rerun-tasks`
+BUILD SUCCESSFUL, 150 suites / 1177 tests / 0 failed; frontend `npm test` 284 tests / 31 files / 0 failed,
+`npm run lint`, `npm run typecheck` and `NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 npm run build` green.
 
 Goal: an ADMIN_OPERASIONAL or FINANCE operator sees every payment of a contract (POSTED and VOIDED, with
 allocations, excess and void details), quotes and executes an early settlement, and writes a contract off
@@ -949,11 +972,7 @@ there is a money-display error rather than a ledger error: the server stays the 
 
 ### Later sprints (planned, detailed at their sprint planning)
 
-Sprint 8 and Sprint 8b are detailed above; no later story is planned yet. The carry-forward
-requirements are scope notes, not estimates to implement from.
-
-| ID   | Story                                              | Sprint | Pts | Depends on                                | Carry-forward requirements                                                                                                                                                                                                 |
-| ---- | -------------------------------------------------- | ------ | --- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+No later story is planned yet. Sprint 8 and Sprint 8b are detailed above.
 
 Sprint 8 = 14 pts (T36, T37, T38, T28a, T28b; a one-point stretch, with T28b the first to slip into 8b).
 Sprint 8b = 5 pts (T39); T28b did not slip.
