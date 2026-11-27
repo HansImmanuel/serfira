@@ -131,6 +131,8 @@ class ContractPaymentHistoryIT {
 		assertThat(excess).isNotNull();
 		assertThat(excess.get("installment_id").isNull()).isTrue();
 		assertThat(excess.get("amount").asText()).isEqualTo("50000.00");
+		// Each payment carries exactly its own allocations: they sum to its amount.
+		assertThat(allocationTotal(b)).isEqualByComparingTo(new BigDecimal(b.get("amount").asText()));
 
 		JsonNode a = payments.get(1);
 		assertThat(a.get("id").asText()).isEqualTo(paymentA.toString());
@@ -140,6 +142,15 @@ class ContractPaymentHistoryIT {
 		assertThat(a.get("void_reason").asText()).isEqualTo("operator error");
 		assertThat(a.get("excess_amount").asText()).isEqualTo("0.00");
 		assertThat(a.get("allocations").size()).isGreaterThan(0);
+		assertThat(allocationTotal(a)).isEqualByComparingTo(new BigDecimal(a.get("amount").asText()));
+	}
+
+	private static BigDecimal allocationTotal(JsonNode payment) {
+		BigDecimal total = BigDecimal.ZERO;
+		for (JsonNode allocation : payment.get("allocations")) {
+			total = total.add(new BigDecimal(allocation.get("amount").asText()));
+		}
+		return total;
 	}
 
 	@Test
