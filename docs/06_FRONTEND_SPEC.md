@@ -246,12 +246,20 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 
 **Tabs:**
 1. **Jadwal Angsuran** — tabel installments (lihat §2.5).
-2. **Pembayaran** — list payments dengan status POSTED/VOIDED.
+2. **Pembayaran** — riwayat payment dari `GET /contracts/{id}/payments` (T39): semua status (POSTED dan
+   VOIDED), terbaru dulu, tanpa paging, dengan alokasi, `excess_amount`, serta `voided_at`/`void_reason`.
+   Tab hanya tampil untuk `ADMIN_OPERASIONAL` dan `FINANCE` (`useCanReadPayments()`); `MANAJEMEN` tidak
+   melihatnya (API menjawab 403). Tidak ada UI void payment.
 3. **Kredit** — saldo available credit + history application. "Terapkan Kredit" (ADMIN_OPERASIONAL, ACTIVE)
    memakai satu `Idempotency-Key` per operasi apply: retry setelah respons hilang memakai key dan jumlah yang
    sama (server me-replay), key tetap sama walau dialog ditutup/dibuka, dan key baru hanya dibuat setelah
    sukses atau lewat "Mulai form baru" saat key terpakai (`CONFLICT`/`IDEMPOTENCY_KEY_EXPIRED`).
 4. **Ledger** — link ke statement.
+
+**Tab dari URL (T39):** urutan tab Jadwal, Pembayaran, Kredit, Ledger. `?tab=` (`schedule`, `payments`,
+`credit`, `ledger`) menjadi `defaultValue` Tabs; tab yang tidak boleh dilihat role-nya jatuh ke `schedule`.
+`?payment=<id>` menyorot dan men-scroll ke baris payment itu. Memakai query string, bukan hash, karena navigasi
+klien App Router tidak andal men-scroll ke hash.
 
 **Actions (ADMIN_OPERASIONAL only):**
 - DRAFT: tombol "Aktivasi" → `POST /contracts/{id}/activate` → konfirmasi dialog.
@@ -264,6 +272,14 @@ kontrak kedua) → redirect ke `/contracts/[id]` (DRAFT state).
 - ACTIVE: tombol "Catat Pembayaran" → `/contracts/[id]/payments/new`.
 - ACTIVE: tombol "Pelunasan Dipercepat" → modal settlement flow.
 - ACTIVE: tombol "Write-off" → konfirmasi dialog + input reason.
+
+**Dialog tulis (T39):** dialog settlement dan write-off di-mount selama `canWrite` benar, apa pun status
+kontrak; `status === "ACTIVE"` hanya menentukan tombol untuk operasi *baru*. Respons yang hilang bisa saja sudah
+commit, sehingga refetch menampilkan CLOSED/TERMINATED sementara operasi harus tetap bisa di-replay. Aturan key
+sama dengan Kredit di atas: satu `Idempotency-Key` per operasi, tetap walau dialog ditutup/dibuka, key baru
+hanya setelah sukses atau "Mulai form baru". Hasil yang tak diketahui (error jaringan atau 5xx) tetap tak
+diketahui bila retry-nya dijawab 401 atau 403: jawaban itu tentang pemanggil, bukan operasinya, jadi "Coba lagi"
+tetap ditawarkan (`isOutcomeUnknown`, juga untuk Kredit). 4xx lain atas retry menuntaskannya.
 
 ---
 
@@ -329,7 +345,7 @@ koran lalu memilih "Mulai form baru", yang me-mount ulang form dengan key baru.
 | Debit | `debit` — nilai `journal_line` literal untuk baris itu, bukan agregat |
 | Kredit | `credit` — nilai `journal_line` literal untuk baris itu, bukan agregat |
 | Reversal | flag bila `reversal_of_id IS NOT NULL` |
-| Kontrak Ref | `ref_id` singkat (8 karakter, id lengkap di tooltip). Link ke payment/settlement menyusul di T39, karena belum ada halaman/endpoint detail payment |
+| Kontrak Ref | `ref_id` singkat (8 karakter, id lengkap di tooltip). Baris `PAYMENT`, termasuk baris reversal-nya (`ref_id` sama), menaut ke `/contracts/{id}?tab=payments&payment={ref_id}` (T39). Baris `SETTLEMENT` tidak ditautkan: `ref_id`-nya id settlement dan tidak ada endpoint baca settlement. `ref_type` lain tidak berubah |
 
 Tidak ada kolom running balance pada Phase 1: baris melintasi akun yang berbeda arti (`PIUTANG_*`, `KAS`,
 `PENDAPATAN_*`, `TITIPAN_NASABAH`), dan sebuah saldo tunggal berjalan lintas akun tidak mewakili apa pun yang
@@ -344,13 +360,40 @@ browser. Rentang dengan tanggal awal setelah tanggal akhir ditolak di form tanpa
 **Step 1 — Quote:**
 - Tombol "Lihat Quote Pelunasan" → `POST /settlements/quote`.
 - Tampilkan breakdown: Outstanding Pokok, Bunga Tertunggak, Bunga Berjalan, Denda, Rebate, Admin Fee, **Total Cash Due**.
-- Quote valid selama 15 menit (countdown timer di UI).
+- **Total Cash Due = `gross_amount − available_credit`**, bukan `cash_due` quote (quote T12 selalu menyimpan
+  `credit_used = 0`, sedangkan eksekusi memakai seluruh kredit tersedia, ADR-018 D9/D10). Respons tidak punya
+  field bunga masa depan, jadi modal menurunkan **Bunga Masa Depan** = `gross − (pokok + tertunggak + berjalan +
+  denda + admin) + rebate` dan menampilkannya agar semua baris berjumlah ke gross. Kedua angka ini satu-satunya
+  aritmetika uang di browser, dari satu fungsi murni (`lib/decimal`). Bila `available_credit > gross_amount`,
+  eksekusi diblokir (server menjawab 409 `CREDIT_EXCEEDS_SETTLEMENT`).
+- Quote punya masa berlaku (parameter sistem; teks tidak menulis angka menit) dengan countdown di UI. Countdown
+  **tidak** membandingkan jam browser dengan jam server: umur = `valid_until − quoted_at` (keduanya instan
+  server), waktu berjalan diukur sebagai selisih `Date.now()` sejak permintaan quote dikirim (sisa waktu
+  terpotong satu round trip, sisi yang aman). Di nol, "Lunasi
+  Sekarang" nonaktif dan "Ambil quote baru" muncul; server tetap otoritas.
 
 **Step 2 — Eksekusi:**
 - Tombol "Lunasi Sekarang" → konfirmasi dialog dengan total cash due.
 - `POST /settlements` dengan `quote_id` + `Idempotency-Key`.
 - Success → contract status menjadi CLOSED → redirect ke contract detail.
-- Error STALE_SETTLEMENT_QUOTE → tampilkan pesan "Quote sudah kadaluarsa, ambil quote baru".
+- Satu `Idempotency-Key` per quote (key dikunci ke `quote_id`); quote baru berarti key baru.
+- Error eksekusi (ringkas; salinan lengkap di plan T39):
+
+| Jawaban | Pesan | Aksi |
+|---|---|---|
+| `STALE_SETTLEMENT_QUOTE` | "Quote sudah kadaluarsa, ambil quote baru" (kontrak berubah sejak quote) | "Ambil quote baru" |
+| `SETTLEMENT_QUOTE_EXPIRED` | "Quote sudah kadaluarsa, ambil quote baru" (masa berlaku lewat) | "Ambil quote baru" |
+| `SETTLEMENT_QUOTE_ALREADY_EXECUTED` | "Quote ini sudah dieksekusi." | tidak ada |
+| `CREDIT_EXCEEDS_SETTLEMENT` | "Kredit nasabah melebihi total pelunasan." | tidak ada |
+| `CONFLICT`, `IDEMPOTENCY_KEY_EXPIRED` | peringatan key terpakai | "Mulai form baru" (quote baru) |
+| 4xx lain | pesan server | "Lunasi Sekarang" tetap aktif |
+| error jaringan atau 5xx (hasil tak diketahui), juga 401/403 atas retry-nya | `ErrorAlert` | hanya "Coba lagi" (key dan `quote_id` sama) |
+
+- Quote menagih bunga jatuh tempo dan mengakrual denda (ADR-018 D8), jadi quote meng-invalidasi prefix
+  `["contract", id]` (jadwal dan statement bisa berubah).
+
+**Write-off (T39):** dialog meminta alasan (trim, wajib, maksimum 500 karakter) dan mengirimnya sudah di-trim;
+retry setelah respons hilang mengirim alasan yang sama dan key yang sama, dengan input terkunci.
 
 ---
 

@@ -21,8 +21,7 @@ import { useIdempotencyKey } from "@/hooks/useIdempotencyKey";
 import { useApplyCredit } from "@/hooks/useContract";
 import { compareMoney, normalizeMoney } from "@/lib/decimal";
 import { formatMoney } from "@/lib/format";
-import { ApiError } from "@/lib/api";
-import { isSpentKeyError } from "@/lib/idempotency";
+import { isOutcomeUnknown, isSpentKeyError } from "@/lib/idempotency";
 import type { ApplyCreditPayload, Money } from "@/types/contract";
 
 /**
@@ -79,13 +78,14 @@ function ApplyCreditOperation({
   const [open, setOpen] = useState(initiallyOpen);
   const [amount, setAmount] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [sentWhileUnknown, setSentWhileUnknown] = useState(false);
   const mutation = useApplyCredit(contractId);
   const spentKeyError = mutation.isError && isSpentKeyError(mutation.error) ? mutation.error : null;
   // The outcome is unknown when no definite answer came back (network error, 5xx): the apply may have
   // committed. A 4xx answer (balance exceeded, nothing applicable, ...) rolled the claim back, so nothing
-  // is outstanding and the live balance is the right ceiling again.
-  const outcomeUnknown =
-    mutation.isError && !(mutation.error instanceof ApiError && mutation.error.status < 500);
+  // is outstanding and the live balance is the right ceiling again — except a 401/403 to a retry, which
+  // settles nothing about the earlier attempt (`isOutcomeUnknown`).
+  const outcomeUnknown = mutation.isError && isOutcomeUnknown(mutation.error, sentWhileUnknown);
   // An unresolved operation stays recoverable whatever else changed: the balance may be zero or the contract
   // closed by the very apply whose response was lost, and a retry then replays the stored result.
   const unresolved = outcomeUnknown || spentKeyError !== null;
@@ -114,6 +114,7 @@ function ApplyCreditOperation({
       return;
     }
     setFieldError(null);
+    setSentWhileUnknown(outcomeUnknown);
     try {
       const applied = await mutation.mutateAsync({ payload: result.payload, idempotencyKey });
       setOpen(false);

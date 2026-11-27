@@ -45,6 +45,13 @@ export function useCanReadStatement(): boolean {
   return hasAnyRole(useSession().roles, CREDIT_AND_STATEMENT_ROLES);
 }
 
+/** `GET /contracts/{id}/payments` is transaction-level like the statement: `MANAJEMEN` gets 403 (T39 decision 2). */
+const PAYMENT_HISTORY_ROLES = ["ADMIN_OPERASIONAL", "FINANCE"] as const;
+
+export function useCanReadPayments(): boolean {
+  return hasAnyRole(useSession().roles, PAYMENT_HISTORY_ROLES);
+}
+
 /** Roles `ResourceServerSecurityConfiguration` allows on `GET /reports/aging` and `/reports/outstanding`. */
 const REPORT_ROLES = ["ADMIN_OPERASIONAL", "FINANCE", "MANAJEMEN"] as const;
 

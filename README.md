@@ -254,6 +254,7 @@ with `POST /api/v1/auth/logout` (idempotent). Five consecutive failed logins loc
 | `GET`  | `/api/v1/contracts/{id}`              | Contract detail with outstanding balance                           |
 | `GET`  | `/api/v1/contracts/{id}/installments` | Installment schedule                                               |
 | `GET`  | `/api/v1/contracts/{id}/statement`    | Ledger statement for the contract                                  |
+| `GET`  | `/api/v1/contracts/{id}/payments`     | Payment history with allocations and void details                  |
 | `POST` | `/api/v1/payments`                    | Receive, allocate, and post a payment (`Idempotency-Key` required) |
 | `POST` | `/api/v1/payments/{id}/void`          | Void a posted payment by reversal (`Idempotency-Key` required)     |
 | `POST` | `/api/v1/contracts/{id}/credit/apply` | Apply available customer credit (`Idempotency-Key` required)      |

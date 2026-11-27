@@ -10,6 +10,8 @@ import type {
   CreditApplicationResult,
   CreditBalance,
   Installment,
+  WriteOffPayload,
+  WriteOffResult,
 } from "@/types/contract";
 
 const contractKey = (id: string) => ["contract", id] as const;
@@ -57,6 +59,35 @@ export function useApplyCredit(id: string) {
   return useMutation({
     mutationFn: ({ payload, idempotencyKey }: ApplyCreditCommand) =>
       apiFetch<CreditApplicationResult>(`/contracts/${id}/credit/apply`, {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(payload),
+      }),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: contractKey(id) }),
+        queryClient.invalidateQueries({ queryKey: ["contracts"] }),
+      ]);
+    },
+  });
+}
+
+export interface WriteOffCommand {
+  payload: WriteOffPayload;
+  idempotencyKey: string;
+}
+
+/**
+ * Writes the contract off (`ADMIN_OPERASIONAL` only, ADR-015). The caller owns the `Idempotency-Key`: a retry
+ * after a lost response replays the stored result instead of failing on the already-terminated contract. The
+ * contract prefix and the list are invalidated once the call settles, success or not, since a write-off whose
+ * response was lost may still have committed.
+ */
+export function useWriteOff(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ payload, idempotencyKey }: WriteOffCommand) =>
+      apiFetch<WriteOffResult>(`/contracts/${id}/write-off`, {
         method: "POST",
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify(payload),

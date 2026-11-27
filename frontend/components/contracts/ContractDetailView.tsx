@@ -1,12 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, ExternalLink, Wallet } from "lucide-react";
 
 import { ActivateContractButton } from "@/components/contracts/ActivateContractButton";
 import { ContractStatusBadge } from "@/components/contracts/ContractStatusBadge";
 import { CreditPanel } from "@/components/contracts/CreditPanel";
 import { InstallmentTable } from "@/components/contracts/InstallmentTable";
+import { SettlementDialog } from "@/components/contracts/SettlementDialog";
+import { WriteOffDialog } from "@/components/contracts/WriteOffDialog";
+import { ContractPaymentsPanel } from "@/components/payments/ContractPaymentsPanel";
 import { DateDisplay } from "@/components/shared/DateDisplay";
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
@@ -15,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useContract, useInstallments } from "@/hooks/useContract";
-import { useCanReadCredit, useCanReadStatement, useCanWrite } from "@/hooks/useSession";
+import { useCanReadCredit, useCanReadPayments, useCanReadStatement, useCanWrite } from "@/hooks/useSession";
 import { rateFractionToPercent } from "@/lib/decimal";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -37,12 +41,17 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
   const installments = useInstallments(contractId, contract.data?.status !== "DRAFT");
   const canWrite = useCanWrite();
   const canReadCredit = useCanReadCredit();
+  const canReadPayments = useCanReadPayments();
   const canReadStatement = useCanReadStatement();
+  const searchParams = useSearchParams();
 
   if (contract.isPending) {
     return <LoadingSpinner label="Memuat kontrak…" />;
   }
-  if (contract.isError) {
+  // The page-level error only when nothing was ever loaded. A failed background refetch keeps the cached
+  // contract on screen, and with it the write dialogs: a settlement or write-off whose response was lost
+  // must stay retryable with its key even when the refetch that follows fails too (T39 decision 8).
+  if (contract.data === undefined) {
     return (
       <ErrorAlert
         error={contract.error}
@@ -53,9 +62,25 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
   }
 
   const detail = contract.data;
+  // The tab and the highlighted payment come from the URL (T39 decision 11); a tab this role cannot see
+  // falls back to the schedule.
+  const visibleTabs = new Set<string>(["schedule"]);
+  if (canReadPayments) visibleTabs.add("payments");
+  if (canReadCredit) visibleTabs.add("credit");
+  if (canReadStatement) visibleTabs.add("ledger");
+  const requestedTab = searchParams.get("tab");
+  const initialTab = requestedTab !== null && visibleTabs.has(requestedTab) ? requestedTab : "schedule";
+  const highlightId = searchParams.get("payment");
 
   return (
     <div className="space-y-4">
+      {contract.isError ? (
+        <ErrorAlert
+          error={contract.error}
+          title="Kontrak mungkin tidak terbaru"
+          onRetry={() => void contract.refetch()}
+        />
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <Button asChild variant="ghost" size="sm" className="-ml-2">
@@ -86,6 +111,18 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
                 Catat Pembayaran
               </Link>
             </Button>
+          ) : null}
+          {canWrite ? (
+            // Mounted whatever the status (T39 decision 8): a settlement whose response was lost may have
+            // closed the contract, and its retry must stay reachable. The status gates only a new one.
+            <SettlementDialog contractId={detail.id} canStartNew={detail.status === "ACTIVE"} />
+          ) : null}
+          {canWrite ? (
+            <WriteOffDialog
+              contractId={detail.id}
+              contractNo={detail.contract_no}
+              canStartNew={detail.status === "ACTIVE"}
+            />
           ) : null}
           {detail.status === "DRAFT" && canWrite ? (
             <ActivateContractButton contractId={detail.id} plannedStartDate={detail.planned_start_date} />
@@ -161,9 +198,10 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
         </Card>
       </div>
 
-      <Tabs defaultValue="schedule" className="gap-3">
+      <Tabs defaultValue={initialTab} className="gap-3">
         <TabsList>
           <TabsTrigger value="schedule">Jadwal</TabsTrigger>
+          {canReadPayments ? <TabsTrigger value="payments">Pembayaran</TabsTrigger> : null}
           {canReadCredit ? <TabsTrigger value="credit">Kredit</TabsTrigger> : null}
           {canReadStatement ? <TabsTrigger value="ledger">Ledger</TabsTrigger> : null}
         </TabsList>
@@ -185,6 +223,12 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
             )}
           </div>
         </TabsContent>
+
+        {canReadPayments ? (
+          <TabsContent value="payments">
+            <ContractPaymentsPanel contractId={detail.id} installments={installments.data} highlightId={highlightId} />
+          </TabsContent>
+        ) : null}
 
         {canReadCredit ? (
           <TabsContent value="credit">

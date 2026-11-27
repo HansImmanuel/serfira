@@ -53,13 +53,20 @@ function Header({ contractId }: { contractId: string }) {
   );
 }
 
+/** Deep link to a payment in the Pembayaran tab (T39 decision 11). */
+export function paymentLink(contractId: string, paymentId: string): string {
+  return `/contracts/${contractId}?tab=payments&payment=${paymentId}`;
+}
+
 /**
  * Rekening koran (FE §2.7): the contract's posted journal lines, ledger-literal.
  *
  * <p>There is deliberately no running balance (ADR-013 A-8) and a reversal is its own flagged row,
  * never a mutated original. Ref-type and date-range filters are sent to the API; a range whose start
  * is after its end is caught here and the last valid filters stay applied. The ref column shows the
- * event type and a short `ref_id`: there is no payment/settlement page to link to yet (T39).
+ * event type and a short `ref_id`. A PAYMENT row, and its reversal (same `ref_id`), links to that payment in
+ * the Pembayaran tab (T39 decision 10). SETTLEMENT and WRITE_OFF rows stay unlinked: there is no settlement
+ * read endpoint, and a write-off `ref_id` is the contract itself.
  */
 export function StatementView({ contractId }: { contractId: string }) {
   const [page, setPage] = useState(0);
@@ -220,7 +227,17 @@ export function StatementView({ contractId }: { contractId: string }) {
                         ) : null}
                       </div>
                       <div className="font-mono text-[11px] text-muted-foreground" title={row.ref_id}>
-                        {row.ref_id.slice(0, 8)}
+                        {row.ref_type === "PAYMENT" ? (
+                          <Link
+                            href={paymentLink(contractId, row.ref_id)}
+                            title={row.ref_id}
+                            className="underline underline-offset-2"
+                          >
+                            {row.ref_id.slice(0, 8)}
+                          </Link>
+                        ) : (
+                          row.ref_id.slice(0, 8)
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="text-right">

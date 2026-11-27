@@ -163,6 +163,7 @@ Legenda: ✅ = diizinkan | ❌ = dilarang | — = tidak relevan
 | `GET /contracts` (list) | ✅ | ✅ | ✅ | — |
 | `GET /contracts/{id}/installments` | ✅ | ✅ | ✅ | — |
 | `GET /contracts/{id}/statement` | ✅ | ✅ | ❌ | — |
+| `GET /contracts/{id}/payments` | ✅ | ✅ | ❌ | — |
 | `POST /payments` | ✅ | ❌ | ❌ | — |
 | `POST /payments/{id}/void` | ✅ | ❌ | ❌ | — |
 | `GET /contracts/{id}/credit` | ✅ | ✅ | ❌ | — |

@@ -1,9 +1,9 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/lib/api";
-import type { Payment, PaymentPayload } from "@/types/payment";
+import type { ContractPayment, Payment, PaymentPayload } from "@/types/payment";
 
 export interface CreatePaymentCommand {
   payload: PaymentPayload;
@@ -35,5 +35,20 @@ export function useCreatePayment(contractId: string) {
         queryClient.invalidateQueries({ queryKey: ["contracts"] }),
       ]);
     },
+  });
+}
+
+export const contractPaymentsKey = (id: string) => ["contract", id, "payments"] as const;
+
+/**
+ * The contract's payment history (Pembayaran tab). It lives under the `["contract", id]` prefix, so a
+ * payment or any other mutation that invalidates the prefix refreshes it. Readable by
+ * `ADMIN_OPERASIONAL`/`FINANCE` only (ADR-015), hence `enabled`.
+ */
+export function useContractPayments(contractId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: contractPaymentsKey(contractId),
+    queryFn: () => apiFetch<ContractPayment[]>(`/contracts/${contractId}/payments`),
+    enabled: contractId.length > 0 && enabled,
   });
 }

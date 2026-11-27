@@ -19,20 +19,9 @@ import {
 import { useInstallments } from "@/hooks/useContract";
 import { compareMoney } from "@/lib/decimal";
 import { formatDateTime, formatMoney } from "@/lib/format";
-import { PAYMENT_CHANNEL_OPTIONS } from "@/lib/schemas/payment";
+import { allocationLabel, channelLabel } from "@/lib/paymentLabels";
 import type { ContractStatus } from "@/types/contract";
-import type { AllocationType, Payment } from "@/types/payment";
-
-const ALLOCATION_LABELS: Record<AllocationType, string> = {
-  PENALTY: "Denda",
-  INTEREST: "Bunga",
-  PRINCIPAL: "Pokok",
-  EXCESS: "Kelebihan",
-};
-
-function channelLabel(channel: Payment["channel"]): string {
-  return PAYMENT_CHANNEL_OPTIONS.find((option) => option.value === channel)?.label ?? channel;
-}
+import type { Payment } from "@/types/payment";
 
 /**
  * Outcome of a posted payment (FE §2.6): the server's allocation lines in the order the waterfall
@@ -127,7 +116,7 @@ export function PaymentResult({
             {payment.allocations.map((allocation, index) => (
               <TableRow key={`${allocation.installment_id ?? "excess"}-${allocation.allocation_type}-${index}`}>
                 <TableCell>{periodLabel(installments.data, allocation.installment_id)}</TableCell>
-                <TableCell>{ALLOCATION_LABELS[allocation.allocation_type]}</TableCell>
+                <TableCell>{allocationLabel(allocation.allocation_type)}</TableCell>
                 <TableCell className="text-right">
                   <MoneyDisplay value={allocation.amount} />
                 </TableCell>

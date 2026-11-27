@@ -501,6 +501,48 @@ describe("CreditPanel apply retry safety", () => {
     expect(sentKey(1)).toBe("key-1");
   });
 
+  it("keeps an earlier unknown outcome when the retry is forbidden", async () => {
+    signInAs(["ADMIN_OPERASIONAL"]);
+    let committed = false;
+    let attempt = 0;
+    mockApi(
+      () => (committed ? "0.00" : "250000.00"),
+      async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          committed = true;
+          throw new TypeError("Failed to fetch");
+        }
+        if (attempt === 2) {
+          throw new ApiError("FORBIDDEN", "Akses ditolak", 403);
+        }
+        return { applied_amount: "250000.00", available_balance: "0.00", applications: [] };
+      },
+    );
+    const user = userEvent.setup();
+    const view = renderWithQueryClient(<CreditPanel contractId="c1" contractStatus="ACTIVE" />);
+
+    let dialog = await openDialog(user);
+    await user.type(within(dialog).getByLabelText("Jumlah"), "250000");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await within(dialog).findByText("Failed to fetch");
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    // The 403 never reached the apply, which may already have closed the contract and emptied the balance.
+    await within(dialog).findByText("Akses ditolak");
+    await user.click(within(dialog).getByRole("button", { name: "Batal" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    setStatus(view, "CLOSED");
+
+    dialog = await openDialog(user);
+    expect(within(dialog).queryByText(/tidak lagi berstatus ACTIVE/)).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Terapkan" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(applyCalls()).toHaveLength(3);
+    expect([sentKey(0), sentKey(1), sentKey(2)]).toEqual(["key-1", "key-1", "key-1"]);
+  });
+
   it("keeps the dialog mounted, error included, when the contract closes while it is open", async () => {
     signInAs(["ADMIN_OPERASIONAL"]);
     mockApi("250000.00", async () => {
