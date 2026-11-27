@@ -199,7 +199,10 @@ function SettlementExecutionStep({
   // Any other 4xx (state invalid, concurrent modification, ...) leaves the quote usable; the server re-checks.
   const canExecute =
     canStartNew && !unresolved && !expired && answer === undefined && !mutation.isPending;
-  const offerRequote = canStartNew && !unresolved && (answer === undefined ? expired : answer.requote);
+  // A pending execute (a "Coba lagi" in flight included) is still unresolved: a new quote would remount
+  // this step under a new key and drop the attempt's outcome (T39 decision 7).
+  const offerRequote =
+    canStartNew && !unresolved && !mutation.isPending && (answer === undefined ? expired : answer.requote);
   const startBlocked = !canStartNew && !unresolved;
 
   async function execute() {
@@ -346,7 +349,7 @@ function SettlementOperation({
   }
 
   async function requestQuote() {
-    if (!canStartNew) {
+    if (!canStartNew || executing) {
       return;
     }
     try {

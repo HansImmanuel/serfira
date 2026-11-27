@@ -315,6 +315,34 @@ describe("SettlementDialog", () => {
     expect(toast.success).toHaveBeenCalledTimes(1);
   });
 
+  it("offers no new quote while a retry of a lost response is in flight, even after expiry", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let executes = 0;
+    mockApi(
+      () => quote(),
+      () => {
+        executes += 1;
+        return executes === 1 ? Promise.reject(new TypeError("Failed to fetch")) : new Promise(() => {});
+      },
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderDialog();
+
+    await openQuote(user);
+    await confirmExecution(user);
+    expect(await within(dialog()).findByText("Failed to fetch")).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(900_000);
+    });
+    expect(within(dialog()).getByRole("timer")).toHaveTextContent("00:00");
+
+    await user.click(within(dialog()).getByRole("button", { name: "Coba lagi" }));
+    await within(dialog()).findByRole("button", { name: "Memproses…" });
+
+    expect(within(dialog()).queryByRole("button", { name: "Ambil quote baru" })).not.toBeInTheDocument();
+    expect(callsTo("/settlements/quote")).toHaveLength(1);
+  });
+
   it("blocks execution when available credit exceeds the gross", async () => {
     mockApi(() => quote({ available_credit: "10625000.01" }));
     const user = userEvent.setup();
