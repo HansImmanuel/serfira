@@ -164,12 +164,31 @@ alert; T41 is independent.
 | T41   | `refresh_token` retention / cleanup job (≈2 pts)     | Moved from Deferred: its trigger ("schedule it with the reporting work") passed with Sprint 8. Rotation inserts a row per refresh and revoked rows are never deleted (~96 rows per user per day at a 15-minute access token). Same shape as T18: keyset delete on `expires_at`, its own ShedLock lock, one `job_run` row (ADR-022). |
 | T42   | T39 follow-ups (≈2 pts)                              | Polish parked at the T39 reviews: one shared spent-key alert (copied in the credit, settlement and write-off dialogs); the write-off counter shows the raw length while validation counts the trimmed one; the settlement countdown interval keeps ticking after expiry and while closed; `instantMs` throws during render on a malformed instant; payment history `aria-controls` points at a collapsed row, the allocation sort interleaves while the schedule is unloaded, and the VOIDED/POSTED badges are English; after a `CREDIT_EXCEEDS_SETTLEMENT` block no re-quote is offered once the quote expires. Also decide whether `apiFetch`'s client-side `SESSION_CHANGED` (401), which discards a response the server may have committed, should count as an unknown outcome on a first attempt in every write form. |
 
+### LMS roadmap (outline only)
+
+The long-range path from a loan-servicing core to a complete LMS, **excluding origination** (application,
+KYC, credit scoring, SLIK checks: out of scope). Outline only — each phase is broken into T-numbered stories,
+estimates and ADRs at its own sprint planning. Difficulty is a rough 1–100 rating against this codebase.
+Order is suggested: approvals before the writes that need them, then the most visible modules.
+
+| Phase | Module                              | Outline                                                                                                   | Difficulty |
+| ----- | ----------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------- |
+| L1    | Maker-checker and administration    | User-management screen, approval flow for sensitive writes (write-off, waivers, restructuring), audit-trail screen, branches, configurable products. | 55 |
+| L2    | Payment integration (sandbox)       | Virtual accounts via a gateway sandbox, signed webhooks, auto-matching, unmatched-payment queue, bank-statement reconciliation. Replaces P-6. | 60 |
+| L3    | Collections workflow                | DPD buckets, pre/post-due reminders, SP1/SP2/SP3 letters, collector queues, promise-to-pay, visit logs.   | 55 |
+| L4    | Restructuring                       | Reschedule, tenor/rate change, grace period, payment holiday; new schedule version carrying arrears and penalty. Replaces S-5. | 75 |
+| L5    | Collateral and repossession         | BPKB custody, insurance, fiduciary data (AHU registration entered by hand), repossession and sale with its loss entries. | 40–65 |
+| L6    | Accounting depth                    | Chart of accounts, month-end close, GL export; ECL provisioning (PSAK 71) as its own sub-phase.           | 35 / 80 (ECL) |
+| L7    | Customer portal and notifications   | Borrower login, schedule view, VA payment, WhatsApp/SMS/email notifications.                              | 50 |
+| L8    | Regulatory and reporting output     | SLIK/OJK report files (generation only, no submission), CSV export (R-4), cash-in report (R-3), dashboards. | 25–50 |
+| L9    | Production readiness and integration | Frontend container, deployment, backups, observability, hardening; real broker behind the outbox.        | 30–45 |
+
 ### Deferred
 
 | Item                                                                                        | Reason                                                                                                                                                    |
 | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | PRD C-5 update DRAFT contract                                                               | Already deferred in `05_SPRINT_PLAN.md`.                                                                                                                  |
-| R-3 cash-in report, R-4 CSV export, P-6 gateway stub, S-5 restructuring                     | P2 / Fase 4 per PRD.                                                                                                                                      |
+| R-3 cash-in report, R-4 CSV export, P-6 gateway stub, S-5 restructuring                     | P2 / Fase 4 per PRD; placed in the LMS roadmap (L2, L4, L8). |
 | `iss`/`aud` validation + RS256 (CR-10)                                                      | Needs a real external token issuer (ADR-005); login mints HS256 tokens in-process. Revisit when an issuer is introduced.                                   |
 | Require auth for OpenAPI/Swagger outside dev                                                | ADR-005 made it public by design. T21b kept it public; revisit after T32 (the first real browser client).                                                  |
 | Rate limiting; browser security headers beyond the Next.js / Spring Security defaults       | No public deployment yet. CORS itself is T35; the rest is revisited after the browser client exists.                                                       |
@@ -228,4 +247,5 @@ ADR-027 (outbox).
 All planned sprints are complete. Proposed, not yet planned:
   T39 ─► T42 (T39 follow-ups; one shared spent-key alert) ─► T40 (void + penalty-adjustment dialogs)
   T41 (refresh_token cleanup job) — independent
+  Then the LMS roadmap L1 ─► L9 (outline above; planned phase by phase)
 ```
