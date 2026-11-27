@@ -48,7 +48,10 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
   if (contract.isPending) {
     return <LoadingSpinner label="Memuat kontrak…" />;
   }
-  if (contract.isError) {
+  // The page-level error only when nothing was ever loaded. A failed background refetch keeps the cached
+  // contract on screen, and with it the write dialogs: a settlement or write-off whose response was lost
+  // must stay retryable with its key even when the refetch that follows fails too (T39 decision 8).
+  if (contract.data === undefined) {
     return (
       <ErrorAlert
         error={contract.error}
@@ -71,6 +74,13 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
 
   return (
     <div className="space-y-4">
+      {contract.isError ? (
+        <ErrorAlert
+          error={contract.error}
+          title="Kontrak mungkin tidak terbaru"
+          onRetry={() => void contract.refetch()}
+        />
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <Button asChild variant="ghost" size="sm" className="-ml-2">
