@@ -20,7 +20,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return { ...actual, apiFetch: vi.fn() };
 });
 
-import { StatementView } from "@/components/contracts/StatementView";
+import { StatementView, paymentLink } from "@/components/contracts/StatementView";
 import { statementPath } from "@/hooks/useStatement";
 import { apiFetch } from "@/lib/api";
 import { clearSession, setSession } from "@/lib/session";
@@ -88,6 +88,48 @@ describe("statementPath", () => {
     expect(statementPath("c1", 2, { refType: null, from: null, to: null })).toBe(
       "/contracts/c1/statement?page=2&size=20",
     );
+  });
+});
+
+describe("StatementView payment links", () => {
+  const PAYMENT_ID = "abcdef12-3456-4789-8abc-def012345678";
+  const PAYMENT_ROW: StatementRow = { ...ROW, ref_type: "PAYMENT", ref_id: PAYMENT_ID };
+
+  beforeEach(() => {
+    clearSession();
+    signInAs(["FINANCE"]);
+    vi.mocked(apiFetch).mockReset();
+  });
+
+  it("links PAYMENT rows and their reversal to the payments tab", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(
+      pageOf([PAYMENT_ROW, { ...PAYMENT_ROW, is_reversal: true, reversal_of_id: "je-1" }]) as never,
+    );
+
+    renderWithQueryClient(<StatementView contractId="contract-1" />);
+
+    const links = await screen.findAllByRole("link", { name: PAYMENT_ID.slice(0, 8) });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link).toHaveAttribute("href", paymentLink("contract-1", PAYMENT_ID));
+    }
+    expect(paymentLink("contract-1", PAYMENT_ID)).toBe(`/contracts/contract-1?tab=payments&payment=${PAYMENT_ID}`);
+  });
+
+  it("leaves SETTLEMENT and WRITE_OFF ids unlinked", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(
+      pageOf([
+        { ...ROW, ref_type: "SETTLEMENT", ref_id: "11111111-aaaa" },
+        { ...ROW, ref_type: "WRITE_OFF", ref_id: "22222222-bbbb" },
+      ]) as never,
+    );
+
+    renderWithQueryClient(<StatementView contractId="contract-1" />);
+
+    expect(await screen.findByText("11111111")).toBeInTheDocument();
+    expect(screen.getByText("22222222")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "11111111" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "22222222" })).not.toBeInTheDocument();
   });
 });
 

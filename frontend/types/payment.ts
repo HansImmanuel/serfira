@@ -35,3 +35,20 @@ export interface Payment {
   excess_amount: Money;
   allocations: PaymentAllocation[];
 }
+
+/**
+ * One row of `GET /contracts/{id}/payments` (newest first, every status). Allocation lines come in no
+ * defined order; `voided_at` and `void_reason` are set exactly when `status` is VOIDED.
+ */
+export interface ContractPayment {
+  id: string;
+  payment_no: string;
+  amount: Money;
+  channel: PaymentChannel;
+  paid_at: string;
+  status: PaymentStatus;
+  excess_amount: Money;
+  voided_at: string | null;
+  void_reason: string | null;
+  allocations: PaymentAllocation[];
+}

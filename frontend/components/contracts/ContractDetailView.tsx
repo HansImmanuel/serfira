@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, ExternalLink, Wallet } from "lucide-react";
 
 import { ActivateContractButton } from "@/components/contracts/ActivateContractButton";
 import { ContractStatusBadge } from "@/components/contracts/ContractStatusBadge";
 import { CreditPanel } from "@/components/contracts/CreditPanel";
 import { InstallmentTable } from "@/components/contracts/InstallmentTable";
+import { ContractPaymentsPanel } from "@/components/payments/ContractPaymentsPanel";
 import { DateDisplay } from "@/components/shared/DateDisplay";
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
@@ -15,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useContract, useInstallments } from "@/hooks/useContract";
-import { useCanReadCredit, useCanReadStatement, useCanWrite } from "@/hooks/useSession";
+import { useCanReadCredit, useCanReadPayments, useCanReadStatement, useCanWrite } from "@/hooks/useSession";
 import { rateFractionToPercent } from "@/lib/decimal";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -37,7 +39,9 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
   const installments = useInstallments(contractId, contract.data?.status !== "DRAFT");
   const canWrite = useCanWrite();
   const canReadCredit = useCanReadCredit();
+  const canReadPayments = useCanReadPayments();
   const canReadStatement = useCanReadStatement();
+  const searchParams = useSearchParams();
 
   if (contract.isPending) {
     return <LoadingSpinner label="Memuat kontrak…" />;
@@ -53,6 +57,15 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
   }
 
   const detail = contract.data;
+  // The tab and the highlighted payment come from the URL (T39 decision 11); a tab this role cannot see
+  // falls back to the schedule.
+  const visibleTabs = new Set<string>(["schedule"]);
+  if (canReadPayments) visibleTabs.add("payments");
+  if (canReadCredit) visibleTabs.add("credit");
+  if (canReadStatement) visibleTabs.add("ledger");
+  const requestedTab = searchParams.get("tab");
+  const initialTab = requestedTab !== null && visibleTabs.has(requestedTab) ? requestedTab : "schedule";
+  const highlightId = searchParams.get("payment");
 
   return (
     <div className="space-y-4">
@@ -161,9 +174,10 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
         </Card>
       </div>
 
-      <Tabs defaultValue="schedule" className="gap-3">
+      <Tabs defaultValue={initialTab} className="gap-3">
         <TabsList>
           <TabsTrigger value="schedule">Jadwal</TabsTrigger>
+          {canReadPayments ? <TabsTrigger value="payments">Pembayaran</TabsTrigger> : null}
           {canReadCredit ? <TabsTrigger value="credit">Kredit</TabsTrigger> : null}
           {canReadStatement ? <TabsTrigger value="ledger">Ledger</TabsTrigger> : null}
         </TabsList>
@@ -185,6 +199,12 @@ export function ContractDetailView({ contractId }: { contractId: string }) {
             )}
           </div>
         </TabsContent>
+
+        {canReadPayments ? (
+          <TabsContent value="payments">
+            <ContractPaymentsPanel contractId={detail.id} installments={installments.data} highlightId={highlightId} />
+          </TabsContent>
+        ) : null}
 
         {canReadCredit ? (
           <TabsContent value="credit">

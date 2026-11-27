@@ -2,9 +2,12 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+let searchParams = new URLSearchParams();
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/contracts/c1",
+  useSearchParams: () => searchParams,
 }));
 
 vi.mock("next/link", () => ({
@@ -69,8 +72,24 @@ function signInAs(roles: string[]) {
   setSession({ access_token: accessTokenWithRoles(roles), refresh_token: "refresh-1" }, "operator");
 }
 
+const PAYMENT = {
+  id: "pay-1",
+  payment_no: "PAY-0001",
+  amount: "1000000.00",
+  channel: "CASH",
+  paid_at: "2026-11-20T10:00:00+07:00",
+  status: "POSTED",
+  excess_amount: "0.00",
+  voided_at: null,
+  void_reason: null,
+  allocations: [],
+};
+
 function mockApi() {
   vi.mocked(apiFetch).mockImplementation(async (path) => {
+    if (String(path).endsWith("/payments")) {
+      return [PAYMENT] as never;
+    }
     if (String(path).endsWith("/credit")) {
       return CREDIT as never;
     }
@@ -84,6 +103,7 @@ function mockApi() {
 describe("ContractDetailView role gating", () => {
   beforeEach(() => {
     clearSession();
+    searchParams = new URLSearchParams();
     vi.mocked(apiFetch).mockReset();
     mockApi();
   });
@@ -118,9 +138,54 @@ describe("ContractDetailView role gating", () => {
   });
 });
 
+describe("ContractDetailView Pembayaran tab", () => {
+  beforeEach(() => {
+    clearSession();
+    searchParams = new URLSearchParams();
+    vi.mocked(apiFetch).mockReset();
+    mockApi();
+  });
+
+  it("shows the Pembayaran tab for FINANCE and hides it for MANAJEMEN", async () => {
+    signInAs(["FINANCE"]);
+    const finance = renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+    expect(await screen.findByRole("tab", { name: "Pembayaran" })).toBeInTheDocument();
+    finance.unmount();
+
+    clearSession();
+    signInAs(["MANAJEMEN"]);
+    vi.mocked(apiFetch).mockClear();
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+    expect(await screen.findByText("MF-202611-0001")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Pembayaran" })).not.toBeInTheDocument();
+    expect(vi.mocked(apiFetch).mock.calls.some(([path]) => String(path).endsWith("/payments"))).toBe(false);
+  });
+
+  it("opens the tab named in ?tab= and highlights the linked payment", async () => {
+    signInAs(["FINANCE"]);
+    searchParams = new URLSearchParams("tab=payments&payment=pay-1");
+
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+
+    expect(await screen.findByText("PAY-0001")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Pembayaran" })).toHaveAttribute("aria-selected", "true");
+    expect(document.getElementById("payment-pay-1")).toHaveAttribute("data-highlighted", "true");
+  });
+
+  it("falls back to Jadwal when the role cannot see the requested tab", async () => {
+    signInAs(["MANAJEMEN"]);
+    searchParams = new URLSearchParams("tab=payments");
+
+    renderWithQueryClient(<ContractDetailView contractId={CONTRACT.id} />);
+
+    expect(await screen.findByRole("tab", { name: "Jadwal" })).toHaveAttribute("aria-selected", "true");
+  });
+});
+
 describe("ContractDetailView payment entry point", () => {
   beforeEach(() => {
     clearSession();
+    searchParams = new URLSearchParams();
     vi.mocked(apiFetch).mockReset();
   });
 
